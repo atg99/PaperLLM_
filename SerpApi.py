@@ -5,7 +5,7 @@ def search_google_scholar(query):
     params = {
     "engine": "google_scholar",
     "q": query,
-    "api_key": "92af89a34c71f99c26c49e4432238190ed3cd819f9bbc2c14df0cf45e650942d"
+    "api_key": "YOUR_API_KEY"
 
     }
     
