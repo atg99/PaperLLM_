@@ -1,0 +1,1213 @@
+==== Page 1 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 
+https://doi.org/10.1186/s13059-019-1874-1
+Method OpenAccess
+Normalizationandvariancestabilization
+ofsingle-cellRNA-seqdatausingregularized
+negativebinomialregression
+ChristophHafemeister1*andRahulSatija1,2*
+Abstract
+Single-cellRNA-seq(scRNA-seq)data exhibitssignificantcell-to-cellvariationduetotechnicalfactors,includingthe
+numberofmoleculesdetectedineachcell,whichcanconfoundbiologicalheterogeneitywithtechnicaleffects.To
+addressthis,wepresentamodelingframeworkforthenormalizationandvariancestabilizationofmolecularcount
+datafromscRNA-seqexperiments.WeproposethatthePearsonresidualsfrom“regularizednegativebinomial
+regression,”wherecellularsequencingdepthisutilizedasacovariateinageneralizedlinearmodel,successfully
+removetheinfluenceoftechnicalcharacteristicsfromdownstreamanalyseswhilepreservingbiological
+heterogeneity.Importantly,weshowthatanunconstrainednegativebinomialmodelmayoverfitscRNA-seqdata,
+andovercomethisbypoolinginformationacrossgeneswithsimilarabundancestoobtainstableparameter
+estimates.Ourprocedureomitstheneedforheuristicstepsincludingpseudocountadditionorlog-transformation
+andimprovescommondownstreamanalyticaltaskssuchasvariablegeneselection,dimensionalreduction,and
+differentialexpression.OurapproachcanbeappliedtoanyUMI-basedscRNA-seqdatasetandisfreelyavailableas
+partoftheRpackage sctransform ,withadirectinterfacetooursingle-celltoolkit Seurat.
+Keywords: Single-cellRNA-seq,Normalization
+Introduction
+In the analysis and interpretation of single-cell RNA-
+seq (scRNA-seq) data, effective pre-processing and nor-
+malization represent key challenges. While unsupervised
+analysis of single-cell data has transformative potential
+to uncover heterogeneous cell types and states, cell-
+to-cell variation in technical factors can also confound
+these results [ 1,2]. In particular, the observed sequenc-
+ing depth (number of genes or molecules detected per
+cell) can vary significantly between cells, with variation
+in molecular counts potentially spanning an order of
+magnitude, even within the same cell type [ 3]. Impor-
+tantly, while the now widespread use of unique molec-
+ular identifiers (UMI) in scRNA-seq removes technical
+variation associated with PCR, differences in cell lysis,
+reverse transcription efficiency, and stochastic molecular
+*Correspondence: christoph.hafemeister@nyu.edu ;rsatija@nygenome.org
+1NewYorkGenomeCenter,1016thAve,NewYork,NY,10013USA
+2CenterforGenomicsandSystemsBiology,NewYorkUniversity,12WaverlyPl,
+NewYork,NY,10003USAsampling during sequencing also contribute significantly,
+necessitating technical correction [ 4]. These same chal-
+lenges apply to bulk RNA-seq workflows, but are exac-
+erbated due to the extreme comparative sparsity of
+scRNA-seqdata[ 5].
+The primary goal of single-cell normalization is to
+removetheinfluenceoftechnicaleffectsintheunderlying
+molecular counts, while preserving true biological vari-
+ation. Specifically, we propose that a dataset which has
+been processed with an effective normalization workflow
+shouldhavethefollowingcharacteristics:
+1 Ingeneral,thenormalizedexpressionlevelofagene
+shouldnotbecorrelatedwiththetotalsequencing
+depthofacell.Downstreamanalyticaltasks
+(dimensionalreduction,differentialexpression)
+shouldalsonotbeinfluencedbyvariationin
+sequencingdepth.
+2 Thevarianceofanormalizedgene(acrosscells)
+shouldprimarilyreflectbiologicalheterogeneity,
+independentofgeneabundanceorsequencingdepth.
+©TheAuthor(s).2019 OpenAccess ThisarticleisdistributedunderthetermsoftheCreativeCommonsAttribution4.0
+InternationalLicense( http://creativecommons.org/licenses/by/4.0/ ),whichpermitsunrestricteduse,distribution,and
+reproductioninanymedium,providedyougiveappropriatecredittotheoriginalauthor(s)andthesource,providealinktothe
+CreativeCommonslicense,andindicateifchangesweremade. TheCreativeCommonsPublicDomainDedicationwaiver
+(http://creativecommons.org/publicdomain/zero/1.0/ )appliestothedatamadeavailableinthisarticle,unlessotherwisestated.
+
+==== Page 2 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page2of15
+Forexample,geneswithhighvarianceafter
+normalizationshouldbedifferentiallyexpressed
+acrosscelltypes,whilehousekeepinggenesshould
+exhibitlowvariance.Additionally,thevarianceofa
+geneshouldbesimilarwhenconsideringeither
+deeplysequencedcells,orshallowlysequencedcells.
+Given its importance, there have been a large num-
+berofdiversemethodsproposedforthenormalizationof
+scRNA-seqdata[ 6–11].Ingeneral,thesefallintotwodis-
+tinctsetsofapproaches.Thefirstsetaimstoidentify“size
+factors”forindividualcells,asiscommonlyperformedfor
+bulk RNA-seq [ 12]. For example, BASiCS [ 7] infers cell-
+specific normalizing constants using spike-ins, in order
+to distinguish technical noise from biological cell-to-cell
+variability. Scran [ 8] pools cells with similar library sizes
+and uses the summed expression values to estimate pool-
+based size factors, which are resolved to cell-based size
+factors. By performing a uniform scaling per cell, these
+methodsassumethattheunderlyingRNAcontentiscon-
+stant for all cells in the dataset and that a single scaling
+factorcanbeappliedforallgenes.
+Alternative normalization approaches model molecule
+counts using probabilistic approaches. For example, ini-
+tialstrategiesfocusedonread-level(insteadofUMI-level)
+data and modeled the measurement of each cell as a
+mixture of two components: a negative binomial (NB)
+“signal” component and a Poisson “dropout” component
+[13]. For newer measurements based on UMI, model-
+ing strategies have focused primarily on the use of the
+NB distribution [ 14], potentially including an additional
+parameter to model zero-inflation (ZINB). For example,
+ZINB-WaVE[ 9]m od e l sc o u n t sa sZI N Bi nas pec i a lv a r i -
+ant of factor analysis. scVI and DCA also use the ZINB
+noisemodel[ 10,15],eitherfornormalizationanddimen-
+sionality reduction in Bayesian hierarchical models or for
+a denoising autoencoder. These pioneering approaches
+extendbeyondpre-processingandnormalization,butrely
+ontheaccurateestimationofper-geneerrormodels.
+In this manuscript, we present a novel statistical
+approach for the modeling, normalization, and vari-
+ance stabilization of UMI count data for scRNA-seq.
+We first show that different groups of genes cannot be
+normalized by the same constant factor, representing an
+intrinsic challenge for scaling-factor-based normalization
+schemes, regardless of how the factors themselves are
+calculated.Weinsteadproposetoconstructageneralized
+linear model (GLM) for each gene with UMI counts as
+the response and sequencing depth as the explanatory
+variable. We explore potential error models for the GLM
+and find that the use of unconstrained NB or ZINB
+models leads to overfitting of scRNA-seq data and a
+significant dampening of biological variance. To address
+this, we find that by pooling information across geneswith similar abundances, we can regularize parameter
+estimates and obtain reproducible error models. The
+residuals of our “regularized negative binomial regres-
+sion” represent effectively normalized data values that
+are no longer influenced by technical characteristics,
+but preserve heterogeneity driven by distinct biological
+states. Lastly, we demonstrate that these normalized
+values enable downstream analyses, such as dimension-
+ality reduction and differential expression testing, where
+the results are not confounded by cellular sequencing
+depth. Our procedure is broadly applicable for any UMI-
+based scRNA-seq dataset and is freely available to users
+through the open-source R package sctransform
+(github.com/ChristophH/sctransform ), with a direct
+interfacetooursingle-celltoolkit Seurat.
+Results
+Asinglescalingfactordoesnoteffectivelynormalizeboth
+lowlyandhighlyexpressedgenes
+Sequencing depth variation across single cells represents
+a substantial technical confounder in the analysis and
+interpretation of scRNA-seq data. To explore the extent
+of this effect and possible solutions, we examined five
+UMI datasets from diverse tissues, generated with both
+plate- and droplet-based protocols. We show results on
+all datasets in Additional file 1,b u tf o c u sh e r eo na
+dataset of 33,148 human peripheral blood mononuclear
+cells (PBMC) freely available from 10x Genomics. This
+dataset is characteristic of current scRNA-seq experi-
+ments;weobservedamediantotalcountof1891UMI/cell
+and observed 16,809 genes that were detected in at least
+5c e l l s( F i g. 1a, b). As expected, we observed a strong lin-
+ear relationship between unnormalized expression (gene
+UMI count) and cellular sequencing depth. We observed
+nearly identical trends (and regression slopes) for genes
+across a wide range of abundance levels, after grouping
+genesintosixequal-widthbinsbasedontheirmeanabun-
+dance(Fig. 1c),demonstratingthatcountsfrombothlow-
+andhigh-abundancegenesareconfoundedbysequencing
+depthandrequirenormalization.
+We next tested how the standard normalization
+approach in popular scRNA-seq packages such as
+Seurat [16–18] and SCANPY [ 19]c o m p e n s a t e sf o rt h i s
+effect. In this two-step process (referred to as “log-
+normalization” for brevity), UMI counts are first scaled
+by the total sequencing depth (“size factors”) followed by
+pseudocountadditionandlog-transformation.Whilethis
+approach mitigated the relationship between sequenc-
+ing depth and gene expression, we found that genes
+with different overall abundances exhibited distinct pat-
+terns after log-normalization, and only low/medium-
+abundancegenesinthebottomthreetierswereeffectively
+normalized (Fig. 1d). In principle, this confounding rela-
+tionship could be driven by the presence of multiple cell
+
+==== Page 3 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page3of15
+Fig.133,148PBMCdatasetfrom10XGenomics. aDistributionoftotalUMIcounts/cell(“sequencingdepth”). bWeplacedgenesintosixgroups,
+basedontheiraverageexpressioninthedataset. cForeachgenegroup,weexaminedtheaveragerelationshipbetweenobservedcountsandcell
+sequencingdepth.Wefitasmoothlineforeachgeneindividuallyandcombinedresultsbasedonthegroupingsin b.Blacklineshowsmean,
+coloredregionindicatesinterquartilerange. dSameasin c,butshowingscaledlog-normalizedvaluesinsteadofUMIcounts.Valueswerescaled
+(z-scored)sothatasingle Y-axisrangecouldbeused. eRelationshipbetweengenevarianceandcellsequencingdepth;cellswereplacedintofive
+equal-sizedgroupsbasedontotalUMIcounts(group1hasthegreatestdepth),andwecalculatedthetotalvarianceofeachgenegroupwithin
+eachbin.Foreffectivelynormalizeddata,eachcellbinshouldcontribute20%tothevarianceofeachgenegroup
+typesinhumanPBMC.However,whenweanalyzeda10X
+Chromium dataset that used human brain RNA as a con-
+trol (“Chromium control dataset” [ 5]), we observed iden-
+tical patterns, and in particular, ineffectual normalization
+of high-abundance genes (Additional file 1:F i g u r eS 1
+andS2).
+Moreover, we also found that gene variance was also
+confounded with sequencing depth. We quantified this
+phenomenon by binning cells by their overall sequenc-
+ing depth and quantifying the total variance of each gene
+group within each bin. For effectively normalized data,
+we expect uniform variance across cell groups, but we
+observed substantial imbalances in the analysis of log-
+normalized data. In particular, cells with low total UMI
+counts exhibited disproportionately higher variance for
+high-abundance genes, dampening the variance contri-
+bution from other gene groups (Fig. 1e ) .W ea l s ot e s t e danalternativetolog-normalization(“relativecounts”nor-
+malization), where we simply divided counts by total
+sequencing depth. Removing the log-transformation mit-
+igated the relationships between gene expression, gene
+variance, and sequencing depth, but residual effects
+remainedinbothcases(Additionalfile 2:F igureS1).
+These results demonstrate inherent challenges for “size
+factor”-based normalization strategies. Notably, while
+recent normalization strategies leverage more advanced
+strategies to learn cell “size factors” [ 7,20], the use of
+a single factor will introduce distinct effects on differ-
+ent gene sets, given their average abundance. This sug-
+geststhatgenesmayrequirenormalizationstrategiesthat
+depend on their abundance level. Indeed, the authors of
+SCnorm[ 6]reachedsimilarconclusionsinthenormaliza-
+tion of non-UMI-based single-cell RNA-seq data. Their
+method utilizes quantile regression to treat distinct gene
+
+==== Page 4 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page4of15
+groupsseparately,butignoreszerovalueswhichpredom-
+inantly characterize droplet-based scRNA-seq. We there-
+fore explored alternative solutions based on statistical
+modelingoftheunderlyingcountdata.
+Modelingsingle-celldatawithanegativebinomial
+distributionleadstooverfitting
+We considered the use of generalized linear models as a
+statistical framework to normalize single-cell data. Moti-
+vated by previous work that has demonstrated the utility
+of GLMs for differential expression [ 21,22], we reasoned
+thatincludingsequencingdepthasaGLMcovariatecould
+effectively model this technical source of variance, with
+the GLM residuals corresponding to normalized expres-
+sionvalues.ThechoiceofaGLMerrormodelisanimpor-
+tantconsideration,andwefirsttestedtheuseofanegative
+binomial distribution, as has been proposed for overdis-
+persedsingle-cellcountdata[ 9,14],performing“negativebinomial regression” (“Methods” section) independently
+for each gene. This procedure learns three parameters
+for each gene, an intercept term β0and the regression
+slopeβ1(influence of sequencing depth), which together
+define the expected value, and the dispersion parame-
+terθcharacterizing the variance of the negative binomial
+errors.
+We expected that we would obtain consistent param-
+eter estimates across genes, as sequencing depth should
+have similar (but not identical as shown above) effects
+on UMI counts across different loci. To our surprise, we
+observed significant heterogeneity in the estimates of all
+three parameters, even for genes with similar average
+abundance (Fig. 2). These differences could reflect true
+biological variation in the distribution of single-cell gene
+expression, but could also represent irreproducible varia-
+tion driven by overfitting in the regression procedure. To
+testthis,webootstrappedtheanalysisbyrepeatedlyfitting
+Fig.2WefitNBregressionmodelsforeachgeneindividuallyandbootstrappedtheprocesstomeasureuncertaintyintheresultingparameter
+estimates. aModelparametersfor16,809genesfortheNBregressionmodel,plottedasafunctionofaveragegeneabundanceacrossthe33,148
+cells.Thecolorofeachpointindicatesaparameteruncertaintyscoreasdeterminedbybootstrapping(“Methods”section).Pinklineshowsthe
+regularizedparametersobtainedviakernelregression. bStandarddeviation( σ)ofNBregressionmodelparametersacrossmultiplebootstraps.Red
+points: σforunconstrainedNBmodel.Bluepoints: σforregularizedNBmodel,whichissubstantiallyreducedincomparison.Blacktrendlineshows
+anincreasein σforlow-abundancegenes,highlightingthepotentialforoverfittingintheabsenceofregularization
+
+==== Page 5 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page5of15
+a GLM to randomized subsets of cells and assessed the
+variance of parameter estimates. We found that param-
+eter estimates were not reproducible across bootstraps
+(Fig.2), particularly for genes with low to moderate
+expression levels, and observed highly concordant results
+when estimating uncertainty using the GLM fisher infor-
+mation matrix as an alternative to bootstrapping (see the
+“Methods” section and Additional file 2:F i g u r eS 2 ) .W e
+repeated the same analysis on the “Chromium control
+dataset,” where the data from each droplet represents a
+technical replicate of a bulk RNA sample. There is no
+biological variation in this sample, but parameters from
+negative binomial regression still exhibited substantial
+variation across genes, particularly for lowly abundant
+genes (Additional file 2: Figure S3). Taken together, these
+results demonstrate that the gene-specific differences we
+observedwereexaggeratedduetooverfitting.
+Ourobservationthatsingle-cellcountdatacanbeover-
+fitbyastandard(two-parameter)NBdistributiondemon-
+stratesthatadditionalconstraintsmaybeneededtoobtain
+robust parameter estimates. We therefore considered the
+possibility of constraining the model parameters through
+regularization, by combining information across similar
+genes to increase robustness and reduce sampling varia-
+tion.Thisapproachiscommonlyappliedinlearningerror
+models for bulk RNA-seq in the context of differential
+expression analysis [ 22–25], but to our knowledge has no
+t been previously applied in this context for single-cell nor-
+malization. We note that in contrast to our approach, the
+use of a zero-inflated negative binomial model requires
+anadditional(third)parameter,exacerbatingthepotential
+for overfitting. We therefore suggest caution and careful
+consideration when applying unconstrained NB or ZINB
+modelstoscRNA-seqUMIcountdata.
+To address this challenge, we applied kernel regres-
+sion(“Methods”section)tomodeltheglobaldependence
+between each parameter value and average gene expres-
+sion. The smoothed line (pink line in Fig. 2)r e p r e s e n t s
+a regularized parameter estimate that can be applied to
+constrain NB error models. We repeated the bootstrap
+procedure and found that in contrast to independent
+gene-level estimates, regularized parameters were con-
+sistent across repeated subsamples of the data (Fig. 2b),
+suggesting that we are robustly learning the global trends
+thatrelateintercept,slope,anddispersiontoaveragegene
+expression.
+Our regularization procedure requires the selection
+of a kernel bandwidth, which controls the degree of
+smoothing. We used a data-based bandwidth selection
+method [ 26] scaled by a user-defined bandwidth adjust-
+ment factor. In Additional file 2: Figure S4, we show
+that our method returns robust results when varying
+this parameter within a reasonable range that extends
+over an order of magnitude, but that extreme valuesresult in over/under-smoothing which will have adverse
+affects.
+Applyingregularizednegativebinomialregressionfor
+single-cellnormalization
+Our observations above suggest a statistically motivated,
+robust,andefficientprocesstonormalizesingle-celldata.
+First, we utilize generalized linear models to fit model
+parameters for each gene in the transcriptome (or a rep-
+resentativesubset;Additionalfile 2:FigureS7;“Methods”
+section) using sequencing depth as a covariate. Second,
+we apply kernel regression to the resulting parameter
+estimates in order to learn regularized parameters that
+depend on a gene’s average expression and are robust to
+samplingnoise.Finally,weperformasecondroundofNB
+regression,constrainingtheparametersofthemodeltobe
+those learned in the previous step (since the parameters
+are fixed, this step reduces to a simple affine transforma-
+tion; “Methods” section). We treat the residuals from this
+model as normalized expression levels. Positive residuals
+f o rag i v e ng e n ei nag i v e nc e l li n d i c a t et h a tw eo b s e r v e d
+moreUMIsthanexpectedgiventhegene’saverageexpres-
+sion in the population and cellular sequencing depth,
+while negative residuals indicate the converse. We uti-
+lize the Pearson residuals (response residuals divided by
+the expected standard deviation), effectively representing
+a variance-stabilizing transformation (VST), where both
+lowly and highly expressed genes are transformed onto a
+commonscale.
+Thisworkflowalsohasattractivepropertiesforprocess-
+ingsingle-cellUMIdata,including:
+1 Wedonotassumeafixed“size,”orexpectedtotal
+molecularcount,foranycell.
+2 Ourregularizationprocedureexplicitlylearnsand
+accountsforthewell-establishedrelationship[ 27]
+betweenagene’smeanabundanceandvariancein
+single-celldata
+3 OurVSTisdatadrivenanddoesnotinvolve
+heuristicsteps,suchasalog-transformation,
+pseudocountaddition,or z-scoring.
+4 Asdemonstratedbelow,Pearsonresidualsare
+independentofsequencingdepthandcanbeusedfor
+variablegeneselection,dimensionalreduction,
+clustering,visualization,anddifferentialexpression.
+Pearsonresidualseffectivelynormalizetechnical
+differences,whileretainingbiologicalvariation
+To evaluate our regularized NB regression model, we
+explored the relationship between the Pearson resid-
+uals and cellular sequencing depth. Encouragingly, we
+observedminimalcorrelation(Fig. 3a,c),forgenesacross
+the full range of expression levels. In addition, gene vari-
+ance was strikingly consistent across cells with different
+
+==== Page 6 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page6of15
+Gene group 1
+Gene group 3
+Gene group 5Gene group 2
+Gene group 4
+Gene group 6
+1K 2K 3K 1K 2K 3K−0.2−0.10.00.10.2
+−0.2−0.10.00.10.2
+−0.2−0.10.00.10.2−0.2−0.10.00.10.2
+−0.2−0.10.00.10.2
+−0.2−0.10.00.10.2
+Total cell UMI countScaled Pearson residualA
+0255075100
+123456
+Gene group% variance contributionCell group
+1
+2
+34
+5B
+Log−norm expression Pearson residuals
+−0.20.00.20.4Correlation with cell UMIC
+Fig.3PearsonresidualsfromregularizedNBregressionrepresenteffectivelynormalizedscRNA-seqdata.Panels aandbareanalogoustoFig. 1d
+ande,butcalculatedusingPearsonresiduals. cBoxplotofPearsoncorrelationsbetweenPearsonresidualsandtotalcellUMIcountsforeachofthe
+sixgenebins.Allthreepanelsdemonstratethatincontrasttolog-normalizeddata,thelevelandvarianceofPearsonresidualsisindependentof
+sequencingdepth
+sequencing depths (Fig. 3b, contrast to Fig. 1e), with no
+evidenceofexpression“dampening”asweobservedwhen
+using a cell-level size factor approaches. Taken together,
+these results suggest that our Pearson residuals repre-
+senteffectivelystandardizedexpressionvaluesthatarenot
+influencedbytechnicalmetrics.
+Ourmodelpredictsthatforgeneswithminimalbiolog-
+ical heterogeneity in the data (i.e., genes whose variance
+is driven primarily by differences in sequencing depth),
+residuals should be distributed with a mean of zero and
+unit variance. We observe these values for the majority
+of genes in the dataset (Fig. 4a, b), demonstrating effec-
+tiveandconsistentvariancestabilizationacrossarangeof
+expression values (Fig. 4c). However, we observed a setof
+outlier genes with substantially higher residual variance
+thanpredictedbyourbackgroundmodel,suggestingaddi-
+tional biological sources of variation in addition to sam-
+pling noise. Further exploration of these genes revealed
+thattheyexclusivelyrepresentmarkersofknownimmune
+cell subsets (e.g., PPBP in Megakaryocytes, GNLY in
+NK cells, IGJ in plasma cells). We repeated the analy-
+sis after subsampling the number of cells in the dataset
+(Additional file 2: Figure S5) and also on the “Chromium
+control dataset.” Reassuringly, for the control dataset,
+we did not observe genes with high residual variance
+(Additional file 2: Figure S3), demonstrating that our
+model correctly ascribed all variation in this controldataset to technical sources. Finally, we performed a sim-
+ulation study to evaluate the sensitivity of our method to
+detectvariablegenes(Additionalfile 2:FigureS6).Insum-
+mary, our regularized NB regression model successfully
+captures and removes variance driven by technical dif-
+ferences, while retaining biologically relevant signal. The
+variance of Pearson residuals correlates with biological
+heterogeneityandcanbeusedtoidentify“highlyvariable”
+genesinsingle-celldata.
+Our previous analyses suggest that the use of a regu-
+larized NB error model is crucial to the performance of
+our workflow. To test this, we substituted both a Poisson
+and an unconstrained NB error model into our GLM and
+repeatedtheprocedure(Fig. 4d).Whenapplyingstandard
+negativebinomialregression,wefoundthattheprocedure
+strikingly removed both technical and biological sources
+of variation from the data, driven by overfitting of the
+unconstrained distribution. A single-parameter Poisson
+model performed similarly to our regularized NB, but
+we observed that residual variances exceeded one for all
+moderatelyandhighlyexpressedgenes.Thisisconsistent
+with previous observations in both bulk and single-cell
+RNA-seqthatcountdataisoverdispersed[ 9,12,14,28].
+In addition to global analyses, it is also instructive to
+explorehoweachmodelperformsoncharacteristicgenes
+in the dataset. In Fig. 5, we show observed molecular
+counts for four representative loci, as a function of total
+
+==== Page 7 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page7of15
+0300060009000
+−0.2 −0.1 0.0 0.1 0.2
+Residual meanGene countA
+0500100015002000
+01234
+Residual varianceGene countB
+S100A9S100A8GNL YSDPR
+IGJPF4
+PPBP
+MZB1HIST1H2ACGNG11CLU
+PTGDS
+FTH1LYZGZMB
+CCL5TUBB1
+FTLNKG7IGLL5
+150100150
+0.001 0.01 0.1 1 10
+Gene meanResidual varianceC
+S100A9S100A8GNLYSDPR
+IGJPF4
+PPBPMZB1HIST1H2ACGNG11CLU
+PTGDS
+FTH1LY ZGZMB
+CCL5TUBB1
+FTLNKG7IGLL5
+S100A9S100A8GNLYSDPR
+IGJPF4
+PPBPMZB1HIST1H2ACGNG11
+CLUPTGDS
+FTH1LY ZGZMB
+CCL5TUBB1
+FTLNKG7IGLL5Poisson Negative Binomial
+0.001 0.01 0.1 1 10 0.001 0.01 0.1 1 10150100150
+150100150
+Gene meanResidual varianceD
+Fig.4RegularizedNBregressionremovesvariationduetosequencingdepth,butretainsbiologicalheterogeneity. aDistributionofresidualmean,
+acrossallgenes,iscenteredat0. bDensityofresidualgenevariancepeaksat1,aswouldbeexpectedwhenthemajorityofgenesdonotvary
+acrosscelltypes. cVarianceofPearsonresidualsisindependentofgeneabundance,demonstratingthattheGLMhassuccessfullycapturedthe
+mean-variancerelationshipinherentinthedata.Geneswithhighresidualvarianceareexclusivelycell-typemarkers. dIncontrasttoaregularized
+NB,aPoissonerrormodeldoesnotfullycapturethevarianceinhighlyexpressedgenes.Anunconstrained(non-regularized)NBmodeloverfits
+scRNA-seqdata,attributingalmostallvariationtotechnicaleffects.Asaresult,evencell-typemarkersexhibitlowresidualvariance.Mean-var iance
+trendlineshowninblueforeachpanel
+cell UMI count. Background colors indicate GLM Pear-
+son residual values using three different error models
+(Poisson,NB,regularizedNB),enablingustoexplorehow
+well each model fits the data. For MALAT1, a highly
+expressed gene that should not vary across immune cell
+subsets, we observe that both the unconstrained and
+regularizedNBdistributionsappropriatelymodeledtech-
+nically driven heterogeneity in this gene, resulting in
+minimal residual biological variance. However, the Pois-
+son model does not model the overdispersed counts,
+incorrectly suggesting significant biological heterogene-
+ity. For S100A9 (a marker of myeloid cell types) and
+CD74 (expressed in antigen-presenting cells), the regu-
+larized NB and Poisson models both return bimodally
+distributed Pearson residuals, consistent with a mixture
+of myeloid and lymphoid cell types present in blood,
+while the unconstrained NB collapses this biological
+heterogeneity via overfitting. We observe similar resultsfor the Megakaryocyte (Mk) marker PPBP, but note that
+both non-regularized models actually fit a negative slope
+relating total sequencing depth to gene molecule counts.
+ThisisbecauseMkcellshaveverylittleRNAcontentand
+therefore exhibit lower UMI counts compared to other
+celltypes,evenindependentofstochasticsampling.How-
+ever, it is nonsensical to suggest that deeply sequenced
+Mk cells should contain less PPBP molecules than shal-
+lowly sequenced Mk cells, and indeed, regularization of
+theslopeparameterovercomesthisproblem.
+Taken together, our results demonstrate that the regu-
+larized negative binomial represents an attractive middle
+ground between two extremes. By allowing for overdis-
+persion, the model can correctly account for the variance
+in count data observed in single-cell assays. However, by
+placing data-driven constraints on the slope, intercept,
+and dispersion of NB regression, we substantially allevi-
+ate the problem of overfitting and ensure that biological
+
+==== Page 8 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page8of15
+Fig.5TheregularizedNBmodelisanattractivemiddlegroundbetweentwoextremes. aForfourgenes,weshowtherelationshipbetweencell
+sequencingdepthandmolecularcounts.Whitepointsshowtheobserveddata.BackgroundcolorrepresentsthePearsonresidualmagnitudeunder
+threeerrormodels.ForMALAT1(doesnotvaryacrosscelltypes),thePoissonerrormodeldoesnotaccountforoverdispersionandincorrectlyinfers
+significantresidualvariation(biologicalheterogeneity).ForS100A9(aCD14+monocytemarker)andCD74(expressedinantigen-presentingcells ),
+thenon-regularizedNBmodeloverfitsthedataandcollapsesbiologicalheterogeneity.ForPPBP(aMegakaryocytemarker),bothnon-regularized
+modelswronglyfitanegativeslope. bBoxplotofPearsonresidualsformodelsshownin a.X-axisrangeshownislimitedto[ −8,25]forvisualclarity
+variation is retained after normalization. We observed
+identical results when considering any of the five UMI
+datasets we tested, including both plate- and droplet-
+basedprotocols(Additionalfile 1),demonstratingthatour
+procedurecanapplywidelytoanyUMI-basedscRNA-seq
+experiment.
+Downstreamanalyticaltasksarenotbiasedbysequencing
+depth
+Our procedure is motivated by the desire to standardize
+expression counts so that differences in cellularsequencingdepthdonotinfluencedownstreamanalytical
+tasks. To test our performance towards this goal, we
+performed dimensionality reduction and differential
+expression tests on Pearson residuals after regularized
+NB regression. For comparison, we used log-normalized
+data. We first applied PCA followed by UMAP embed-
+ding (“Methods” section) to the full PBMC dataset, using
+normalized values (Pearson residuals, or log-normalized
+data) for all genes in the transcriptome as input to PCA,
+and then visualized the total number of molecules per
+cell on the UMAP embedding. Both normalization
+
+==== Page 9 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page9of15
+schemes reveal significant biological heterogeneity in
+PBMC (Fig. 6a), consistent with the expected major
+and minor human immune cell subsets. However, the
+low-dimensional representation of log-normalized data
+was confounded by cellular sequencing depth, as both
+the PCA and UMAP embeddings exhibited strong cor-
+relations with this technical metric. These correlations
+are strikingly reduced for Pearson residuals (Fig. 6a). We
+note that we do not expect complete independence of
+biological and technical effects, as distinct cell subsets
+will likely vary in size and RNA content. However, evenwhen limiting our analyses within individual cell types,
+we found that cell sequencing depth explained substan-
+tially reduced variation in Pearson residuals compared to
+log-normalized data (Fig. 6b), consistent with our earlier
+observations(Fig. 3).
+Imperfect normalization can also confound differential
+expression(DE)testsforscRNA-seq,particularlyifglobal
+differences in normalization create DE false positives for
+many genes. To demonstrate the scope of this problem
+and test its potential resolution with Pearson residuals,
+we took CD14+ monocytes (5551 cell subset of the 33K
+Fig.6DownstreamanalysesofPearsonresidualsareunaffectedbydifferencesinsequencingdepth. aUMAPembeddingofthe33,148cellPBMC
+datasetusingeitherlog-normalizationorPearsonresiduals.Bothnormalizationschemesleadtosimilarresultswithrespecttothemajorandminor
+cellpopulationsinthedataset.However,inanalysesoflog-normalizeddata,cellswithinaclusterareorderedalongagradientthatiscorrelatedw ith
+sequencingdepth. bWithinthefourmajorcelltypes,thepercentofvarianceexplainedbysequencingdepthunderbothnormalizationschemes.
+cUMAPembeddingoftwogroupsofbiologicallyidenticalCD14+monocytes,whereonegroupwasrandomlydownsampledto50%depth.
+dResultsofdifferentialexpression(DE)testbetweenthetwogroupsshownin c.Grayareasindicateexpectedgroupmeandifferencebychance
+andafalsediscoveryratecutoffof1%. eResultsofDEtestbetweenCD14+andCD16+monocytes,beforeandafterrandomlydownsamplingthe
+CD16+cellsto20%depth
+
+==== Page 10 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page10of15
+PBMCdata)andrandomlydividedthemintotwogroups.
+In one of the groups (50% of the cells), we randomly sub-
+sampled UMIs so that each cell expressed only 50% of its
+total UMI counts. Therefore, the two groups of mono-
+cytes are biologically equivalent and differ only in their
+technical sequencing depth, and we should ideally detect
+nodifferentiallyexpressedgenesbetweenthem.However,
+when performing DE on log-normalized data ( ttest with
+significance thresholds determined by random sampling,
+see the “Methods” section), we detected more than 2000
+DEgenes(FDRthreshold0.01),duetoglobalshiftsarising
+fromimpropernormalization(Fig. 6c,d).Whenperform-
+ing DE on Pearson residuals, we identified only 11 genes.
+While these 11 represent false positives, they are each
+highly expressed genes for which it is difficult to obtain a
+goodfitduringtheregularizationprocessastherearefew
+geneswithsimilarmeanvalues(Fig. 3atopleft).
+We also tested a second scenario where true DE genes
+could be masked by sequencing depth differences. We
+compared two distinct populations, CD14+ and CD16+
+monocytes (5551 and 1475 cells), before and after ran-
+domly downsampling the CD16+ group to 20% sequenc-
+ing depth. We would expect the set of DE genes to be
+nearly identical in the two analyses, though we expect
+a decrease in sensitivity after downsampling. However,
+when using log-normalized data, we observed dramatic
+changes in the set of DE genes—with some CD14+-
+enriched markers even incorrectly appearing as CD16+-
+enrichedmarkersafter downsampling.Whenperforming
+DE on Pearson residuals, the results of the two analy-
+seswerehighlyconcordant,albeitwithreducedstatistical
+power after downsampling (Fig. 6e). Therefore, Pearson
+residuals resulting from regularized NB regression effec-
+tivelymitigatedepth-dependentdifferencesindimension-
+ality reduction and differential expression, which are key
+downstreamstepsinsingle-cellanalyticalworkflows.
+Discussion
+Here, we present a statistical approach for the normaliza-
+tionandvariancestabilizationofsingle-cellUMIdatasets.
+Incontrasttocommonlyappliednormalizationstrategies,
+our workflow omits the use of linear size/scaling factors
+andfocusesinsteadontheconstructionofaGLMrelating
+cellular sequencing depth to gene molecule counts. We
+calculate the Pearson residuals of this model, represent-
+ing a variance-stabilization transformation that removes
+theinherentdependencebetweenagene’saverageexpres-
+sion and cell-to-cell variation. In this manuscript, we
+demonstratethatournormalizationprocedureeffectively
+removes the influence of technical variation, without
+dampeningbiologicalheterogeneity.
+When exploring error models for the GLM, our
+analyses revealed that an unconstrained negative bino-
+mial model tends to overfit single-cell RNA-seq data,particularly for genes with low/medium abundance. We
+demonstrate that a regularization step, a commmon step
+in bulk RNA-seq analysis [ 22,28] where parameter esti-
+mates are pooled across genes with similar mean abun-
+dance, can effectively overcome this challenge and yield
+reproducible models. Importantly, statistical and deep-
+learning methods designed for single-cell RNA-seq data
+often utilize a negative binomial (or zero-inflated nega-
+tive binomial) error model [ 10,15]. Our results suggest
+that these and future methods could benefit by substitut-
+ing a regularized model and that including an additional
+parameter for zero-inflation could exacerbate the risk of
+overfitting. More generally, our work indicates that a reg-
+ularized negative binomial is an appropriate distribution
+to model UMI count data from a “homogeneous” cell
+population.
+To facilitate users applying these methods to
+their own datasets, our approach is freely avail-
+able as an open-source R package sctransform
+(github.com/ChristophH/sctransform ),withanaccompa-
+nyinginterfacetooursingle-cellRtoolkitSeurat[ 16–18].
+In a single command, and without any requirement to
+set user-defined parameters, sctransform performs
+normalization, variance stabilization, and feature selec-
+tion based on a UMI-based gene expression matrix. We
+demonstrate the ease-of-use for sctransform in a
+short vignette analyzing a 2700 PBMC dataset produced
+by 10x Genomics in Additional file 3. In this example,
+sctransform reveals significant additional biological
+substructure in NK, T, B, and monocyte populations that
+cannot be observed in the standard Seurat workflow,
+whichisbasedonlog-normalization(Additionalfile 3).
+As our workflow leverages all genes (or a random sub-
+set) for the initial regularization, we make an implicit
+assumption that the majority of genes in the dataset do
+not exhibit significant biological variation. This is anal-
+ogous to similar assumptions made for bulk RNA-seq
+normalization and DE (i.e., that the majority of genes are
+notdifferentiallyexpressedacrossconditions)[ 28].While
+this assumption may be overly simplistic when perform-
+ing scRNA-seq on a highly heterogeneous sample, we
+did not observe adverse affects when applying our model
+to human PBMC data, or any of the other datasets we
+examined. In principle, an extension of sctransform that
+includedaninitialpre-clusteringstep(asproposedin[ 8])
+could alleviate this concern, as the biological heterogene-
+itywouldbesignificantlyreducedineachgroup.
+Our work makes extensive use of Pearson residuals,
+the output of our regularized NB regression procedure.
+These can be utilized as input for standard downstream
+methods, i.e., Wilcoxon rank test for differential expres-
+sion, or PCA for dimensional reduction. An alternative
+approach, however, would modify the underlying meth-
+ods themselves to assume a statistical error model that
+
+==== Page 11 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page11of15
+is tailored to single-cell data. For example, Townes et al.
+[29] introduced GLM-PCA, a generalization of PCA for
+dataexhibitingnon-normalerrordistributionssuchasthe
+negative binomial, that takes count data directly as input
+instead of relying on intermediate residuals. Similarly,
+an extension of sctransform could perform differential
+expression directly on the resulting parameter estimates
+instead of the residual values, potentially coupling this
+withanempiricalBayesframework[ 12,30].
+Finally,whilewefocushereonmodelingtechnicalvari-
+ation due to differences in cellular sequencing depth,
+we note that our approach can be easily extended to
+model alternative “nuisance” parameters, including cell
+cycle [31], mitochondrial percentage, or experimental
+batch,simplybyaddingadditionalcovariatestothemodel.
+Indeed, we observed that a modified GLM including
+a batch indicator variable was sufficient to correct for
+technical differences arising from two profiled batches
+of murine bipolar cells [ 32], though successful applica-
+tion requires all cell types to share a similar batch effect
+(Additional file 2: Figure S8). In the future, we anticipate
+thatsimilareffortscanbeusedtomodeldiversesingle-cell
+data types, including single-cell protein [ 33], chromatin
+[34],andspatial[ 35]data.
+Methods
+Regularizednegativebinomialregression
+WeexplicitlymodeltheUMIcountsforagivengeneusing
+a generalized linear model. Specifically, we use the sum
+of all molecules assigned to a cell as a proxy for sequenc-
+ing depth and use this cell attribute in a regression model
+with negative binomial (NB) error distribution and log
+linkfunction.Thus,foragivengene i,wehave
+log(E(xi))=β0+β1log10m,
+wherexiis the vector of UMI counts assigned to gene i
+andmis the vector of molecules assigned to the cells, i.e.,
+mj=/summationtext
+ixij. The solution to this regression is a set of
+parameters: the intercept β0and the slope β1. The dis-
+persion parameter θof the underlying NB distribution is
+also unknown and needs to be estimated from the data.
+Here we use the NB parameterization with mean μand
+variancegivenas μ+μ2
+θ.
+We use a regression model for the UMI counts to
+correct for sequencing depth differences between cells
+and to standardize the data. However, modeling each
+geneseparatelyresultsinoverfitting,particularlyforlow-
+abundance genesthat are detected inonly a minor subset
+ofcellsandaremodeledwithahighvariance.Weconsider
+thisanoverestimationofthetruevariance,asthisisdriven
+by cell-type heterogeneity in the sample, and not due
+to cell-to-cell variability with respect to the independentvariable, log10m. To avoid this overfitting, we regular-
+ize all model parameters, including the NB dispersion
+parameter θ,bysharinginformationacrossgenes.
+The procedure we developed has three steps. In the
+first step, we fit independent regression models per gene.
+In the second step, we exploit the relationship of model
+parameter values and gene mean to learn global trends in
+t h ed a t a .W ec a p t u r et h e s et r e n d su s i n gak e r n e lr e g r e s -
+sion estimate (ksmooth function in R). We use a normal
+kernelandfirstselectakernelbandwidthusingtheRfunc-
+tion bw.SJ. We multiply this by a bandwidth adjustment
+factor (BAF, default value of 3, sensitivity analysis shown
+inAdditionalfile 2:Fig.S4).Weperformindependentreg-
+ularizations for all parameters (Fig. 2). In the third step,
+weusetheregularizedregressionparameterstodefinean
+affine function that transforms UMI counts into Pearson
+residuals:
+zij=xij−μij
+σij,
+μij=exp(β0i+β1ilog10mj),
+σij=/radicalBigg
+μij+μ2
+ij
+θi,
+wherezijisthePearsonresidualofgene iincellj,xijisthe
+observed UMI count of gene iin cellj,μijis the expected
+UMIcountofgene iincelljintheregularizedNBregres-
+sion model, and σijis the expected standard deviation of
+geneiin celljin the regularized NB regression model.
+Hereβ0i,β1i,andθiarethe linearmodelparametersafter
+regularization. To reduce the impact of extreme outliers,
+wecliptheresidualstoamaximumvalueof√
+N,whereN
+isthetotalnumberofcells.
+We highlight that our approach was inspired by meth-
+ods developed for differential expression analysis in bulk
+RNA-seqdata.Forexample,DESeq[ 23]usesthenegative
+binomial distribution for read count data and links vari-
+ance and mean by local regression. DESeq2 [ 12] extends
+this approach with Empirical Bayes shrinkage for disper-
+sionestimation.Additionally,edgeR[ 22]introducedGLM
+algorithms and statistical methods for estimating biolog-
+ical variation on a genewise basis and separating it from
+technicalvariation.
+Geometricmeanforgenes
+Our regularization approach aims to pool information
+across genes with similar average expression. To avoid
+the influence of outlier cells and respect the exponential
+nature of the count distributions, we consistently use the
+geometricmean.Referencestoaverageabundanceorgene
+meaninthisworkarebasedonthefollowingdefinitionof
+mean:
+exp/parenleftbig
+amean (log(x+/epsilon1))/parenrightbig
+−/epsilon1,
+
+==== Page 12 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page12of15
+withxbeingthevectorofUMIcountsofthegene,amean
+being the arithmetic mean, and /epsilon1being a small fixed
+value to avoid log (0). After trying several values for /epsilon1
+in the range 0.0001 to 1, and not observing significant
+differencesinourresults,weset /epsilon1=1.
+Speedconsiderations
+sctransform has been optimized to run efficiently
+on large scRNA-seq datasets on standard computa-
+tional infrastructure. For example, processing of a 3000
+cell dataset takes 30 s on a standard laptop (the
+33,148 cell dataset utilized in this manuscript takes
+6min).
+The most time-consuming step of our procedure is the
+initial GLM-fitting, prior to regularization. Here, we fit
+Klinear regression models with NB error models, where
+Kis the total number of genes in the dataset. However,
+since the results of the first step are only used to learn
+regularized parameter estimates (i.e., the overall relation-
+shipofmodelparametervaluesandgenemean),wetested
+thepossibilityofperformingthissteponarandomsubset
+of genes in lieu of the full transcriptome. When select-
+ing a subset of genes to speed up the first step, we do not
+selectgenesatrandom,i.e.,withauniformsamplingprob-
+ability, as that would not evenly cover the range of gene
+means. Instead, we set the probability of selecting a gene
+ito 1/d(log10¯xi),w h e r edis the density estimate of all
+log10-transformed gene means and ¯xiis the mean of UMI
+countsofgene i.
+For different numbers of genes (ranging from 4000 to
+50), we drew 13 random samples to be used in the ini-
+tial step of parameter estimation. We then proceeded
+to generate regularized models (for all genes based on
+parameterslearnedfromagenesubset)andcomparedthe
+results to the case where all genes were used in the ini-
+tialestimationstepaswell.Weemployedafewmetricsto
+compare the partial analysis to the full analysis: the cor-
+relation of gene-residuals, the ranking of genes based on
+residual variation (most highly variable genes), and the
+CV of sum of squared residuals across random samples
+(model stability). For all metrics, we observed that using
+asfewas200genesintheinitialestimationcloselyrecapit-
+ulated the full results, while using 2000 genes gave rise to
+virtually identical estimates (Additional file 2:F i g u r eS 7 ) .
+We therefore use 2000 genes in the initial GLM-fitting
+step.
+Additionally,weexploredthreemethodstoestimatethe
+model parameters in the initial step. We list them here in
+increasingorderofcomputationalcomplexity.
+1 AssumeaPoissonerrordistributiontoestimate β
+coefficients.Then,giventheestimatedmeanvector,
+estimatetheNB θparameterusingmaximum
+likelihood.2 Sameasabove,followedbyare-estimationof β
+coefficientsusingaNBerrormodelwiththe
+previouslyestimated θ.
+3 FitaNBGLMestimatingboththe βandθ
+coefficientsusinganalternatingiterationprocess.
+While the estimated model parameters can vary slightly
+between these methods, the resulting Pearson residuals
+are extremely similar. For example, when applying the
+three procedures to the 10x PBMC dataset, all pairwise
+gene correlations between the three methods are greater
+than 0.99, though the alternating iteration process is
+fourfold more computationally demanding. We therefore
+proceededwiththefirstmethod.
+Modelparameterstability
+To assess model parameter stability, we bootstrapped the
+parameter estimation and sampled from all cells with
+replacement 13 times. For a given gene and parameter
+combination, we derived an uncertainty score as follows.
+We used the standard deviation of parameter estimates
+across 13 bootstraps divided by the standard deviation of
+the bootstrap-mean value across all genes. Values greater
+orequaltooneindicatehighuncertainty,whilevaluesless
+orequalto0.01indicatelowuncertainty.
+As an alternative to bootstrapping, we also examined
+the 95% confidence intervals (CI) of the parameter esti-
+mates. The standard errors (SE) of the parameter esti-
+mates (based on the Fisher information matrix obtained
+during the estimation procedure) are taken from the out-
+put of the R function glm (intercept and slope) and
+theta.ml( θ).CIarethencalculatedastheestimatedvalues
+±1.96×SE.
+Trendsinthedatabeforeandafternormalization
+We grouped genes into six bins based on log10-
+transformed mean UMI count, using bins of equal width.
+T os h o wt h eo v e r a l lt r e n d si nt h ed a t a ,f o re v e r yg e n e ,
+we fit the expression (UMI counts, scaled log-normalized
+expression, scaled Pearson residuals) as a function of
+log10-transformed mean UMI count using kernel regres-
+sion (ksmooth function) with normal kernel and large
+bandwidth (20 times the size suggested by R function
+bw.SJ). For visualization, we only used the central 90% of
+cells based on total UMI. For every gene group, we show
+the expression range after smoothing from first to third
+quartileat200equidistantcellUMIvalues.
+Simulationstudytoassesssensitivityofvariablegene
+detection
+Toevaluatethesensitivityofourmethodtodetectvariable
+genes, we used simulated data. The goal of our simula-
+t i o nw a st og e n e r a t et w op o p u l a t i o n so fc e l l s( Aa n dB ,
+5kcellseach),whileintroducingexpressionshiftsbetween
+
+==== Page 13 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page13of15
+groupstosomeofthegenes.Togetarealisticsetofmodel
+parameters, we first chose a group of cells (FCGR3A+,
+MS4A7+ Monocytes; 2924 cells) from the main 33k-cell
+PBMC dataset to learn a regularized NB model for each
+gene (ca. 12k genes). We then randomly chose 5% of the
+genes to have a higher mean in A vs B (ratio 10/1) and
+another 5% to have a lower mean in A vs B (ratio 1/10).
+Specifically,weadjustedthegenemeanbyafactorof√
+10
+i nA( B )a n d1√
+10in B (A) for genes that are high in A (B).
+We then adapted the model parameters (intercept, slope,
+theta) based on the new gene mean and the regulariza-
+tion curve learned from real data. Genes not selected to
+bevariablehadidenticalmeanandmodelparametersinA
+andB.
+We generated count data by first sampling a total cell
+UMI count from the input data (2924 Monocytes, see
+above). Given the total UMI, we could obtain the NB
+mean parameters for each gene per cell group (A and
+B), and together with the gene-specific theta generate
+UMIcounts.Thisprocedurewasrepeated5ktimes,each
+time generating a cell for groups A and B. The combined
+count matrix of 10k cells was then used as input to our
+normalizationmethod.
+Finally, we repeated the above procedure 13 times and
+summarized the results in Additional file 2:F i g u r eS 6 ,
+specifically looking at the Jensen-Shannon divergence of
+t h eg e n e r a t i n gm o d e l sa n dt h ev a r i a n c eo ft h eP e a r s o n
+residuals.
+Variancecontributionanalysis
+To evaluate whether gene variance is dependent on
+sequencing depth, we determined the contribution of
+differentcellgroupstotheoverallvarianceofoursixpre-
+viously determined gene sets. For this, we placed all cells
+into five equal-sized groups based on total UMI counts
+(group 1 has the greatest depth, group 5 the lowest). We
+center each gene and square the values to obtain the
+squareddeviationfromthemean.Thevariancecontribu-
+tion of a cell group is then the sum of the values in those
+cellsdividedbythesumacrossallcells.
+DensitymapsforPearsonresiduals
+To illustrate different models (regularized NB, Poisson,
+non-regularized NB) for four example genes, we show
+Pearsonresidualson256 ×256gridsinformofheatmaps.
+X-andY-axisrangeswerechosentorepresentthecentral
+98% of cells and central 99.8% of UMI counts. Heatmap
+colors show the magnitude (absolute value) of Pearson
+residuals,clippedtoamaximumvalueof4.
+Dimensionalityreduction
+For both log-normalized data and Pearson residuals,
+we performed dimensionality reduction as follows. We
+centeredandscaledall16Kgenes,clippedallvaluestotheinterval [ −10, 10] and performed a truncated principal
+components analysis as provided by the irlba R package.
+Inbothcases,wekeptthefirst25PCsbasedoneigenvalue
+drop-off. For 2D visualization, the PC embeddings were
+passedintoUMAP[ 36,37]withdefaultparameters.
+Differentialexpressiontesting
+Differential expression testing was done using indepen-
+dentttests per gene for all genes detected in at least 5
+cells in at least one of the two groups being compared. P
+values were adjusted for multiple comparisons using the
+BenjaminiandHochbergmethod(FDR).Inputtothetest
+waseitherlog-normalized(log (10,000UMI gene/UMIcell+
+1)) expression or Pearson residuals after regularized
+NB regression. A random background distribution of
+mean differences was generated by randomly choosing
+1000 genes and permuting the group labels. Significance
+thresholds for the difference of means were derived from
+thebackgrounddistributionbytakingthe0.5thand99.5th
+percentile.Finally,wecalledgenesdifferentiallyexpressed
+if the FDR was below 0.01 and the difference of means
+exceededthethresholdforsignificance.
+Modelextensions—additionalnuisanceparameters
+Fortheresultsshowninthismanuscript,wehaveusedthe
+log-transformed total number of UMI assigned to each
+cell as the dependent variable to model gene-level UMI
+counts. However, other variables may also be suitable as
+long as they capture the sampling depth associated with
+eachcell.
+Additionally, the model can be flexibly extended
+to include additional covariates representing nuisance
+sources of variation, including cell-cycle state, mitochon-
+drial percentage, or experimental batch. In these cases
+(unlike with sequencing depth), no regularization can be
+performed for parameters involving these variables, as
+genes with similar abundances cannot be assumed to (for
+example) be expressed in a similar pattern across the cell
+cycle. In these cases, we first learn regularized models
+using only the sequencing depth covariate, as described
+above. We next perform a second round of NB regres-
+sion, including both the depth covariate and additional
+nuisance parameters as model predictors. In this round,
+the depth-dependent parameters are fixed to their previ-
+ously regularized values, while the additional parameters
+areunconstrainedandfitduringtheregression.ThePear-
+sonresidualsofthissecondroundofregressionrepresent
+normalizeddata.
+As a proof-of-concept, we illustrate a potential model
+extension by including a batch indicator variable when
+analyzing a dataset of 26,439 murine bipolar cells
+produced by two experimental batches [ 32], consid-
+ering all bipolar cells and Müller glia. After running
+sctransform , either with the inclusion or exclusion of
+
+==== Page 14 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page14of15
+the batch covariate, we performed PCA on all genes and
+usedthefirst20dimensionstocomputeaUMAPembed-
+ding(Additionalfile 2:FigureS8).Weincludethisexample
+as a demonstration for how additional nuisance param-
+eters can be included in the GLM framework, but note
+that when cell-type-specific batch effects are present, or
+thereisashiftinthepercentageofcelltypesacrossexper-
+iments, non-linear batch effect correction strategies are
+needed[18].
+Supplementaryinformation
+Supplementaryinformation accompaniesthispaperat
+https://doi.org/10.1186/s13059-019-1874-1 .
+Additionalfile1: ApplicationofsctransformtoadditionalUMIdatasets.
+Additionalfile2: Supplementaryfigures.
+Additionalfile3: Guidetousingsctransforminseurat.
+Additionalfile4: Reviewhistory.
+Peerreviewinformation
+BarbaraCheifetwastheprimaryeditorofthisarticleandmanageditseditorial
+processandpeerreviewincollaborationwiththerestoftheeditorialteam.
+Acknowledgements
+TheauthorswouldliketothankJoshuaBatson(ChanZuckerbergBiohub),
+ValentineSvennson(Caltech),KenHarris(UCL),DavidKnowles(NYGC),and
+membersoftheSatijaLabforthoughtfuldiscussionsrelatedtothiswork.
+Reviewhistory
+ThereviewhistoryisavailableasAdditionalfile 4.
+Authors’contributions
+CHandRSconceivedofthemethod,derivedthemodels,performedthe
+experiments,andanalyzedthedata.Bothauthorsdiscussedtheresultsand
+wrotethefinalmanuscript.Bothauthorsreadandapprovedthefinal
+manuscript.
+Funding
+ThisworkwassupportedbytheNationalInstitutesofHealth
+(1DP2HG009623-01,1OT2OD026673-01,5R01MH071679-15,R01HD0967701,
+5R35NS097404-03toR.S.),ChanZuckerbergInitiative(HCA2-A-1708-02755to
+R.S.),NewYorkStateDepartmentofHealth(C32604GGtoR.S.),andaDeutsche
+ForschungsgemeinschaftResearchFellowship(328558384toC.H.).
+Availabilityofdataandmaterials
+Thedatasetusedinthemaintextis“33kPBMCsfromaHealthyDonor,v1
+Chemistry”from10xGenomics(licensedundertheCreativeCommons
+Attributionlicense;alsomadeavailableinourOSFproject https://osf.io/49mjf ).
+AdditionaldatasetsusedinthestudyarelistedinAdditionalfile 1,alongwith
+GEOaccessionnumbersanddownloadlinks.
+Softwareimplementingourapproachisfreelyavailableasanopen-sourceR
+package sctransform .WehavedepositedthesourcecodeinanOSF
+projectunderGPL-3.0license[ 38].Foractivedevelopment,weuseGitHub[ 39]
+(github.com/ChristophH/sctransform ).Avignetteshowingtheuseof
+sctranform inSeuratv3isalsoprovided(Additionalfile 3).
+Ethicsapprovalandconsenttoparticipate
+Notapplicable.
+Competinginterests
+Theauthorsdeclarethattheyhavenocompetinginterests.
+Received:17March2019 Accepted:30October2019
+References
+1. VallejosCA, RissoD, ScialdoneA, DudoitS, MarioniJC.Normalizing
+single-cellRNAsequencingdata:challengesandopportunities.Nat
+Methods.2017;14:565. https://doi.org/10.1038/nmeth.4292 .http://10.0.4.
+14/nmeth.4292 .https://www.nature.com/articles/nmeth.4292#
+supplementary-information .
+2. StegleO, TeichmannSA, MarioniJC.Computationalandanalytical
+challengesinsingle-celltranscriptomics.NatRevGenet.2015;16(January
+2014):133–45. http://dx.doi.org/10.1038/nrg3833%5Cn .http://www.
+nature.com/nrg/journal/vaop/ncurrent/full/nrg3833.html#author-
+information .
+3. TheTabulaMurisConsortium.Single-celltranscriptomiccharacterization
+of20organsandtissuesfromindividualmicecreatesaTabulaMuris.
+bioRxiv.2018. https://www.biorxiv.org/content/early/2018/03/29/
+237446.Accessed29Mar2018.
+4. HicksSC, TownesFW, TengM, IrizarryRA.Missingdataandtechnical
+variabilityinsingle-cellRNA-sequencingexperiments.Biostatistics.
+2017;19(4):562–78. https://dx.doi.org/10.1093/biostatistics/kxx053 .
+5. SvenssonV, NatarajanKN, LyLH, MiragaiaRJ, LabaletteC, MacaulayIC,
+etal.Poweranalysisofsingle-cellRNA-sequencingexperiments.Nat
+Methods.2017;14:381. https://doi.org/10.1038/nmeth.4220 .http://10.0.4.
+14/nmeth.4220 .https://www.nature.com/articles/nmeth.4220#
+supplementary-information .
+6. BacherR, ChuLF, LengN, GaschAP, ThomsonJA, StewartRM,etal.
+SCnorm:robustnormalizationofsingle-cellRNA-seqdata.NatMethods.
+2017;14(6):584–6. http://www.nature.com/doifinder/10.1038/nmeth.
+4263.
+7. VallejosCA, MarioniJC, RichardsonS.BASiCS:Bayesiananalysisof
+single-cellsequencingdata.PLoSComputBiol.2015;11(6):1–18.
+8. LunATL, BachK, MarioniJC.Poolingacrosscellstonormalizesingle-cell
+RNAsequencingdatawithmanyzerocounts.GenomeBiol.2016;17(1):
+1–14.http://dx.doi.org/10.1186/s13059-016-0947-7 .
+9. RissoD, PerraudeauF, GribkovaS, DudoitS, VertJP.Ageneraland
+flexiblemethodforsignalextractionfromsingle-cellRNA-seqdata.Nat
+Commun.2018;9(1):1–17.
+10. LopezR, RegierJ, ColeMB, JordanMI, YosefN.Deepgenerative
+modelingforsingle-celltranscriptomics.NatMethods.2018;15(12):
+1053–8.https://doi.org/10.1038/s41592-018-0229-2 .
+11. QiuX, HillA, PackerJ, LinD, MaYA, TrapnellC.Single-cellmRNA
+quantificationanddifferentialanalysiswithCensus.NatMethods.
+2017;14(3):309–15.
+12. LoveMI, HuberW, AndersS.Moderatedestimationoffoldchangeand
+dispersionforRNA-SeqdatawithDESeq2.GenomeBiol.2014;15(12):550.
+http://www.ncbi.nlm.nih.gov/pubmed/25516281 .
+13. KharchenkoPV, SilbersteinL, ScaddenDT.Bayesianapproachto
+single-celldifferentialexpressionanalysis.NatMethods.2014;11(7):740–2.
+http://dx.doi.org/10.1038/nmeth.2967 .
+14. GrünD, KesterL, vanOudenaardenA.Validationofnoisemodelsfor
+single-celltranscriptomics.NatMethods.2014;11(6):637–40. http://www.
+nature.com/doifinder/10.1038/nmeth.2930 .
+15. EraslanG, SimonLM, MirceaM, MuellerNS, TheisFJ.Single-cellRNA-seq
+denoisingusingadeepcountautoencoder.NatCommun.2019;10(1):
+390.https://doi.org/10.1038/s41467-018-07931-2 .
+16. SatijaR,FarrellJa, GennertD, SchierAF, RegevA.Spatialreconstruction
+ofsingle-cellgeneexpressiondata.NatBiotechnol.2015;33(5):. http://
+www.nature.com/doifinder/10.1038/nbt.3192 .
+17. ButlerA, HoffmanP, SmibertP, PapalexiE, SatijaR.Integrating
+single-celltranscriptomicdataacrossdifferentconditions,technologies,
+andspecies.NatBiotechnol.2018;36(5):411–20.
+18. StuartT, ButlerA, HoffmanP, HafemeisterC, PapalexiE, MauckIIIWM,
+etal.Comprehensiveintegrationofsingle-celldata.Cell.2019;177(7):
+1888–902. https://doi.org/10.1016/j.cell.2019.05.031 .
+19. WolfFA, AngererP, TheisFJ.SCANPY:large-scalesingle-cellgene
+expressiondataanalysis.GenomeBiol.2018;19(1):1–5.
+20. LunATL, McCarthyDJ, MarioniJC.Astep-by-stepworkflowforlow-level
+analysisofsingle-cellRNA-seqdatawithBioconductor.F1000Research.
+2016;5:2122. https://f1000research.com/articles/5-2122/v2 .
+21. FinakG, McDavidA, YajimaM, DengJ, GersukV, ShalekAK,etal.MAST:
+aflexiblestatisticalframeworkforassessingtranscriptionalchangesand
+characterizingheterogeneityinsingle-cellRNAsequencingdata.
+GenomeBiol.2015;16(1):278. http://genomebiology.biomedcentral.com/
+articles/10.1186/s13059-015-0844-5 .
+
+==== Page 15 ====
+HafemeisterandSatija GenomeBiology          (2019) 20:296 Page15of15
+22. McCarthyDJ, ChenY, SmythGK.Differentialexpressionanalysisof
+multifactorRNA-Seqexperimentswithrespecttobiologicalvariation.
+NucleicAcidsRes.2012;40(10):4288–97. http://dx.doi.org/10.1093/nar/
+gks042.
+23. AndersS, HuberW.Differentialexpressionanalysisforsequencecount
+data.GenomeBiol.2010;11(10):R106. https://doi.org/10.1186/gb-2010-
+11-10-r106 .
+24. PimentelH, BrayNL, PuenteS, MelstedP, PachterL.Differentialanalysis
+ofRNA-seqincorporatingquantificationuncertainty.NatMethods.
+2017;14:687. https://doi.org/10.1038/nmeth.4324 .http://10.0.4.14/nmeth.
+4324.https://www.nature.com/articles/nmeth.4324#supplementary-
+information .
+25. LawCW, ChenY, ShiW, SmythGK.voom:precisionweightsunlock
+linearmodelanalysistoolsforRNA-seqreadcounts.GenomeBiol.
+2014;15(2):R29. https://doi.org/10.1186/gb-2014-15-2-r29 .
+26. SheatherSJ, JonesMC.Areliabledata-basedbandwidthselection
+methodforkerneldensityestimation.JRStatSocSerBMethodol.
+1991;53(3):683–90. http://www.jstor.org/stable/2345597 .
+27. ElingN, RichardAC, RichardsonS, MarioniJC, VallejosCA.Correcting
+themean-variancedependencyfordifferentialvariabilitytestingusing
+single-cellRNAsequencingdata.CellSyst.2018;7(3):284–94. https://
+linkinghub.elsevier.com/retrieve/pii/S2405471218302783 .
+28. RobinsonMD, McCarthyDJ, SmythGK.edgeR:aBioconductorpackage
+fordifferentialexpressionanalysisofdigitalgeneexpressiondata.
+Bioinformatics.2010;26(1):139–40. http://dx.doi.org/10.1093/
+bioinformatics/btp616 .
+29. TownesFW, HicksSC, AryeeMJ, IrizarryRA.Featureselectionand
+dimensionreductionforsinglecellRNA-Seqbasedonamultinomial
+model.bioRxiv.2019574574. http://biorxiv.org/content/early/2019/03/
+11/574574.abstract .Accessed11Mar2018.
+30. SmythGK.Linearmodelsandempiricalbayesmethodsforassessing
+differentialexpressioninmicroarrayexperiments.StatApplGenetMol
+Biol.2004;3(1):Article3. http://www.ncbi.nlm.nih.gov/pubmed/16646809 .
+31. BuettnerF, NatarajanKN, CasaleFP, ProserpioV, ScialdoneA, TheisFJ,et
+al.Computationalanalysisofcell-to-cellheterogeneityinsingle-cellRNA-
+sequencingdatarevealshiddensubpopulationsofcells.NatBiotechnol.
+2015;33(2):155–60. http://www.nature.com/doifinder/10.1038/nbt.3102 .
+32. ShekharK, LapanSW, WhitneyIE, TranNM, MacoskoEZ, KowalczykM,
+etal.Comprehensiveclassificationofretinalbipolarneuronsby
+single-celltranscriptomics.166.2016;5:1308–23. http://dx.doi.org/10.
+1016/j.cell.2016.07.054 .
+33. StoeckiusM, HafemeisterC, StephensonW, Houck-LoomisB,
+ChattopadhyayPK, SwerdlowH,etal.Simultaneousepitopeand
+transcriptomemeasurementinsinglecells.NatMethods.2017;14:
+865–868. https://doi.org/10.1038/nmeth.4380 .
+34. BuenrostroJD, WuB, LitzenburgerUM, RuffD, GonzalesML, Snyder
+MP,etal.Single-cellchromatinaccessibilityrevealsprinciplesof
+regulatoryvariation.523.2015;7561:486–90. http://www.nature.com/
+nature/journal/v523/n7561/full/nature14590.html?WT.ec_id=NATURE-
+20150723&spMailingID=49156958&spUserID=NjYzMjA5OTgyODUS1&
+spJobID=722865381&spReportId=NzIyODY1MzgxS0 .
+35. WangG, MoffittJR, ZhuangX.Multiplexedimagingofhigh-density
+librariesofRNAswithMERFISHandexpansionmicroscopy.SciRep.
+2018;8(1):4847. https://doi.org/10.1038/s41598-018-22297-7 .
+36. McInnesL, HealyJ.UMAP:uniformmanifoldapproximationand
+projectionfordimensionreduction.ArXive-prints.2018. https://doi.org/
+10.21105/joss.00861 .
+37. McInnesL, HealyJ, SaulN, GrossbergerL.UMAP:uniformmanifold
+approximationandprojection.JOpenSourceSoftw.2018;3(29):861.
+38. HafemeisterC, SatijaR.Sctransform.2019. https://osf.io/49mjf/ .Accessed
+28Oct2018.
+39. HafemeisterC, SatijaR.Sctransform.2019. https://github.com/
+ChristophH/sctransform .Accessed23June2018.
+Publisher’sNote
+SpringerNatureremainsneutralwithregardtojurisdictionalclaimsin
+publishedmapsandinstitutionalaffiliations.
+

@@ -1,0 +1,903 @@
+==== Page 1 ====
+Low-bit Quantization of Neural Networks for Efﬁcient Inference
+Yoni Choukroun Eli Kravchik Fan Yang Pavel Kisilev
+Huawei Technologies Co.
+fyoni.choukroun,eli.kravchik,yangfan74,pavel.kisilev g@huawei.com
+Abstract
+Recent machine learning methods use increasingly large
+deep neural networks to achieve state of the art results in
+various tasks. The gains in performance come at the cost
+of a substantial increase in computation and storage re-
+quirements. This makes real-time implementations on lim-
+ited resources hardware a challenging task. One popu-
+lar approach to address this challenge is to perform low-
+bit precision computations via neural network quantization.
+However, aggressive quantization generally entails a severe
+penalty in terms of accuracy, and often requires retraining
+of the network, or resorting to higher bit precision quanti-
+zation. In this paper, we formalize the linear quantization
+task as a Minimum Mean Squared Error (MMSE) problem
+for both weights and activations, allowing low-bit precision
+inference without the need for full network retraining. The
+main contributions of our approach are the optimizations of
+the constrained MSE problem at each layer of the network,
+the hardware aware partitioning of the network parameters,
+and the use of multiple low precision quantized tensors for
+poorly approximated layers. The proposed approach al-
+lows 4 bits integer (INT4) quantization for deployment of
+pretrained models on limited hardware resources. Multiple
+experiments on various network architectures show that the
+suggested method yields state of the art results with minimal
+loss of tasks accuracy.
+1. Introduction
+Neural networks (NNs) proved to be extremely effec-
+tive in solving a broad variety of problems in computer vi-
+sion, speech recognition and natural language processing
+[22, 14, 34]. Deep learning methods are usually evaluated
+only according to their accuracy over a given task. This cri-
+terion leads to the development of architectures with con-
+stantly increasing computational complexity and memory
+requirements. Thus, performing inference on low power
+System on a Chip (SoCs) used in smartphones or IoT de-
+vices is a signiﬁcant challenge, due to the limited available
+memory and computational resources.Several approaches have been proposed in order to make
+deep NNs less resource demanding. Network pruning of
+redundant and non-informative weights allows signiﬁcant
+reduction of the network size [12, 11]. Matrix factoriza-
+tion via low-rank approximation exploits the redundancy
+property of the NN parameters in order to increase speed
+up [7]. Distillation of NNs aims to transfer the knowledge
+contained in a pretrained large network to a compressed
+model via adapted training process [15]. Also, new ar-
+chitectures (i.e.[19, 16, 17]) with more efﬁcient operations
+such as point/depth-wise or grouped convolutions allow the
+reduction of the model size, compared to existing over-
+parameterized architectures.
+Another popular direction, which we focus on in this
+paper, is the quantization of NN. Quantization methods at-
+tempt to reduce the precision of the NN parameters and/or
+activations from single precision (32 bit ﬂoating point, or
+FP32) to lower bit representations. Several beneﬁts of low-
+bit precision can be exploited by deep learning accelera-
+tors. The storage requirement for a low-bit precision model
+can be diminished substantially, as well as the power con-
+sumption. Similarly, the memory bandwidth requirements
+can be signiﬁcantly reduced. Since the multiply accumu-
+late (MAC) operations are performed on low-bit processing
+engines, the computational complexity can be reduced as
+well. Perhaps the most important beneﬁt of low bit repre-
+sentation is the saving of chip area. For instance, 8 bits in-
+teger (INT8) operations can save up to 30x energy and up to
+116x area compared to FP32 operations [6], allowing signif-
+icantly better computational throughput. However, low-bit
+precision inference often causes loss of the task accuracy,
+which is usually compensated with the help of heavy full
+retraining, mixed precision or non-uniform quantization
+In this paper, we address the quantization problem
+for weights and/or activations of a pretrained NN on
+highly constrained hardware, wherein complete retraining
+or mixed precision calculations cannot be tolerated. To the
+best of our knowledge, this is the ﬁrst time INT4 only de-
+ployment of a pretrained NN via efﬁcient linear quantiza-
+tion is performed with minimal loss of accuracy and data
+requirement. We propose a simple yet efﬁcient optimiza-
+1arXiv:1902.06822v2  [cs.LG]  25 Mar 2019
+
+==== Page 2 ====
+tion framework to ﬁnd the optimal quantization parameters
+in the MMSE sense at each layer separately. The proposed
+MMSE reconstruction gives better accuracy than other ex-
+isting MSE based optimization methods. NN parameters
+are quantized in a kernel-wise fashion that does not violate
+the linearity of the dot product operations, enabling efﬁcient
+deployment on any common deep learning hardware. We
+identify key layers that are most sensitive to quantization
+errors, and provide an adaptive quantization scheme that
+makes use of multiple low precision tensors. Finally, we
+propose a reﬁnement procedure for the scaling factors of
+the quantized tensors, which is performed on a small un-
+labelled calibration set. In a similar manner, the NN ac-
+tivations quantization coefﬁcients are obtained ofﬂine via
+MMSE criterion. More sensitive activations are better ap-
+proximated according to their reconstruction residual. The
+main contributions of this paper can be summarized as fol-
+lows:
+We propose a low-bit precision linear quantization
+framework for fast deployment of pretrained NNs on
+hardware which does not allow mixed precision oper-
+ations.
+We achieve minimal loss of task accuracy, while re-
+maining compliant with modern deep learning hard-
+ware, by using ﬁne grained partitioning of the NN
+weights. We propose optimal solution to the MMSE
+quantization problem and we deploy multiple tensors
+for key layers. Also, we reﬁne the quantization fac-
+tors of the network parameters for fast differentiable
+optimization.
+Extensive experiments on ImageNet with various pop-
+ular architectures demonstrate that our INT4 linear
+quantization method for both weights and activations,
+performs inference with only 3%top-1 and 1:7%top-5
+mean accuracy degradation, as compared to the FP32
+models, reaching, to the best of our knowledge, state-
+of-art results. The above degradation can be further re-
+duced according to the complexity-accuracy trade-off
+inherent to the proposed multiple kernel method.
+The remainder of the paper is organized as follows. Sec-
+tion 2 reviews related works. In section 3, after analyzing
+the quantization challenges, we develop our MMSE based
+quantization for accurate approximation of original mod-
+els. In this section we also provide experimental results
+to demonstrate the usefulness of the steps in the proposed
+quantization pipeline. At the end of the section, we describe
+the modiﬁcation of the presented algorithm components for
+the problem of activation quantization. Finally, quantiza-
+tion results from our experiments on several popular NNs
+are presented in Section 4.2. Related Work
+Neural network acceleration received increasing atten-
+tion in the deep learning community, where the need for
+accurate yet fast and efﬁcient frameworks is crucial for real-
+world applications. A powerful approach is quantization of
+NNs to low-bit representation. There are two main quan-
+tization scenarios. The ﬁrst one is the full training of a
+given model to a desired lower bit precision. With this ap-
+proach, the weights, the activations and even the gradients
+can be quantized to very low precision, enabling potentially
+fast training and inference [36]. The major problem with
+the training approach above arises from the discritness of
+the parameters, wherein the backpropagation approach is
+not well deﬁned. The ”straight-through estimator” [3] has
+been used in [4, 30, 5] in order to estimate the gradient of a
+stochastic neuron. [4] proposed to use stochastic quantiza-
+tion of the weights via random rounding, in order to inject
+regularizing noise to the training process. [33] suggests to
+approximate solution using variational Bayes method where
+the weights can be restricted to discrete values assuming
+Gaussian distribution. Instead of seeking for appropriate
+derivatives, [31] assumed smooth approximation of param-
+eters with deﬁned gradients. Non-uniform quantization of
+NN parameters has been proposed in [10] where the param-
+eters are approximated using k-means algorithm. [24] pro-
+posed a high order quantization scheme of weights where
+the approximation residual is further processed allowing
+better reﬁnement of full precision input. Estimation of the
+quantization parameters by solving constrained optimiza-
+tion problem has been proposed for binary [30] and ternary
+weights [23].
+We focus on the second quantization scenario that targets
+direct quantization of a pretrained FP32 network to a lower
+bit-depth precision without full training. INT8 quantiza-
+tion of parameters has been proven to be relatively robust
+to quantization noise even with simple uniform quantiza-
+tion of weights [20]. [18] proposed L2error minimization
+of weights via alternating optimization in order to obtain a
+generalizing ability during the training. Nevertheless, INT8
+quantization of the network activations is more challenging
+because of real time constraints. Nvidia proposed in Ten-
+sorRT [28] a quantization framework that searches for sat-
+uration threshold of the activations, based on the Kullback-
+Leibler divergence measure between the quantized activa-
+tions and their full precision counterpart. Recently, [2] pro-
+posed to approximate activations, as if they were sampled
+from a known distribution in order to obtain, under some
+assumptions, analytically optimal threshold in the L2sense.
+However, quantization of full precision weights and activa-
+tions to less than 8-bits usually causes signiﬁcant loss of
+accuracy, a problem that has not been solved yet. In order
+to overcome such degradation in performance, quantization
+frameworks resort to retraining procedures, mixed preci-
+
+==== Page 3 ====
+sion solutions or non-uniform quantization. These solutions
+make fast and easy deployment of quantized NNs impossi-
+ble, especially on highly constrained HW such as mobiles
+or IoT devices.
+3. Proposed MMSE Quantization Method
+Conversion of a full precision NN into its ﬁxed point
+version introduces quantization noise (error) into the net-
+work. Since signiﬁcant noise may deteriorate the model
+performance, in the absence of training capabilities, efforts
+should be invested in minimizing the noise power, in order
+to approximate the original model as accurately as possi-
+ble. Minimization of the noise power of weights and of
+activations via MSE optimization is a natural criterion for
+quantization quality, even though no direct relationship can
+be easily established between the noise of the output and
+the model accuracy. In the following, we investigate how
+quantization affects the NN output, and propose optimal so-
+lution to the quantization problem, via MSE optimization
+with ﬁxed precision constraints.
+3.1. Quantization Process
+Consider an L-layer NN architecture deﬁned by
+fWl;XlgL
+l=1withWlandXlbeing thelthlayer weight and
+input tensors respectively. Each weight is deﬁned accord-
+ing to the set Wl=fWlkgkl
+k=1, whereWlk2Rclwklhkl
+denotes thekthkernel (neuron), with cl;wkl;hklbeing the
+number of channels, the kernel’s width and height, respec-
+tively. Similarly, Xl2Rclwlhlrepresent the layer acti-
+vations (feature maps), with cl;wl;hlbeing the number of
+channels, width and height of the layer input, respectively.
+In our setting we constrain a tensor T2Rcwhto be
+approximated linearly as a quantized tensor ~T2Zcwh
+p
+coupled with a scaling factor 2Rsuch thatT^T=~T.
+Herepdenotes the desired integer bit precision, and Zp
+the corresponding quantization range. Linear approxima-
+tions are particularly appealing from hardware perspective,
+wherein the tensor multiplication unit can handle low pre-
+cision tensors only. In this setting, the tensor multiplication
+is approximated as
+T3=T1T2(1~T1)(2~T2) = (12)(~T1~T2) =3~T3:
+(1)
+A popular uniform quantization scheme is given by
+^T=T 
+
+Zp+
+= min
+i(Ti)
+=maxi(Ti) 
+2p 1(2)
+where [T]Zp= min(max(bTe;min(Zp));max(Zp))de-
+notes the rounding operator be, followed by saturation totheZpdomain. The quantization offset can be of major
+importance for non symmetric distributions (e.g ReLU [9]
+activations), where unsigned representations Zp=Z+
+p2
+f0;:::; 2p 1gallow an additional discrete level of repre-
+sentation. However, the use of offset obviously increases
+the computational complexity of tensor multiplications. In
+the case quantization offset is not allowed, we assume
+= 0,= maxi(jTij)=(2p 1 1)and the signed range
+Zp2f  2p 1;:::; 2p 1 1g.
+Unless stated otherwise the results presented are obtained
+with signed quantization (no offset). Even though many
+quantization methods do not quantize the ﬁrst and last layer
+of the model [12, 36, 30], unless stated otherwise here we
+quantize allthe network parameters and activations (includ-
+ing the network input).
+3.2. Mean Squared Error Analysis of Quantization
+The relation between the full precision tensor weights
+Wand activations Xand their respective approximations
+^Wand^Xcan be obtained as follows
+^Y=^W^X= (W+nW)(X+nX)
+=WX +Wnx+nWX+nWnX
+WX +WnX+nWX=Y+WnX+nWX;(3)
+wherenW;nXdenote the quantization noise of the weights
+and activations respectively and where the approximation
+is obtained by neglecting second order noise term. Let us
+consider the case where the NN is composed of linear layers
+only. In such setting the NN output Yis deﬁned as
+Y=WL(WL 1:::(W1X1)) =WLXL: (4)
+For ease of notation we will omit the mean factor of the
+MSE. Deﬁning e2
+L, the MSE between the original model
+output and the quantized model output, we obtain in expec-
+tation that
+E(e2
+L) =EkY ^Yk2
+F=EkWLXL ^WL^XLk2
+F
+=EkWLnXL+nWLXLk2
+F
+=EkWLnXLk2
+F+ 2Etrace (nT
+XLWT
+LXLnWL)
++EknWLXLk2
+F
+EkWLnXLk2
+F+EknWLXLk2
+F
+EknWLk2
+FEkXLk2
+F+EkWLk2
+FEknXLk2
+F
+=EknWLk2
+FEkXLk2
+F+EkWLk2
+FE(e2
+L 1);
+(5)
+where the approximation is obtained by assuming zero
+mean noise [29] and where kkFdenotes the Frobenius
+norm. The inequality is obtained using Cauchy Schwarz
+inequality and by assuming the weights/activations and the
+noises are statistically independent. We obtain here a recur-
+sive expression of the network output MSE. It is obvious
+
+==== Page 4 ====
+that ﬁrst layers may have signiﬁcant impact on the output
+quality because of the recursion factor. Also, special at-
+tention should be given to the minimization of the weights
+noise which is coupled with possibly unbounded activations
+(ReLU). In real conﬁgurations, the non linear functions that
+play major role in the discriminative power of deep net-
+works are much harder to model and analyze. Nevertheless,
+the linear analysis presented above, is supported empirically
+in our experiments, wherein the ﬁrst layers always impact
+model accuracy the most. Also, in our setting, the approx-
+imation quality of the weights has much more inﬂuence on
+the performance than the activations, in contrast to the anal-
+ysis of [36].
+3.3. Kernel-Wise Quantization
+In the low precision set up, such as 4 bit, global quan-
+tization where all the quantized kernels are coupled with a
+single scaling factor, such that ^Wl=fl~Wlkgk, can lead
+to poor performance, due to the high variance of all the ac-
+cumulated kernel elements. This problem does not arise in
+the INT8 deployment setting that is robust enough even un-
+der global quantization [28, 20]. Also, applying different
+scaling factors to different buckets (partitions) of contigu-
+ous values allows better approximation of the original ten-
+sor [1]. However, the quantization framework should pre-
+serve the linearity of the dot product, so that for every two
+vectorsx;y2Rnwe get
+hx;yih~x;~yi=nX
+i~xi~yi=h~x;~yi:(6)
+Maintaining the linearity is not so popular because of its re-
+strictiveness and sub-optimality. For example, with the efﬁ-
+cient group-wise [1, 27], channel-wise or pixel-wise quanti-
+zation settings [8], the dot product must be split into several
+dot products to be accumulated together. Such procedures
+cannot be efﬁciently implemented on deep learning accel-
+erators with dedicated matrix multiplication units such as
+systolic arrays [21]. The only viable bucketing approach is
+thekernel wise approach where each kernel is coupled to its
+own scaling factor such that ^Wl=flk~Wlkgk. Such set-
+ting maintains the dot product linearity at the kernel level
+and allows efﬁcient tensors multiplication in low precision
+dedicated hardware. Each discrete feature map is then mul-
+tiplied with its corresponding ﬂoating point scaling factor.
+Thus, without violating the dot product linearity and with
+negligible storage addition (as the number of kernels), a
+signiﬁcant improvement in performance can be obtained as
+summarized in Table 1. In this experiment, all convolu-
+tional layers are quantized kernel-wise , while all the fully
+connected layers are globally quantized. Also, we only al-
+lowglobal quantization of activations since every possible
+partitioning yields separation of the dot product induced by
+the convolutions.Architecture Original Global Kernel-wise
+Alexnet [22] 56.624% 0.694% 46.796 %
+VGG16bn [32] 73.476% 3.034% 65.23 %
+Inception v3 [35] 76.226% 0.106% 12.564 %
+Resnet18 [13] 69.644% 1.83% 44.082 %
+Resnet50 [13] 76.012% 0.172% 62.242 %
+Resnet101 [13] 77.314% 0.148% 64.434 %
+SqueezeNet [19] 58.0% 1.528% 29.908 %
+DenseNet [17] 74.472% 0.58% 57.072 %
+Table 1. Top1 accuracy using INT4 quantization of weights (FP32
+activations) with global scaling factor for all kernels and the
+proposed kernel-wise approach on the ImageNet validation set.
+Global quantization simply collapses.
+3.4. Minimum MSE Quantization
+We aim at ﬁnding optimal approximation ^Tof a given
+tensorT2Rcwhby solving the constrained MSE prob-
+lem as follows
+min
+;~TkT ~Tk2
+F:
+s.t2R;~T2Zcwh
+p(7)
+For any arbitrary precision pthis optimization problem does
+not have an analytical solution. Assuming optimal 6= 0is
+given, and denoting Titheithelement of the tensor T, we
+remain with a one constraint optimization problem where
+we can rewrite eq. (7) objective as
+kT ~Tk2
+F=X
+i(Ti ~Ti)2=2X
+i(Ti
+ ~Ti)2:
+(8)
+Thus, the optimal quantization is uniform and the quantized
+values are given according to ~Ti=
+Ti=
+Zp8i, where the
+scaling factor also deﬁnes saturation of the the tensor val-
+ues. Typical MSE as a function of is presented in Figure
+1. Several methods for ﬁnding optimal can be consid-
+ered. Alternating optimization [18], even on one half of the
+domain, is not robust due to the non-convexity of the quan-
+tization operation (Figure 1). Alternatively, Golden Section
+Search gives fast and better results because of the low reso-
+lution optimization at the early stage of the algorithm, that
+avoids attraction to local minima. In this work, we pro-
+pose to use one dimensional exact line-search that can be
+implemented very efﬁciently over a given grid (few hun-
+dred points) using parallel computation. This approach al-
+lows optimal solution (up to the grid density) of the MMSE
+quantization problem. A comparison of different quantiza-
+tion methods is presented in Table 2.
+3.5. Multiple Tensor Quantizations
+Some layers can be harder to approximate than others,
+and have larger impact on the model accuracy loss. In or-
+der to better reconstruct those layers, some works use mixed
+
+==== Page 5 ====
+Figure 1. MSE as a function of the scaling factor averaged for
+all the Alexnet convolutional kernels (Mean). Typical kernel is
+presented in red (Conv) to show the non-convexity of the function.
+Architecture Uniform Altern. Golden OMSE
+Alexnet 46.796% 40.962% 46.070% 46.892 %
+VGG16bn 65.23% 55.936% 62.250% 65.414 %
+Inception v3 12.564% 4.368% 7.408% 22.028 %
+Resnet18 44.082% 52.646% 52.398% 56.688 %
+Resnet50 62.242% 60.186% 63.178% 67.356 %
+Resnet101 64.434% 56.282% 63.052% 65.066 %
+SqueezeNet 29.908% 24.040% 34.036 %32.262%
+DenseNet 57.072% 45.668% 50.058% 59.012 %
+Table 2. Top1 accuracy for INT4 quantized weights and FP32
+activations using uniform quantization, Alternating optimization
+(Altern.)[18], Golden Section search (Golden) and the proposed
+optimal MSE (OMSE) quantization.
+precision [25], where some layers use more bits for repre-
+sentation. Due to power and chip area considerations, low
+power devices generally do not allow mixed precision in-
+ference, because of the constrained low precision engines.
+We therefore propose to better approximate keylayers by
+using multiple low precision quantized tensors. We use the
+term key layers to describe quantized layers with high MSE ,
+or MSE bigger than some threshold . In contrary to other
+training methods where kernels are blindly added over all
+the network layers [26], our approach allows minimal com-
+putational overhead. We formalize this setting as follows.
+Givennintegersfpign
+i=1denoting the desired precision of
+the quantized tensors and a given tensor T, we want to ﬁnd
+thenscalarsfign
+i=1and the quantized tensors f~Tign
+i=1
+that best approximate the original tensor in the L2sense,
+such that
+min;
+i;~TikT nX
+i=1i~Tik2
+F
+s.ti2R;~Ti2Zcwh
+pi(9)From the computational perspective, the proposed frame-
+work approximates a given kernel with quantized ﬁlter bank
+for better approximation. Thus, for a given tensor Xap-
+proximated as X^X=~Xwe have
+TXnX
+i=1i~TiXnX
+i=1i(~Ti~X): (10)
+Here we opt for a nested optimization approach, where the
+solution is obtained iteratively until convergence. Then, the
+optimization can be written in the nested form as
+min
+1;~T1fmin
+2;~T2:::fminf
+n;~TnkT nX
+i=1i~Tik2
+Fggg (11)
+Alternating optimization is used until convergence, while at
+each iteration the quantized tensor and its scaling factor are
+obtained using the MSE quantization mapping suggested in
+Section 3.4. The proposed quantization approach for layers
+with high MSE is summarized in Algorithm 1. In the algo-
+rithm below, input Trefers to one convolutional kernel of a
+given key layer.
+Algorithm 1 Alternating Optimization for Multiple Quan-
+tization of high MSE layer
+Input: TensorT, desired precision fpign
+i=1and quantiza-
+tion mapping .
+Output:fign
+i=1andf~Tign
+i=1
+1:while convergence rate >do
+2: forj2[1;:::;n ]do
+3: (j;~Tj) =(T Pn
+i=1;i6=ji~Ti;pj)
+4: end for
+5:end while
+For the special dual case wheren= 2, optimum can be
+obtained efﬁciently by resorting to dual line search. Since
+each element in ~T1can only have discrete values in Zp1,
+one can evaluate ~T2for all the few 2p1allowed quantized
+values and later select the integer value giving minimum of
+the objective. Assuming 1;2are given via grid search,
+we want to ﬁnd8j
+min
+~T1
+j;~T2
+j(Tj 1~T1
+j 2~T2
+j)2
+() min
+~t2Zp1min
+~T2
+j(Tj 1~t 2~T2
+j)2
+() min
+~t2Zp1
+Tj 1~t 2Tj 1~t
+2
+Zp22
+(12)
+Because of its high computational cost, this method should
+be reserved to small tensors only (convolutional kernels).
+To emphasize the rational of the proposed line search opti-
+mization procedure over the alternating approach, we show
+
+==== Page 6 ====
+Figure 2. Landscape of the Dual MSE objective as a function of
+the scaling factors 1and2(MSE averaged over all the Alexnet
+convolutional kernels).
+the highly non-convex function of 1and2for the INT4
+setting in Figure 2. In our experiments, dual line-search ap-
+proach improves the MSE by 5x in average over the tested
+dual layers.
+Layers with high MSE that are approximated using mul-
+tiple quantized tensors obviously require more parameters
+and computations, so a trade-off between accuracy and per-
+formance can be established. Deﬁning speedup is not trivial
+since it is highly dependent on the hardware design. Mod-
+ern GPUs can double the TOPS performance at INT4 preci-
+sion, since multiple small low precision matrix multiplica-
+tions can be performed in a distributed fashion. In order to
+measure the increase in storage and computations we deﬁne
+the compression ratio for analysis of the framework. The
+compression ratio 0<CR1is deﬁned as the ratio of
+the quantized model (weights and scaling factors) size to
+the FP32 model size. In this work, difﬁcult layers in the
+INT4 setting are approximated with the dual method only
+(n= 2). Performance of the proposed algorithm as well
+as the corresponding compression ratios are summarized in
+Table 3.
+3.6. Scaling Factors Reﬁnement
+One issue with the quantization method proposed above
+is the rigidity of the quantization mapping performed ax-
+iomatically according to a given metric. In order to tackle
+this problem without the need for full retraining and with-
+out requiring gradients of non differentiable functions, we
+propose a post quantization adjustment of the scaling fac-
+tors of the quantized NN weights. Given calibration data
+(unlabeled), we reﬁne the scaling factors to better approx-
+imate the full precision model. We seek to optimize the
+(re)scaling factor deﬁned as ^T() =~T, with ~Tbe-Architecture Original OMSE Dual CR
+Alexnet 56.624% 46.892% 54.408 %0.1256
+VGG16bn 73.476% 65.414% 66.932 %0.125
+Inception v3 76.226% 22.028% 51.642 %0.1263
+Resnet18 69.644% 56.688% 64.034 %0.1318
+Resnet50 76.012% 67.356% 70.060 %0.1261
+Resnet101 77.314% 65.066% 71.492 %0.1261
+SqueezeNet 58.0% 32.262% 53.466 %0.1493
+DenseNet 74.472% 59.012% 64.400 %0.1432
+Table 3. Top1 accuracy using INT4 optimal MSE quantization
+of weights (FP32 activations) and INT4 dual MSE (Dual) for
+= 810 5. The last column deﬁnes the compression ratio
+(CR) induced by the dual method. CR of regular (non-dual) INT4
+linear quantization is 0:125.
+Architecture Dual OMSE+Opt. Dual+Opt.
+Alexnet 54.408% 53.306% 55.226 %
+VGG16bn 66.932% 72.294% 72.576 %
+Inception v3 51.642% 73.656% 74.790 %
+Resnet18 64.034% 67.120% 68.806 %
+Resnet50 70.060% 74.672% 74.976 %
+Resnet101 71.492% 76.226% 76.402 %
+SqueezeNet 53.466% 54.514% 56.248 %
+DenseNet 64.400% 71.730% 73.600 %
+Table 4. Top1 accuracy using FP32 activations and INT4 dual
+MSE quantization of weights (Dual) and dual MSE + reﬁned scal-
+ing factors (Dual+Opt.) with = 810 5. As ablation study we
+present the reﬁnement of the OMSE method without dual quan-
+tization (OMSE+Opt). The calibration set contains ﬁve hundred
+images from the ImageNet validation set and 25 epochs.
+ing the tensor quantized axiomatically. Consequently, the
+saturation threshold is approximated for optimal recon-
+struction separately, using L2metric. The rescaling factor
+is optimized afterwards in a data driven way such that
+^T() =
+T
+
+Zp
+: (13)
+Assumingf(X;fWlgl)is the NN mapping function, we
+seek to minimize
+min
+l=flkglkMX
+ikf(Xi;fWlgl) f(Xi;f^Wl(l)gl)k2
+F;
+(14)
+whereMis the size of the calibration set. The advantage
+of this approach is that the number of optimized values is
+small and equal to the number of convolutional kernels. At
+contrary to training methods, this approach is fully differ-
+entiable avoiding sub-gradient deﬁnitions. Thus, the op-
+timization can be conducted very efﬁciently using popu-
+lar stochastic gradient descent methods on a small calibra-
+tion set. Also, only a few optimization steps are required
+
+==== Page 7 ====
+Architecture Original Baseline KLD OMSE Dual (CR) ACIQOMSEDual
+Alexnet 56.624% 38.616% 44.23% 48.908 % 54.552 % (0.195) - 49.122 % 54.994 %
+Alexnet (offset) 56.624% 51.774% 52.948% 53.286 % 55.522 % (0.195) 52.304% 53.998 % 55.508 %
+VGG16bn 73.476% 33.276% 53.686% 62.168 % 68.120 % (0.127) - 67.726 % 68.334 %
+VGG16bn (offset) 73.476% 58.832% 64.336% 67.198 % 71.478 % (0.127) 67.716% 71.260 % 71.260 %
+Inception v3 76.226% 4.042 % 23.658 % 40.916 % 66.176 % (0.154) - 43.184 % 68.608 %
+Inception v3 (offset) 76.226% 57.516 % 64.504% 67.964 % 73.060 % (0.151) 59.826% 69.528 % 74.486 %
+Resnet18 69.644% 48.37% 56.728% 61.268 % 66.522 % (0.150) - 63.744 % 66.628 %
+Resnet18 (offset) 69.644% 63.106% 64.486% 64.992 % 68.380 % (0.148) 65.694% 67.508 % 68.316 %
+Resnet50 76.012% 40.786% 57.57% 64.878 % 70.368 % (0.129) - 66.562 % 70.202 %
+Resnet50 (offset) 76.012% 65.338% 68.328% 71.274 % 73.252 % (0.126) 71.362% 73.392 % 73.392 %
+Resnet101 77.314% 36.494% 58.744% 65.316 % 70.770 % (0.129) - 65.350 % 70.806 %
+Resnet101 (offset) 77.314% 65.552% 71.412% 72.750 % 74.266 % (0.126) 69.544% 74.332 % 74.332 %
+SqueezeNet 58.0% 3.282% 9.582% 18.630 % 52.382 % (0.216) - 20.448 % 52.430 %
+SqueezeNet (offset) 58.0% 24.97% 35.806% 39.820 % 56.150 % (0.203) - 42.026 % 56.284 %
+DenseNet 74.472% 47.808% 64.062% 65.032 % 67.952 % (0.132) - 67.558 % 68.048 %
+DenseNet (offset) 74.472% 67.676% 69.578% 70.118 % 72.282 % (0.132) - 72.304 % 72.310 %
+Table 5. Top1 accuracy using INT4 MSE quantization of activations, INT8 weights uniformly quantized and dual MSE ( = 810 5)
+compared with several methods. The baseline is deﬁned as in [20] with clipping to the mean maximum and minimum range of the
+calibration set. KLD denotes the saturation technique based on Kullback-Leibler divergence metric proposed in [28]. In ACIQ framework
+[2] the ﬁrst layer of the models is not quantized and unsigned representation is used. ACIQ results are taken from the paper. We provide
+similar to ACIQ experiment with our methods (OMSEand Dual) wherein we do not quantize the input layer (if ﬁrst layer is the only key
+layer, OMSEand Dualyield same results). The calibration set is composed of 250 images for all the methods.
+for both fast deployment and better generalization. Results
+of the reﬁnement procedure, and its inﬂuence on accuracy
+improvement are presented in Table 4. These experiments
+show that the reﬁnement procedure can improve the accu-
+racy by up to to 23 percent. We also provide ablation study
+to demonstrate the usefulness of the reﬁnement stage in low
+compression ratio tasks where no dual layers are allowed.
+3.7. Activations Quantization
+In contrast to weights quantization, the activations quan-
+tization should be performed for each image on the ﬂy.
+Obviously, optimal scaling factors of activations cannot be
+computed for every image. Thus, the quantization parame-
+ters are generally approximated using relatively small cali-
+bration set [28, 2] where saturating the activation values to a
+given threshold helps in improving accuracy. The saturation
+problem is usually solved by approximating the activations
+distribution [28, 2]. These methods are less sensitive to out-
+liers with potential important impact on the underlying dot
+product. Here, we follow the same MSE minimization ap-
+proach, wherein the parameters are obtained as described in
+Section 3.4. Thereby, given a small calibration set (few hun-
+dred data samples) we collect activations at different layers
+of the network, and seek for optimal saturation factor. Given
+Xl2Rd;cl;wl;hlthelthlayer activations with dthe size of
+the calibration set, we solve
+min
+1kXl 1Xl
+1
+Zpk2
+F: (15)For key layers, optimal approximation using multiple
+quantizations as described in Section 3.5 suffers from strong
+overﬁtting. In order to approximate better, and to general-
+ize at the same time, we obtain the optimal parameters by
+quantizing the residual from the ﬁrst approximation, such
+that for a given activation Xwe have
+X^X=1~X1+2~X2
+=1X
+1
+Zp+2X 1~X1
+2
+Zp:(16)
+We obtain1from eq.(15), followed by obtaining 2from
+eq.(16). This procedure is similar to the alternating ap-
+proach described in Algorithm 1 with one iteration only.
+Similar to the network weight compression ratio, we deﬁne
+the activations compression ratio as the ratio between the
+size of all the compressed activations and the size of all the
+original activations.
+Table 5 presents the comparison of the variants of the
+proposed activation quantization method with several ex-
+isting methods. The line-search method iterates over 50
+samples only. Statistics of thresholding factors for differ-
+ent models are presented in Figure 3 where we can observe
+the severe saturation of the MMSE method.
+4. Experiments
+We evaluate the proposed framework on several pop-
+ular architectures in order to demonstrate its robustness
+
+==== Page 8 ====
+Architecture Original Our Our+offset CR(W,A) % Dual
+Alexnet 56.624% 79.056% 53.632% 77.244% 54.476 % 77.846 % (0.125,0.195) 25%
+VGG16bn 73.476% 91.536% 67.492% 88.016% 70.658 % 90.136 % (0.125,0.127) 6.25%
+Resnet18 69.644% 88.982% 65.456% 86.630% 67.416 % 87.716 % (0.126,0.148) 23.80%
+Resnet50 76.012% 92.934% 69.370% 89.204% 72.602 % 90.852 % (0.126,0.129) 3.70%
+Resnet101 77.314% 93.556% 69.700% 89.686% 73.602 % 91.526 % (0.126,0.128) 1.90%
+Inception v3 76.226% 92.984% 64.572% 85.852% 71.606 % 90.470 % (0.126,0.154) 11.57%
+SqueezeNet 58.184% 80.514% 50.722% 74.634% 55.358 % 78.482 % (0.149,0.216) 68%
+DenseNet 74.472% 91.974% 66.832% 87.518% 71.558 % 90.532 % (0.143,0.132) 2.47%
+Table 6. Performance of the proposed framework for INT4 weights and activations obtained using = 810 5. Compression ratios of both
+the weights and the activations and the percentage of dual layers are provided in the last two columns, respectively. The mean top-1 decay
+is of 6.7% and 3% for the regular and offset (unsigned) versions, respectively. Similarly, mean top-5 decay is of 4% and 1.7% respectively.
+Figure 3. Mean and standard deviation of the set of scaling factors
+of the weights ( ), the activations ( ) on the calibration set (not
+dual) and the reﬁned factors ( ), all normalized by the maximum
+value of the tensor they approximate.
+to aggressive quantization. We also evaluate quantization
+of non over-parameterized models such as SqueezeNet or
+DenseNet that are much more sensitive to quantization and
+are usually not analyzed in the NN quantization literature.
+We consider different INT4 quantization scenarios such
+as unsigned (with offset) and signed representations. We
+present also the accuracy-compression ratio trade off anal-
+ysis. The framework has been implemented using the Py-
+torch library with its pretrained models.
+The MSE grid search iterates over 500 sampling points
+for the weights and 50 for the activations. The scaling fac-
+tors reﬁnement stage requires 25 epochs over 500 randomly
+sampled images from the validation set. The calibration set
+used for the quantization of activations is comprised of 250
+images. Allthe layers are quantized, including the network
+input. Also, it is important to notice that there is currently
+no existing framework for linear INT4 only quantization of
+weights and activations for comparison in the inference set-
+ting. The summary of the accuracy loss and the compres-
+sion ratios is presented in Table 6. In Table 7 we show
+how modiﬁcation of the MSE threshold inﬂuences theArchitecture Original Our CR(W,A) Our
++offset
+Alexnet 56.624%49.570% (0.125,0.178) 52.274%
+54.186% (0.127,0.206) 54.936%
+54.720% (0.130,0.245) 56.068%
+Resnet50 76.012%69.472% (0.126,0.129) 72.530%
+73.078% (0.137,0.156) 74.826%
+74.336% (0.154,0.203) 75.198%
+Inception v3 76.226%61.856% (0.126,0.146) 71.662%
+74.036% (0.150,0.215) 75.354%
+74.766% (0.186,0.238) 75.870%
+DenseNet 74.472%65.526% (0.126,0.132) 70.730%
+70.716% (0.155,0.154) 73.114%
+73.382% (0.226,0.241) 74.116%
+Table 7. Trade-off analysis of the proposed method without and
+with offset for three thresholding values =f10;2;0:9g10 5.
+The compression ratio refers to the method without offset.
+accuracy-compression ratio trade-off.
+5. Conclusion
+In this paper we introduced an efﬁcient and accurate
+MSE-based low-bit precision quantization framework for
+neural networks. Our approach deploys hardware-aware
+partitioning of the network parameters, and the reﬁnement
+of high MSE layers, using quantized ﬁlter banks. Given a
+small calibration set, we further reﬁne the quantization scal-
+ing factors for better approximation of the original model.
+We also provide a framework for the quantization of the
+network activations, wherein we propose a method of resid-
+ual quantization for improved approximation of the most
+sensitive layers. The proposed approach can be adjusted to
+any desired precision for constrained hardware deployment,
+according to the inherent compression-complexity trade-off
+of the method. The framework allows fast and efﬁcient de-
+ployment of pretrained models, producing a new state-of-
+the-art INT4 inference quantization results.
+
+==== Page 9 ====
+References
+[1] D. Alistarh, D. Grubic, J. Li, R. Tomioka, and M. V ojnovic.
+Qsgd: Communication-efﬁcient sgd via gradient quantiza-
+tion and encoding. In Advances in Neural Information Pro-
+cessing Systems , pages 1709–1720, 2017. 4
+[2] R. Banner, Y . Nahshan, E. Hoffer, and D. Soudry. Aciq: An-
+alytical clipping for integer quantization of neural networks.
+arXiv preprint arXiv:1810.05723 , 2018. 2, 7
+[3] Y . Bengio, N. L ´eonard, and A. Courville. Estimating or prop-
+agating gradients through stochastic neurons for conditional
+computation. arXiv preprint arXiv:1308.3432 , 2013. 2
+[4] M. Courbariaux, Y . Bengio, and J.-P. David. Binaryconnect:
+Training deep neural networks with binary weights during
+propagations. In Advances in neural information processing
+systems , pages 3123–3131, 2015. 2
+[5] M. Courbariaux, I. Hubara, D. Soudry, R. El-Yaniv, and
+Y . Bengio. Binarized neural networks: Training deep neu-
+ral networks with weights and activations constrained to+ 1
+or-1. arXiv preprint arXiv:1602.02830 , 2016. 2
+[6] W. Dally. High-performance hardware for machine learning.
+InTutorial in Advances in Neural Information Processing
+Systems , 2015. 1
+[7] E. L. Denton, W. Zaremba, J. Bruna, Y . LeCun, and R. Fer-
+gus. Exploiting linear structure within convolutional net-
+works for efﬁcient evaluation. In Advances in neural infor-
+mation processing systems , pages 1269–1277, 2014. 1
+[8] J. Faraone, N. Fraser, M. Blott, and P. H. Leong. Syq: Learn-
+ing symmetric quantization for efﬁcient deep neural net-
+works. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , pages 4300–4309, 2018. 4
+[9] X. Glorot, A. Bordes, and Y . Bengio. Deep sparse recti-
+ﬁer neural networks. In Proceedings of the fourteenth inter-
+national conference on artiﬁcial intelligence and statistics ,
+pages 315–323, 2011. 3
+[10] Y . Gong, L. Liu, M. Yang, and L. Bourdev. Compress-
+ing deep convolutional networks using vector quantization.
+arXiv preprint arXiv:1412.6115 , 2014. 2
+[11] S. Han, H. Mao, and W. J. Dally. Deep compres-
+sion: Compressing deep neural networks with pruning,
+trained quantization and huffman coding. arXiv preprint
+arXiv:1510.00149 , 2015. 1
+[12] S. Han, J. Pool, J. Tran, and W. Dally. Learning both weights
+and connections for efﬁcient neural network. In Advances
+in neural information processing systems , pages 1135–1143,
+2015. 1, 3
+[13] K. He, X. Zhang, S. Ren, and J. Sun. Deep residual learn-
+ing for image recognition. In Proceedings of the IEEE con-
+ference on computer vision and pattern recognition , pages
+770–778, 2016. 4
+[14] G. Hinton, L. Deng, D. Yu, G. E. Dahl, A.-r. Mohamed,
+N. Jaitly, A. Senior, V . Vanhoucke, P. Nguyen, T. N. Sainath,
+et al. Deep neural networks for acoustic modeling in speech
+recognition: The shared views of four research groups. IEEE
+Signal processing magazine , 29(6):82–97, 2012. 1
+[15] G. Hinton, O. Vinyals, and J. Dean. Distilling the knowledge
+in a neural network. arXiv preprint arXiv:1503.02531 , 2015.
+1[16] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang,
+T. Weyand, M. Andreetto, and H. Adam. Mobilenets: Efﬁ-
+cient convolutional neural networks for mobile vision appli-
+cations. arXiv preprint arXiv:1704.04861 , 2017. 1
+[17] G. Huang, Z. Liu, L. Van Der Maaten, and K. Q. Wein-
+berger. Densely connected convolutional networks. In 2017
+IEEE Conference on Computer Vision and Pattern Recogni-
+tion (CVPR) , pages 2261–2269. IEEE, 2017. 1, 4
+[18] K. Hwang and W. Sung. Fixed-point feedforward deep neu-
+ral network design using weights+ 1, 0, and- 1. In Signal
+Processing Systems (SiPS), 2014 IEEE Workshop on , pages
+1–6. IEEE, 2014. 2, 4, 5
+[19] F. N. Iandola, S. Han, M. W. Moskewicz, K. Ashraf, W. J.
+Dally, and K. Keutzer. Squeezenet: Alexnet-level accuracy
+with 50x fewer parameters and¡ 0.5 mb model size. arXiv
+preprint arXiv:1602.07360 , 2016. 1, 4
+[20] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard,
+H. Adam, and D. Kalenichenko. Quantization and training
+of neural networks for efﬁcient integer-arithmetic-only infer-
+ence. arXiv preprint arXiv:1712.05877 , 2017. 2, 4, 7
+[21] N. P. Jouppi, C. Young, N. Patil, D. Patterson, G. Agrawal,
+R. Bajwa, S. Bates, S. Bhatia, N. Boden, A. Borchers, et al.
+In-datacenter performance analysis of a tensor processing
+unit. In Computer Architecture (ISCA), 2017 ACM/IEEE
+44th Annual International Symposium on , pages 1–12. IEEE,
+2017. 4
+[22] A. Krizhevsky, I. Sutskever, and G. E. Hinton. Imagenet
+classiﬁcation with deep convolutional neural networks. In
+Advances in neural information processing systems , pages
+1097–1105, 2012. 1, 4
+[23] F. Li and B. Liu. Ternary weight networks. CoRR ,
+abs/1605.04711, 2016. 2
+[24] Z. Li, B. Ni, W. Zhang, X. Yang, and W. Gao. Perfor-
+mance guaranteed network acceleration via high-order resid-
+ual quantization. In 2017 IEEE International Conference on
+Computer Vision (ICCV) , pages 2603–2611. IEEE, 2017. 2
+[25] D. Lin, S. Talathi, and S. Annapureddy. Fixed point quanti-
+zation of deep convolutional networks. In International Con-
+ference on Machine Learning , pages 2849–2858, 2016. 5
+[26] X. Lin, C. Zhao, and W. Pan. Towards accurate binary convo-
+lutional neural network. In Advances in Neural Information
+Processing Systems , pages 345–353, 2017. 5
+[27] N. Mellempudi, A. Kundu, D. Mudigere, D. Das, B. Kaul,
+and P. Dubey. Ternary neural networks with ﬁne-grained
+quantization. arXiv preprint arXiv:1705.01462 , 2017. 4
+[28] S. Migacz. 8-bits inference with tensorrt. In GPU Technol-
+ogy Conference , 2017. 2, 4, 7
+[29] A. Polino, R. Pascanu, and D. Alistarh. Model com-
+pression via distillation and quantization. arXiv preprint
+arXiv:1802.05668 , 2018. 3
+[30] M. Rastegari, V . Ordonez, J. Redmon, and A. Farhadi. Xnor-
+net: Imagenet classiﬁcation using binary convolutional neu-
+ral networks. In European Conference on Computer Vision ,
+pages 525–542. Springer, 2016. 2, 3
+[31] O. Shayar, D. Levi, and E. Fetaya. Learning discrete weights
+using the local reparameterization trick. arXiv preprint
+arXiv:1710.07739 , 2017. 2
+
+==== Page 10 ====
+[32] K. Simonyan and A. Zisserman. Very deep convolutional
+networks for large-scale image recognition. arXiv preprint
+arXiv:1409.1556 , 2014. 4
+[33] D. Soudry, I. Hubara, and R. Meir. Expectation backpropa-
+gation: Parameter-free training of multilayer neural networks
+with continuous or discrete weights. In Advances in Neural
+Information Processing Systems , pages 963–971, 2014. 2
+[34] I. Sutskever, O. Vinyals, and Q. V . Le. Sequence to sequence
+learning with neural networks. In Advances in neural infor-
+mation processing systems , pages 3104–3112, 2014. 1
+[35] C. Szegedy, V . Vanhoucke, S. Ioffe, J. Shlens, and Z. Wojna.
+Rethinking the inception architecture for computer vision. In
+Proceedings of the IEEE conference on computer vision and
+pattern recognition , pages 2818–2826, 2016. 4
+[36] S. Zhou, Y . Wu, Z. Ni, X. Zhou, H. Wen, and Y . Zou.
+Dorefa-net: Training low bitwidth convolutional neural
+networks with low bitwidth gradients. arXiv preprint
+arXiv:1606.06160 , 2016. 2, 3, 4
+

@@ -1,0 +1,1137 @@
+==== Page 1 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Ching-Yun Ko* 1Zhaoyang Lyu* 2Tsui-Wei Weng3Luca Daniel3Ngai Wong1Dahua Lin2
+Abstract
+The vulnerability to adversarial attacks has been
+a critical issue for deep neural networks. Address-
+ing this issue requires a reliable way to evaluate
+the robustness of a network. Recently, several
+methods have been developed to compute robust-
+ness quantiﬁcation for neural networks, namely,
+certiﬁed lower bounds of the minimum adversar-
+ial perturbation. Such methods, however, were
+devised for feed-forward networks, e.g. multi-
+layer perceptron or convolutional networks. It re-
+mains an open problem to quantify robustness for
+recurrent networks, especially LSTM and GRU.
+For such networks, there exist additional chal-
+lenges in computing the robustness quantiﬁca-
+tion, such as handling the inputs at multiple steps
+and the interaction between gates and states. In
+this work, we propose POPQORN (Propagated-
+outputQuantiﬁed R obustness for RNNs), a gen-
+eral algorithm to quantify robustness of RNNs,
+including vanilla RNNs, LSTMs, and GRUs. We
+demonstrate its effectiveness on different network
+architectures and show that the robustness quan-
+tiﬁcation on individual steps can lead to new in-
+sights.
+1. Introduction
+Deep learning has led to remarkable performance gains on
+a number of tasks, i.e.image classiﬁcation, speech recogni-
+tion, and language processing. Nevertheless, recent litera-
+ture has demonstrated that adversarial examples broadly ex-
+ist for deep neural networks in these applications (Szegedy
+et al., 2014; Kurakin et al., 2017; Jia & Liang, 2017; Car-
+*Equal contribution1The University of Hong
+Kong, Hong Kong2The Chinese University of Hong
+Kong, Hong Kong3Massachusetts Institute of Technol-
+ogy, Cambridge, MA, USA. Source code is available
+athttps://github.com/ZhaoyangLyu/POPQORN .
+Correspondence to: Ching-Yun Ko <cyko@eee.hku.hk >,
+Zhaoyang Lyu <lyuzhaoyang@link.cuhk.edu.hk >.
+Proceedings of the 36thInternational Conference on Machine
+Learning , Long Beach, California, PMLR 97, 2019. Copyright
+2019 by the author(s).lini & Wagner, 2018). A small perturbation that humans
+are mostly immune to can be crafted to mislead a neural
+network’s predictions. As deep neural networks have been
+widely employed in many safety-critical applications (Sharif
+et al., 2016; Kurakin et al., 2017; Eykholt et al., 2018), it is
+crucial to know when such models will fail and what can be
+done to make them more robust to the adversarial attacks.
+Studies on the robustness of neural networks mainly fall in
+two categories: (1) Attack-based approaches – researchers
+try to design strong adversarial attack algorithms to attack
+deep neural networks and the robustness is measured by
+the distortion between successful adversarial examples and
+the original ones. (2) Veriﬁcation-based approaches (Katz
+et al., 2017; Cheng et al., 2017), which aim to ﬁnd the mini-
+mum distortion of neural networks or its lower bounds that
+areagnostic to attack methods . Existing veriﬁcation-based
+methods were mainly devised for feed-forward networks,
+such as multi-layer perceptron. Robustness veriﬁcation for
+recurrent neural networks (RNNs), which have been widely
+used in speech recognition and natural language processing,
+has not been systematically investigated.
+To verify the robustness of RNNs, we face several new
+challenges: (1) Some popular RNN formulations, including
+LSTM and GRU, involve hidden states that are indirectly
+determined by three to four gates. These nonlinear gates
+are tightly coupled together, which we refer to as cross-
+nonlinearity . This substantially complicates the veriﬁcation
+of robustness. (2) RNNs are widely adopted for applica-
+tions with sequential inputs, e.g.sentences or time series.
+However, previous veriﬁcation methods typically assume
+that the inputs were fed into the network at the bottom layer.
+Hence, they are not directly applicable here. (3) For ap-
+plications with sequential inputs, imperceptible adversarial
+examples may correspond to texts with least number of
+changed words (Gao et al., 2018). Thus it is critical to evalu-
+ate the hardness of manipulating one single word (one input
+frame) instead of all words.
+In this paper, we tackle the aforementioned problems by
+proposing an effective robustness quantiﬁcation frame-
+work called POPQORN ( Propagated- outputQuantiﬁed
+Robustness for RNNs) for RNNs. We bound the non-
+linear activation function using linear functions. Starting
+from the output layer, linear bounds are propagated back to
+
+==== Page 2 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Table 1. Comparison of methods for evaluating RNN robustness.
+Method Task Application Architecture Attack Veriﬁcation Robustness guarantee
+FGSM (Papernot et al., 2016a) Categorical/ Sequential NLP LSTM X 
+(Gong & Poellabauer, 2017) Categorical Speech WaveRNN (RNN/ LSTM) X 
+Houdini (Ciss ´e et al., 2017) Sequential Speech DeepSpeech-2 (LSTM) X 
+(Jia & Liang, 2017) SQuAD NLP LSTM X 
+(Zhao et al., 2018) Categorical NLP LSTM X 
+(Ebrahimi et al., 2018a;b) Categorical/ Sequential NLP LSTM X 
+Seq2Sick (Cheng et al., 2018) Sequential NLP Seq2seq (LSTM) X 
+C&W (Carlini & Wagner, 2018) Sequential Speech DeepSpeech (LSTM) X 
+CLEVER (Weng et al., 2018b) Categorical CV/ NLP/ Speech RNN/ LSTM/ GRU  X 
+POPQORN (This work) Categorical CV/ NLP/ Speech RNN/ LSTM/ GRU  X X
+Table 2. Comparison of methods for providing adversarial robustness quantiﬁcation in NNs.
+Method Certiﬁcation Multi-layer Beyond ReLU/ MLP RNN structures handle cross-nonlinearity Implementation
+(Hein & Andriushchenko, 2017) X differentiable/   TensorFlow
+CLEVER (Weng et al., 2018b)  X X /X  X NumPy
+SDP approach (Raghunathan et al., 2018) X X/   TensorFlow
+Dual approach (Dvijotham et al., 2018) X X X /X   Not speciﬁed
+Fast-lin / Fast-lip (Weng et al., 2018a) X X /   NumPy
+CROWN (Zhang et al., 2018) X X X /   NumPy
+DeepZ (Singh et al., 2018) X X X / no .pooling layers   Python, C
+CNN-Cert (Boopathy et al., 2019) X X X /X   NumPy
+POPQORN (This work) X X X /X X X PyTorch (GPU)
+the ﬁrst layer recursively. Compared to existing methods,
+POPQORN has three important advantages: (1) Novel - it is
+a general framework, which is, to the best of our knowledge,
+theﬁrst work to provide a quantiﬁed robustness evaluation
+for RNNs with robustness guarantees. (2) Effective - it can
+handle complicated RNN structures besides vanilla RNNs,
+including LSTMs and GRUs that contain challenging cou-
+pled nonlinearities. (3) Versatile - it can be widely applied
+in applications including but not limited to computer vision,
+natural language processing, and speech recognition.
+2. Background and Related Works
+Adversarial attacks in RNNs. Crafting adversarial ex-
+amples of RNNs in natural language processing and speech
+recognition has started to draw public attentions in addition
+to the adversarial examples of feed-forward networks in im-
+age classiﬁcations. Adversarial attacks of RNNs on text clas-
+siﬁcation task (Papernot et al., 2016a), reading comprehen-
+sion systems (Jia & Liang, 2017), seq2seq models (Cheng
+et al., 2018) have been proposed in natural language process-
+ing application; meanwhile recently (Gong & Poellabauer,
+2017) and (Ciss ´e et al., 2017; Carlini & Wagner, 2018) have
+also demonstrated successful attacks in speech recognition
+and audio systems. We summarize the RNN attacks in Ta-
+ble 1. (Papernot et al., 2016b; Gong & Poellabauer, 2017;
+Ebrahimi et al., 2018a;b; Cheng et al., 2018; Carlini & Wag-
+ner, 2018) perform gradient-based attacks, while generative
+adversarial network is used in (Zhao et al., 2018) to gener-
+ate adversaries. We adapt (Carlini & Wagner, 2017) into
+C&W-Ada for ﬁnding RNN attacks.
+Robustness veriﬁcation for neural networks. To safe-
+guard against misclassiﬁcation under a threat model,
+veriﬁcation-based methods evaluate the strengths such thatany possible attacks weaker than the proposed strengths
+will fail. A commonly-used threat model is the norm-ball
+bounded attacks, wherein strengths of adversaries are quan-
+tiﬁed by their lpdistance from the original example. Under
+the norm-ball bounded threat model, determining the min-
+imum adversarial distortion of ReLU networks has been
+shown to be NP-hard (Katz et al., 2017). Despite the hard-
+ness of the problem, fortunately, it is possible to estimate
+the minimum adversarial distortion (Weng et al., 2018b)
+or to compute a non-trivial certiﬁed lower bound (Hein &
+Andriushchenko, 2017; Raghunathan et al., 2018; Weng
+et al., 2018a; Dvijotham et al., 2018; Zhang et al., 2018;
+Singh et al., 2018; Boopathy et al., 2019). In (Weng et al.,
+2018b), the authors proposed a robustness score, CLEVER,
+for neural network image classiﬁers based on estimating
+local Lipschitz constant of the networks. We show that it is
+possible to directly adapt their framework and compute a
+CLEVER score for RNNs, which is referred to CLEVER-
+RNN in Section 4.
+However, CLEVER score does not come with guarantees
+and therefore an alternative approach is to compute a non-
+trivial lower bound of the minimum adversarial distortion.
+(Hein & Andriushchenko, 2017) and (Raghunathan et al.,
+2018) proposed to analytically compute the lower bounds
+for shallow networks (with no more than 2hidden layers)
+but their bounds get loose easily when applied to general net-
+works. (Weng et al., 2018a) proposed two algorithms Fast-
+Lin and Fast-Lip to efﬁciently quantify robustness for ReLU
+networks and the Fast-Lin algorithm is further extended to
+CROWN (Zhang et al., 2018) to quantify for MLP networks
+with general activation functions. On the other hand, (Dvi-
+jotham et al., 2018) proposed a dual-approach to verify NNs
+with a general class of activation functions. However, their
+approach compromises the lower bound performance and
+
+==== Page 3 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+the computational efﬁciency of the “anytime“ algorithm.
+Recently, (Boopathy et al., 2019) proposes a framework that
+is capable of quantifying robustness on CNNs with various
+architectures including pooling layers, residual blocks in
+contrast to (Singh et al., 2018) that is limited to convolu-
+tional architectures without pooling layers.
+To the best of our knowledge, there is no prior work to
+provide robustness veriﬁcation for RNNs that tackles the
+aforementioned challenges: the complex feed-back archi-
+tectures, the sequential inputs, and the cross-nonlinearity of
+the hidden states. In line with the robustness veriﬁcation for
+NNs, this paper is the ﬁrst to study the robustness proper-
+ties of RNNs (see Tables 1 and 2 for detailed comparisons).
+Since it is not straightforward to deﬁne a mistake in tasks
+other than classiﬁcations (cf. a mistake in classiﬁcation
+tasks refers to a misclassiﬁcation), we limit the scope of this
+paper to RNN-based classiﬁers.
+3. POPQORN: Quantifying Robustness of
+Recurrent Neural Networks
+Overview. In this section, we show that the output of an
+RNN can be bounded by two linear functions when the
+input sequence of the network is perturbed within an `pball
+with a radius . By applying the linear bounds on the non-
+linear activation functions (e.g. sigmoid and tanh) and the
+non-linear operations (e.g. cell states in LSTM), we can de-
+couple the non-linear activations and the cross-nonlinearity
+in the hidden states layer by layer and eventually bound the
+network output by two linear functions in terms of input1.
+Subsequently, we show how this theoretical result is used in
+the POPQORN to compute robustness quantiﬁcation of an
+RNN. For ease of illustrations, we start with two motivating
+examples on a 2-layer vanilla RNN and a 1-layer LSTM net-
+work. The complete theorems for general m-layer vanilla
+RNNs, LSTMs, and GRUs are provided in Section A in the
+appendix.
+Notations. LetX0= [x(1)
+0;:::;x(m)
+0]be the original in-
+put data sequence, and let X= [x(1);:::;x(m)]be the
+perturbed frames of X0within an-boundedlp-ball, i.e.,
+x(k)2Bp(x(k)
+0;), where superscript “ (k)” denotes the
+k-th time step. An RNN function is denoted as Fand the
+j-th output element as Fj(X). The upper and lower bounds
+ofFj(X)are denoted as FU
+j(X)andFL
+j(X), respectively.
+The full notations are summarized in Table 3.
+3.1. A 2-layer Vanilla RNN
+Deﬁnition. A many-to-one 2-layer (m= 2) RNN reads
+F(X) =WFaa(2)+bF;
+1Proposed bounding techniques are applicable to any non-linear
+activation that is bounded above and below for the given interval.
+𝒙(𝟏)𝐚(𝟎)𝐚(𝟏)𝐅
+𝐚(2)𝐖𝐚𝐚, 𝐛𝐚
+𝐖𝐚𝐱𝐖F𝐚, 𝐛𝐅
+𝒙(𝟐)𝐖𝐚𝐱𝐖𝐚𝐚, 𝐛𝐚
+Input 
+SequenceOutputFigure 1. Graphical depiction of a 2-layer many-to-one RNN.
+a(2)=(Waaa(1)+Waxx(2)+ba);
+a(1)=(Waaa(0)+Waxx(1)+ba);
+whereFis the output, a(k)is thek-th hidden state,
+()is the coordinate-wise activation function, and
+Waa;WFa;bF;baare associated model parameters, as
+shown in Figure 1.
+Ideas. Based on the above equation, for a ﬁxed j2[t],
+we aim at deriving two explicit functions FL
+jandFU
+jsuch
+that8X2Rn2where x(k)2Bp(x(k)
+0;), the inequality
+FL
+j(X)Fj(X)FU
+j(X)holds true. To start with, we
+assume that we know the bounds for pre-activation y(k)=
+Waaa(k 1)+Waxx(k)+ba(superscript “ (k)” denotes
+thek-th layer): l(k)4y(k)4u(k):We refer the landuas
+pre-activation bounds in the remainder of this paper. We
+show that it is possible to bound every non-linear activation
+function()in the hidden states by two bounding lines in
+(1a) and(1b) associated to l(k)andu(k), and that we can
+apply this procedure recursively from the output Fj(X)to
+the input Xto obtainFL
+jandFU
+j.
+Bounding lines. Two univariate bounding linear functions
+are deﬁned as follows:
+h(k)
+U;r(v) =(k)
+U;r(v+(k)
+U;r); (1a)
+h(k)
+L;r(v) =(k)
+L;r(v+(k)
+L;r); (1b)
+such that for l(k)
+rvu(k)
+r,
+eq.(1b)(v)eq.(1a);
+where therin the subscript implies the dependency of the
+derived lines on neurons. Both the slopes and intercepts are
+functions of pre-activation bounds.
+Derivation. We exemplify how a 2-layer vanilla RNN can
+be bounded:
+Fj(X) =WFa
+j;:a(2)+bF
+j=WFa
+j;:(y(2)) +bF
+j:(2)
+We usesupper-bounding lines h(2)
+U;r(y(2)
+r);r2[s], and also
+use variables (2)
+j;rand(2)
+r;jto denote the slopes in front of
+
+==== Page 4 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Table 3. Table of Notation
+Notation Deﬁnition Notation Deﬁnition Notation Deﬁnition
+t number of output classes F:Rnm!Rtnetwork classiﬁer X02Rnmoriginal input
+n size of input frames x(k)2Rnthek-th input frame [K] setf1;2;;Kg
+s number of neurons in a layer FL
+j(X) :Rnm!R linear lower bound of Fj(X)Bp(x(k)
+0;)fxjkx x(k)
+0kpgm number of network layers FU
+j(X) :Rnm!R linear upper bound of Fj(X)
+a0 initial hidden state L
+j global lower bound of Fj(X)l4y4ulryrur,
+c0 initial cell state U
+j global upper bound of Fj(X) 8r2[s],l;y;u2Rs
+y(2)
+rand intercepts in the parentheses:
+(2)
+j;r=(
+(2)
+U;rifWFa
+j;r0;
+(2)
+L;rifWFa
+j;r<0;(2)
+r;j=(
+(2)
+U;rifWFa
+j;r0;
+(2)
+L;rifWFa
+j;r<0;
+and obtain
+Fj(X)(WFa
+j;:(2)
+j;:)(y(2)+(2)
+:;j) +bF
+j;
+whereis the Hadamard (i.e. element-wise) product. To
+simplify notation, we let (2)
+j;::=WFa
+j;:(2)
+j;:and have
+Fj(X)~Waa(2)
+j;:a(1)+~Wax(2)
+j;:x(2)+~b(2)
+j;
+where
+~Waa(2)
+j;:=(2)
+j;:Waa;~Wax(2)
+j;:=(2)
+j;:Wax;
+~b(2)
+j=(2)
+j;:(ba+(2)
+:;j) +bF
+j:
+Substituting a(1)with its deﬁnition yields
+Fj(X)~Waa(2)
+j;:(y(1)) +~Wax(2)
+j;:x(2)+~b(2)
+j:(3)
+Note that Equations (2)and(3)are in similar forms. Thus
+we can bound (y(1))byslinear functions h(1)
+U;r(y(1)
+r);r2
+[s]and use(1)
+j;rand(1)
+r;jto denote slopes in front of y(1)
+r
+and intercepts in the parentheses:
+(1)
+j;r=(
+(1)
+U;r if~Waa(2)
+j;r0;
+(1)
+L;r if~Waa(2)
+j;r<0;
+(1)
+r;j=(
+(1)
+U;r if~Waa(2)
+j;r0;
+(1)
+L;r if~Waa(2)
+j;r<0;
+and let (1)
+j;::=~Waa(2)
+j;:(1)
+j;:. Then we have
+Fj(X)(1)
+j;:Waaa(0)+2X
+z=1(z)
+j;:Waxx(z)
++2X
+z=1(z)
+j;:(ba+(z)
+:;j) +bF
+j:
+So far we have derived an explicit linear function on the
+right-hand side of the above inequality. We denote it herein
+asFU
+jand we have Fj(X)FU
+j(X),8X2Rn2where
+x(k)2Bp(x(k)
+0;). A closed-form global upper boundU
+jcan be obtained naturally by maximizing FU
+j(X)for
+all possible X, which can be directly solved by applying
+Holder’s inequality. Hence we obtain
+U
+j=(1)
+j;:Waaa(0)+2X
+z=1k(z)
+j;:Waxkq
++2X
+z=1(z)
+j;:Waxx(z)
+0+2X
+z=1(z)
+j;:(ba+(z)
+:;j) +bF
+j:
+An explicit function FL
+jand a closed-form global lower
+boundL
+jcan also be found through similar steps and by
+minimizingFL
+j(X)instead. During the derivation, we have
+limited perturbations to be uniform across input frames,
+which assemble noises in cameras. However, the above
+method is also applicable to non-uniform distortions. For
+example, we can also certify bounds for distortions on parts
+of the input frames, which on the other hand are of more
+interests in natural language processing tasks.
+3.2. A 1-layer Long Short-term Memory Network
+For an RNN with LSTM units, we can also derive analytic
+upper-bounding and lower-bounding functions. In this ex-
+ample, we inherit the notations in Table 3, and exemplify
+through a 1-layer (m= 1) LSTM as shown in Figure 2.
+LSTM. The following updating equations are adopted:
+Input gate: i(k)=(Wixx(k)+Wiaa(k 1)+bi);
+Forget gate: f(k)=(Wfxx(k)+Wfaa(k 1)+bf);
+Cell gate: g(k)= tanh( Wgxx(k)+Wgaa(k 1)+bg);
+Output gate: o(k)=(Woxx(k)+Woaa(k 1)+bo);
+Cell state: c(k)=f(k)c(k 1)+i(k)g(k);
+Hidden state: a(k)=o(k)tanh(c(k)):
+Again, the()denotes the coordinate-wise sigmoid func-
+tion and tanh()is the coordinate-wise hyperbolic tan-
+gent function. Output Fof the network is determined by
+F(X) =WFaa(m)+bF, and we have pre-activations as
+yi(k)=Wixx(k)+Wiaa(k 1)+bi;
+yf(k)=Wfxx(k)+Wfaa(k 1)+bf;
+yg(k)=Wgxx(k)+Wgaa(k 1)+bg;
+yo(k)=Woxx(k)+Woaa(k 1)+bo:
+
+==== Page 5 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+𝒙(𝟏)𝐚(𝟎)𝐅
+𝐖F𝐚, 𝐛𝐅
+Input 
+SequenceOutput
+c(𝟎) × +
+× ×
+𝛔𝛔 𝛔 𝐭𝐚𝐧𝐡𝐭𝐚𝐧𝐡
+Figure 2. Graphical depiction of a 1-layer LSTM network
+Ideas. When deriving the lower bounds and upper bounds
+of LSTMs, we have also made an important assumption:
+we assume we know the bounds for hidden/cell states. This
+assumption, as well as the assumption made when deriving
+for vanilla RNNs and GRUs, can be easily fulﬁlled as the
+bounds of hidden/cell states are available by similar deriva-
+tions as will be shown below. We refer readers to Theorem
+A.2 (vanilla RNNs), Corollary A.3/ Theorem A.4 (LSTMs)
+and Corollary A.6 (GRUs) in the appendix for details.
+Recalling that in Section 3.1, we aim at bounding the non-
+linearity using univariate linear functions. Final bounds are
+obtained by recursively propagating the linear bounds from
+the output layer back to the ﬁrst layer. Here when analyzing
+the bounds for an LSTM, we adopt a similar approach of
+propagating linear bounds from the last layer to the ﬁrst.
+However, different from the vanilla RNN, the difﬁculty
+of reaching this goal lies in bounding more complex non-
+linearities. In an LSTM, we cope with two different non-
+linear functions:
+(v)zand(v) tanh( z);
+both of which are dependent on two variables and are cross
+terms of varied gates. To deal with this, we extend our
+previous ideas to using planes instead of lines to bound
+these cross terms. The graphical illustration of the bounding
+planes is shown in Figure 3.
+Bounding planes. With bounds of hidden/cell states, we
+can gather bounds: lgate(1)4ygate(1)4ugate(1)where gate
+=fi;f;g;ogand superscript “ (1)” denotes the layer we are
+at. As both variables are bounded as above and compactness
+is a continuous invariant, we are guaranteed to have at least
+two bounding planes for the non-linearities. For example,
+for(v)zwe have planes:
+hcross(1)
+U;r = max((v)z); hcross(1)
+L;r = min((v)z):
+In practice, we use the following planes:
+hcross(1)
+U;r (v;z) =cross(1)
+U;r v+cross(1)
+U;r z+cross(1)
+U;r;(4a)
+hcross(1)
+L;r (v;z) =cross(1)
+L;r v+cross(1)
+L;r z+cross(1)
+L;r;(4b)
+𝝈𝒗⋅tanh(𝒛)
+𝒉𝑼(𝒗,𝒛)
+𝒉𝑳(𝒗,𝒛)Figure 3. Illustration of the upper-bounding plane hU(v;z)and
+lower-bounding plane hL(v;z)of(v) tanh( z).
+that satisfy
+eq.(4b)(v)zeq.(4a);
+where therin the subscript implies the dependency of the de-
+rived planes on neurons, and superscript cross 2fig;oc;fcg
+tracks the origins of those cross terms. For example,
+cross=igwhen it is the coupling of input gates and cell
+gates: v=yi(1)andz=yg(1). Notably, slopes and inter-
+cepts, sayig(1)
+U;r depends on ranges of yi(1)
+randyg(1)
+r. We
+formulate the task of ﬁnding bounding planes as a con-
+strained optimization problem and use gradient descent
+method to solve it (see Section A.4 in the appendix for
+details).
+Derivation. We now exemplify how a 1-layer LSTM can
+be bounded:
+Fj(X) =WFa
+j;:a(1)+bF
+j;
+=WFa
+j;:[(yo(1))tanh(c(1))] +bF
+j:(5)
+To bound Equation (5), we use supper-bounding planes
+hoc(1)
+U;r(yo(1);c(1));r2[s], and also deﬁne oc(1)
+j;r,oc(1)
+j;r
+and'oc(1)
+j;r in the parentheses:
+oc(1)
+j;r =(
+oc(1)
+U;r ifWFa
+j;r0;
+oc(1)
+L;r ifWFa
+j;r<0;
+oc(1)
+j;r =(
+oc(1)
+U;r ifWFa
+j;r0;
+oc(1)
+L;r ifWFa
+j;r<0;
+'oc(1)
+j;r =(
+oc(1)
+U;r ifWFa
+j;r0;
+oc(1)
+L;r ifWFa
+j;r<0;
+and obtain
+Fj(X)(WFa
+j;:oc(1)
+j;:)yo(1)+ (WFa
+j;:oc(1)
+j;:)c(1)
++sX
+r=1(WFa
+j;r'oc(1)
+j;r) +bF
+j:
+
+==== Page 6 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Table 4. Quantiﬁed robustness bounds for various RNNs.
+Networks L
+jFjU
+j Closed-form formulas
+Vanilla RNNUpper bounds U
+j(0)
+j;:a(0)+Pm
+k=1k(k)
+j;:Waxkq+Pm
+k=1(k)
+j;:Waxx(k)
+0+Pm
+k=1(k)
+j;:(ba+(k)
+:;j) +bF
+j
+Lower bound L
+j
+(0)
+j;:a(0) Pm
+k=1k
+(k)
+j;:Waxkq+Pm
+k=1
+(k)
+j;:Waxx(k)
+0+Pm
+k=1
+(k)
+j;:(ba+(k)
+:;j) +bF
+j
+LSTMUpper bounds U
+j~Wa(1)
+U;j;:a(0)+fc(1)
+;j;:c(0)+Pm
+k=1k~Wx(k)
+U;j;:kq+Pm
+k=1~Wx(k)
+U;j;:x(k)
+0+Pm
+k=1~b(k)
+U;j+bF
+j
+Lower bound L
+j~Wa(1)
+L;j;:a(0)+
+fc(1)
+;j;:c(0) Pm
+k=1k~Wx(k)
+L;j;:kq+Pm
+k=1~Wx(k)
+L;j;:x(k)
+0+Pm
+k=1~b(k)
+L;j+bF
+j
+GRUUpper bounds U
+j~Wa(1)
+U;j;:a(0)+Pm
+k=1k~Wx(k)
+U;j;:kq+Pm
+k=1~Wx(k)
+U;j;:x(k)
+0+Pm
+k=1~b(k)
+U;j+bF
+j
+Lower bound L
+j~Wa(1)
+L;j;:a(0) Pm
+k=1k~Wx(k)
+L;j;:kq+Pm
+k=1~Wx(k)
+L;j;:x(k)
+0+Pm
+k=1~b(k)
+L;j+bF
+j
+Remark: see Section A in the appendix for detailed proofs and deﬁnitions.
+For simplicity, we further collect the summing weights of
+yo(1)andc(1)into row vectors oc(1)
+;j;:andoc(1)
+;j;:, and con-
+stants (excepts bF
+j) intooc(1)
+';j;r. Thereafter, we have
+Fj(X)
+(oc(1)
+;j;:Wox)x(1)+ (oc(1)
+;j;:Woa)a(0)+oc(1)
+;j;:bo
++oc(1)
+;j;:[((yf(1))c(0)+(yi(1))tanh(yg(1))]
++sX
+r=1oc(1)
+';j;r+bF
+j: (6)
+Then to bound the two cross terms in Equation (6),
+we use upper-bounding planes hfc(1)
+U;r(yf(1);c(0))and
+hig(1)
+U;r(yi(1);yg(1));r2[s]. We deﬁne cross0(1)
+j;r ,cross0(1)
+j;r ,
+'cross0(1)
+j;r for cross0=ffc;iggas in the parentheses:
+cross0(1)
+j;r =(
+cross0(1)
+U;r ifoc(1)
+;j;r0;
+cross0(1)
+L;r ifoc(1)
+;j;r<0;
+cross0(1)
+j;r =(
+cross0(1)
+U;r ifoc(1)
+;j;r0;
+cross0(1)
+L;r ifoc(1)
+;j;r<0;
+'cross0(1)
+j;r =(
+cross0(1)
+U;r ifoc(1)
+;j;r0;
+cross0(1)
+L;r ifoc(1)
+;j;r<0;
+and obtain
+Fj(X)pxx(1)+paa(0)+fc(1)
+;j;:yf(1)+fc(1)
+;j;:c(0)
++ig(1)
+;j;:yi(1)+ig(1)
+;j;:yg(1)+pb+bF
+j:
+where
+px=oc(1)
+;j;:Wox; pa=oc(1)
+;j;:Woa;
+fc(1)
+;j;:=oc(1)
+;j;:fc(1)
+j;:;fc(1)
+;j;:=oc(1)
+;j;:fc(1)
+j;:;
+ig(1)
+;j;:=oc(1)
+;j;:ig(1)
+j;:;ig(1)
+;j;:=oc(1)
+;j;:ig(1)
+j;:;
+fc(1)
+';j;:=oc(1)
+;j;:'fc(1)
+j;:;ig(1)
+';j;:=oc(1)
+;j;:'ig(1)
+j;:;
+pb=sX
+r=1(fc(1)
+';j;r +ig(1)
+';j;r+oc(1)
+';j;r) +oc(1)
+;j;:bo:
+Substituting yf(1);c(0);yi(1);yg(1)with their deﬁnitions
+renders
+Fj(X)~Wx(1)
+U;j;:x(1)+~Wa(1)
+U;j;:a(0)+~b(1)
+U;j+fc(1)
+;j;:c(0);where
+~Wx(1)
+U;j;:=oc(1)
+;j;:Wox+fc(1)
+;j;:Wfx+ig(1)
+;j;:Wix
++ig(1)
+;j;:Wgx;
+~Wa(1)
+U;j;:=oc(1)
+;j;:Woa+fc(1)
+;j;:Wfa+ig(1)
+;j;:Wia
++ig(1)
+;j;:Wga;
+~b(1)
+U;j= [oc(1)
+;j;:bo+fc(1)
+;j;:bf+ig(1)
+;j;:bi+ig(1)
+;j;:bg
++sX
+r=1(oc(1)
+';j;r+fc(1)
+';j;r +ig(1)
+';j;r)] +bF
+j:
+A closed-form global upper bound U
+jcan thereafter be
+obtained by applying Holder’s inequality:
+U
+j=k~Wx(1)
+U;j;:kq+~Wx(1)
+U;j;:x(1)
+0+~Wa(1)
+U;j;:a(0)+~b(z)
+U;j
++fc(1)
+;j;:c(0):
+An explicit function FL
+jand a closed-form global lower
+boundL
+jcan also be found through similar steps such
+thatL
+jFL
+j(X)Fj(X),8X2Rn2where x(k)2
+Bp(x(k)
+0;). The derivations for a GRU follow similarly,
+and are put into the appendix (Section A.7) due to space
+constraint.
+3.3. Robustness Quantiﬁcation Algorithm
+As summarized in Table 4, given a trained vanilla RNN,
+LSTM or GRU, input sequence X02Rnm,lpball param-
+etersp1and0, for8j2[t],1=q= 1 1=p, there
+exist two ﬁxed values L
+jandU
+jsuch that8X2Rnm
+where x(k)2Bp(x(k)
+0;), the inequality L
+jFj(X)
+U
+jholds true. Now suppose the label of the input sequence
+isj, we aim at utilizing the uniform global bounds in Table 4
+to ﬁnd the largest possible lower bound jof untargeted at-
+tacks. We formalize the objective and constraints as follows:
+j= max
+;s.t.L
+j()U
+i();8i6=j:
+To verify the largest possible lower bound ^of targeted
+attacks (target class be i), we solve the following:
+^(i;j) = max
+;s.t.L
+j()U
+i():
+
+==== Page 7 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Input: i nitialize𝝐:=𝝐𝟎, 
+trained RNN, test sequence 𝑿,
+threshold 𝝉
+Compute bounds
+𝜸𝒋𝑳, 𝜸𝒋𝑼of𝑭𝒋
+according to Table 4.
+∃𝒊≠𝒋, 
+𝜸𝒊𝑼≥𝜸𝒋𝑳?
+YES NO
+𝝐is a lower bound of adversarial 
+distortion ; increase 𝝐using a 
+binary search procedure𝝐is not a lower bound of 
+adversarial distortion ; decrease 𝝐
+using a binary search procedure
+Stopping 
+criteria are
+met?
+Robustness 
+bound 𝝐𝒋:=𝝐YESNOStopping criteria:
+1) a prescribed maximum 
+number of iterations ; or
+2) w hen search interval falls 
+below the given tolerance 𝜏.
+Figure 4. Steps in computing bounds for RNN networks.
+One can then verify that j= mini6=j^(i;j). Recalling
+from the derivations in Sections 3.1 and 3.2, slopes and
+intercepts utilized are functions of the input ranges. There-
+fore, the global lower bounds Land upper bounds Uare
+also implicitly dependent on , preventing the above opti-
+mization problems from having an analytic solution. In this
+work, we conduct binary search procedures to compute the
+largest possible j(^). In practice, we start by initializing
+theto be0>0and deriving upper and lower bounds ac-
+cording to Table 4. These are followed by a condition check
+that governs the next step. If 9i6=jsuch thatU
+iL
+j,
+then we decrease ; otherwise, we increase . We repeat
+the above procedure until a predeﬁned maximum iterations
+are reached or when convergence is achieved.2Proposed
+algorithms are summarized in Section A.2 and A.5 in the
+appendix.
+4. Experiments
+Methods. The proposed POPQORN is used to quantify
+robustness for all models herein. To the best of our
+knowledge, there is noprevious work done on quantifying
+robustness with guarantees for RNNs. Therefore, we com-
+pare our results with CLEVER score (Weng et al., 2018b)
+(an estimation of the minimum adversarial distortion) and
+C&W attack (Carlini & Wagner, 2017) (an upper bound of
+the minimum adversarial distortion). We emphasize on ana-
+lyzing the characteristics of the certiﬁed bounds obtained by
+POPQORN and new insights they lead to. For comparison,
+we adapt CLEVER score to accommodate sequential input
+2The binary search converges when the interval falls below the
+given tolerance.structure and denote it as CLEVER-RNN. Speciﬁcally, let j
+andibe the true and target labels, respectively. Assume
+g(X) =Fj(X) Fi(X)is a Lipschitz function, and deﬁne
+Lt
+q= maxfkrtg(X)kq:x(k)2Bp(x(k)
+0;0);8k2[m]g
+wherertg(X) = (@g(X)
+@x(t)
+1;:::;@g(X)
+@x(t)
+n)T:CLEVER-RNN
+score is then given as minfg(X0)Pm
+t=1Ltq;0g3. We also adapt
+C&W attack for our task and denote it as C&W-Ada4.
+The adapted C&W-Ada puts higher weights on ﬁnding
+a successful attack, and prioritizes the minimization of
+distortion magnitude when an attack is found. We use the
+maximum perturbation of all frames as the C&W score. We
+implement our algorithm using PyTorch to enable the use of
+GPUs. Using a server consisting of 16 NVIDIA Tesla K80
+GPUs, it took about 4hours to calculate certiﬁed bounds
+for1000 samples in LSTMs with 4frames, and one day in
+LSTMs with 14frames. Except quantifying for LSTMs, the
+remaining experiments could be ﬁnished in about 10hours
+using a single NVIDIA TITAN X GPU. More experimental
+details are given in the appendix Section B.
+Experiment I. In this experiment, we evaluate
+POPQORN and other baselines on totally 12vanilla
+RNNs and LSTMs trained on the MNIST dataset. Table 5
+gives the certiﬁed lower bounds of models found by
+POPQORN, together with uncertiﬁed CLEVER-RNN
+scores, and upper bounds found by C&W-Ada attacks.
+Bounds obtained by POPQORN, CLEVER-RNN, C&W-
+Ada increase with numbers of hidden neurons sin RNNs
+and LSTMs, and generally decrease as the number of
+network layers mgrows5. The uncertiﬁed bounds computed
+by CLEVER-RNN are similar to those found by C&W-Ada
+attacks, yet it should be noted that these bounds are without
+guarantees. A supplementary comparison among bounding
+techniques (2D bounding planes, 1D bounding lines,
+constants) for LSTM evaluations is provided in Appendix
+Section B.1 (accompanied with theorems in Section A.6).
+Experiment II. Next, we evaluate the proposed
+POPQORN quantiﬁcation on LSTMs trained on the MNIST
+sequence dataset6. Speciﬁcally, we compute the POPQORN
+bound on only one single input frame (i.e. we ﬁx all input
+frames but one and derive certiﬁed bound for distortions on
+that frame ). After calculating bounds of all input frames,
+we identify the frames with minimal bounds and call them
+sensitive strokes . In both subﬁgures of Figure 5, each point
+3CLEVER score is deﬁned by minfg(X0)
+Lq;0g, where
+Lq= maxfk(r1g(X);:::;rmg(X))kq:X2Bp(X0;0)g.
+We refer readers to the appendix Sec. B.2 for the details.
+4We refer readers to the appendix Sec. B.3 for the details.
+5The provable safety region ( lpballs) provided by POPQORN
+are distributed across framelets. The overall distortion allowed for
+an input sample is computed by m1=p.
+6Freely available at https://edwin-de-jong.github.io/blog/mnist-
+sequence-data/
+
+==== Page 8 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Table 5. (Experiment I) Averaged bounds and standard deviations ( /) of POPCQRN and other baselines on MNIST dataset. POPQORN
+is the proposed method, CLEVER-RNN and C&W-Ada are adapted from (Weng et al., 2018b) and (Carlini & Wagner, 2017), respectively.
+Network lpnormCertiﬁed Uncertiﬁed AttackNetwork lpnormCertiﬁed Uncertiﬁed Attack
+(POPQORN) (CLEVER-RNN) (C&W-Ada) (POPQORN) (CLEVER-RNN) (C&W-Ada)
+RNN l1 0:0190=0:0047 0:0831=0:0398 0:2561=0:1372 RNN l1 0:0087=0:0018 0:1259=0:0594 0:3267=0:1804
+4 layers l2 0:2026=0:0680 0:8860=0:3920 1:3768=0:6076 14 layers l2 0:0526=0:0119 0:6864=0:3172 0:9278=0:4218
+32 hidden nodes l1 1:0551=0:2689 5:0033=2:6034 5:1592=2:4726 64 hidden nodes l1 0:1578=0:0328 2:6018=1:3142 2:1149=0:9671
+RNN l1 0:0219=0:0047 0:1099=0:0503 0:2957=0:1374 LSTM l1 0:0202=0:0055 0:0765=0:0356 0:2546=0:1202
+4 layers l2 0:2487=0:0592 1:2006=0:5240 1:7072=0:6757 4 layers l2 0:2321=0:0636 0:8302=0:3714 1:3321=0:5529
+64 hidden nodes l1 1:3199=0:2984 6:4128=3:0360 6:9347=3:1543 32 hidden nodes l1 1:1913=0:3385 4:6858=2:2761 4:9689=2:2740
+RNN l1 0:0243=0:0050 0:1405=0:0638 0:3537=0:1469 LSTM l1 0:0218=0:0052 0:1032=0:0470 0:2893=0:1260
+4 layers l2 0:2818=0:0557 1:4698=0:6595 2:1666=0:8556 4 layers l2 0:2448=0:0618 1:0947=0:4403 1:6888=0:6705
+128 hidden nodes l1 1:4362=0:2880 7:7504=3:6968 8:8906=4:2051 64 hidden nodes l1 1:2644=0:3250 6:0216=2:8502 6:6931=2:9917
+RNN l1 0:0131=0:0031 0:0841=0:0421 0:2424=0:1291 LSTM l1 0:0218=0:0044 0:1227=0:0508 0:3303=0:1358
+7 layers l2 0:1045=0:0371 0:6846=0:3283 1:0300=0:4527 4 layers l2 0:2491=0:0523 1:3225=0:5412 1:9379=0:7593
+32 hidden nodes l1 0:4492=0:1088 3:2046=1:7024 2:9425=1:4266 128 hidden nodes l1 1:2839=0:2760 6:8665=3:0725 7:7319=3:2369
+RNN l1 0:0131=0:0028 0:1013=0:0525 0:2660=0:1330 LSTM l1 0:0165=0:0044 0:0924=0:0446 0:2635=0:1290
+7 layers l2 0:1113=0:0246 0:8121=0:4210 1:1454=0:4931 7 layers l2 0:1400=0:0369 0:7287=0:3434 1:0733=0:4694
+64 hidden nodes l1 0:4499=0:0951 3:5476=1:8650 3:4262=1:6191 32 hidden nodes l1 0:5680=0:1563 3:2266=1:7095 3:2309=1:4733
+RNN l1 0:0083=0:0023 0:0931=0:0506 0:2891=0:2004 LSTM l1 0:0099=0:0028 0:1220=0:0676 0:3148=0:1700
+14 layers l2 0:0493=0:0139 0:5074=0:2538 0:7577=0:3859 14 layers l2 0:0593=0:0148 0:6688=0:3346 0:9088=0:3854
+32 hidden nodes l1 0:1459=0:0399 1:9323=1:0724 1:6339=0:8493 32 hidden nodes l1 0:1805=0:0496 2:4880=1:3743 2:0035=0:9447
+(a) digit “ 1”
+ (b) digit “ 4”
+Figure 5. (Experiment II) Heat maps of certiﬁed 2-norm bounds
+computed by POPQORN. Left (a): an example of digit “ 1”. Right
+(b): an example of digit “ 4”. Arrows indicate the order of strokes.
+records the relative displacement from the previous point.
+Heat maps are used to track the changes in sensitivities
+(quantiﬁed robustness scores) with strokes . We identify
+the starting point in Figure 5(a) with a circle. Notably, this
+point has a relatively big certiﬁed bound. This implies the
+loose connection between the starting point of one’s stroke
+and the number to be written down. Another tendency we
+observe is that points in the back have larger bounds com-
+pared with points in the front. Since the position of a point
+only affects the points behind it, points in the back have less
+inﬂuence on the overall shape. Therefore, they can tolerate
+perturbations of larger magnitude without inﬂuencing its
+classiﬁcation result. In Figure 5(b), we circle two points that
+are near the end of the ﬁrst stroke and the start of the second
+stroke, respectively. These points have more inﬂuence on
+the overall shape of the sequence, which is also supported
+by the comparatively small POPQORN bounds.
+Experiment III: Lastly, POPQORN is evaluated on
+LSTM classiﬁers for the question classiﬁcation (UIUC’s
+CogComp QC) Dataset (Li & Roth, 2002)7. Figure 6 shows
+two sample sentences in the UIUC’s CogComp QC dataset.
+We conduct POPQORN quantiﬁcation on individual steps
+7Freely available at http://cogcomp.org/Data/QA/QC/
+Example What is the name of Roy Roger’s dog ?
+ENTY 0.34 0.50 0.53 0.27 0.39 0.19 0.32 1.02 0.67 0.93
+Example What isthefourth highest mountain inthe world ?
+LOC 0.47 0.75 0.95 0.67 0.48 0.55 1.19 1.11 0.85 0.91Figure 6. (Experiment III) Two examples in the question classiﬁca-
+tion task. The upper row gives the sample sentence; the lower row
+shows the POPQORN ( 2-norm) lower bounds of individual words.
+“ENTY” and “LOC” represent entity andlocation , respectively.
+(words), which guarantee robust classiﬁer decisions as long
+as the perturbation magnitude in the word embedding space
+is smaller than the certiﬁcate. The 3 most sensitive words
+(words with 3 smallest bounds) are underlined. In the ﬁrst
+example, the question is classiﬁed as “ENTY”(entity). Cor-
+respondingly, name is among the three most sensitive words,
+which is consistent with human cognition. In the second ex-
+ample, the question is classiﬁed as “LOC”(location). Again,
+mountain is shortlisted in the top three sensitive words.
+More examples are provided in the appendix Section B.4.
+Such observed consistency suggests POPQORN’s potential
+in distinguishing the importance of different words.
+5. Conclusion
+This paper has proposed, for the ﬁrst time, a robustness quan-
+tiﬁcation framework called POPQORN that handles various
+RNN architectures including vanilla RNNs, LSTMs and
+GRUs. The certiﬁed bound gives a guaranteed lower bound
+of the minimum distortion in RNN adversaries, in contrast
+to the upper bound suggested by attacks. Experiments on
+different RNN tasks have demonstrated that POPQORN
+can compute non-trivial certiﬁed bounds, and provide in-
+sights on the importance and sensitivity of a single frame in
+sequence data.
+
+==== Page 9 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Acknowledgment
+The authors would like to thank Zhuolun Leon He for useful
+discussion. This work is partially supported by the Big
+Data Collaboration Research grant from SenseTime Group
+(CUHK Agreement No. TS1610626), the General Research
+Fund (Project 14236516, 17246416) of the Hong Kong
+Research Grants Council, MIT-IBM program, MIT-Skoltech
+program, and MIT-SenseTime program.
+References
+Boopathy, A., Weng, T.-W., Chen, P.-Y ., Liu, S., and Daniel,
+L. Cnn-cert: An efﬁcient framework for certifying ro-
+bustness of convolutional neural networks. In AAAI , Jan
+2019.
+Carlini, N. and Wagner, D. Towards evaluating the robust-
+ness of neural networks. In 2017 IEEE Symposium on
+Security and Privacy , pp. 39–57, 2017.
+Carlini, N. and Wagner, D. A. Audio adversarial ex-
+amples: Targeted attacks on speech-to-text. CoRR ,
+abs/1801.01944, 2018.
+Cheng, C.-H., N ¨uhrenberg, G., and Ruess, H. Maximum
+resilience of artiﬁcial neural networks. In International
+Symposium on Automated Technology for Veriﬁcation and
+Analysis , pp. 251–268, 2017.
+Cheng, M., Yi, J., Zhang, H., Chen, P., and Hsieh, C.
+Seq2sick: Evaluating the robustness of sequence-to-
+sequence models with adversarial examples. CoRR ,
+abs/1803.01128, 2018.
+Ciss´e, M., Adi, Y ., Neverova, N., and Keshet, J. Hou-
+dini: Fooling deep structured prediction models. CoRR ,
+abs/1707.05373, 2017.
+Dvijotham, K., Stanforth, R., Gowal, S., Mann, T., and
+Kohli, P. A dual approach to scalable veriﬁcation of deep
+networks. UAI, 2018.
+Ebrahimi, J., Lowd, D., and Dou, D. On adversarial exam-
+ples for character-level neural machine translation. In
+COLING , pp. 653–663, 2018a.
+Ebrahimi, J., Rao, A., Lowd, D., and Dou, D. Hotﬂip:
+White-box adversarial examples for text classiﬁcation. In
+ACL, pp. 31–36, 2018b.
+Eykholt, K., Evtimov, I., Fernandes, E., Li, B., Rahmati, A.,
+Xiao, C., Prakash, A., Kohno, T., and Song, D. Robust
+physical-world attacks on deep learning visual classiﬁca-
+tion. In CVPR , pp. 1625–1634, 2018.
+Gao, J., Lanchantin, J., Soffa, M. L., and Qi, Y . Black-box
+generation of adversarial text sequences to evade deeplearning classiﬁers. In 2018 IEEE Security and Privacy
+Workshops , pp. 50–56, 2018.
+Gong, Y . and Poellabauer, C. Crafting adversarial ex-
+amples for speech paralinguistics applications. CoRR ,
+abs/1711.03280, 2017.
+Hein, M. and Andriushchenko, M. Formal guarantees on the
+robustness of a classiﬁer against adversarial manipulation.
+InNIPS , 2017.
+Jia, R. and Liang, P. Adversarial examples for evaluating
+reading comprehension systems. In EMNLP , pp. 2021–
+2031, 2017.
+Katz, G., Barrett, C., Dill, D. L., Julian, K., and Kochender-
+fer, M. J. Reluplex: An efﬁcient smt solver for verifying
+deep neural networks. In CAV, pp. 97–117, 2017.
+Kurakin, A., Goodfellow, I., and Bengio, S. Adversarial
+examples in the physical world. ICLR Workshop , 2017.
+Li, X. and Roth, D. Learning question classiﬁers. In COL-
+ING, pp. 1–7, 2002.
+Papernot, N., McDaniel, P., Swami, A., and Harang, R.
+Crafting adversarial input sequences for recurrent neural
+networks. In MILCOM , pp. 49–54, 2016a.
+Papernot, N., McDaniel, P. D., Swami, A., and Harang, R. E.
+Crafting adversarial input sequences for recurrent neural
+networks. MILCOM , pp. 49–54, 2016b.
+Raghunathan, A., Steinhardt, J., and Liang, P. Certiﬁed
+defenses against adversarial examples. ICLR , 2018.
+Sharif, M., Bhagavatula, S., Bauer, L., and Reiter, M. K.
+Accessorize to a crime: Real and stealthy attacks on state-
+of-the-art face recognition. In Proceedings of the 2016
+ACM SIGSAC Conference on Computer and Communica-
+tions Security , pp. 1528–1540, 2016.
+Singh, G., Gehr, T., Mirman, M., P ¨uschel, M., and Vechev,
+M. Fast and effective robustness certiﬁcation. In NIPS ,
+pp. 10825–10836. 2018.
+Szegedy, C., Zaremba, W., Sutskever, I., Bruna, J., Erhan,
+D., Goodfellow, I., and Fergus, R. Intriguing properties
+of neural networks. ICLR , 2014.
+Weng, T.-W., Zhang, H., Chen, H., Song, Z., Hsieh, C.-
+J., Boning, D., Dhillon, I. S., and Daniel, L. Towards
+fast computation of certiﬁed robustness for relu networks.
+ICML , 2018a.
+Weng, T.-W., Zhang, H., Chen, P.-Y ., Yi, J., Su, D., Gao, Y .,
+Hsieh, C.-J., and Daniel, L. Evaluating the robustness of
+neural networks: An extreme value theory approach. In
+ICLR , 2018b.
+
+==== Page 10 ====
+POPQORN: Quantifying Robustness of Recurrent Neural Networks
+Zhang, H., Weng, T.-W., Chen, P.-Y ., Hsieh, C.-J., and
+Daniel, L. Efﬁcient neural network robustness certiﬁ-
+cation with general activation functions. In NIPS , pp.
+4944–4953. 2018.
+Zhao, Z., Dua, D., and Singh, S. Generating natural adver-
+sarial examples. In ICLR , 2018.
+

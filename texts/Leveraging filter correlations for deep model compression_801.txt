@@ -1,0 +1,935 @@
+==== Page 1 ====
+Leveraging Filter Correlations for Deep Model Compression
+Pravendra Singh∗Vinay Kumar Verma∗Piyush Rai Vinay P. Namboodiri
+Department of Computer Science and Engineering, IIT Kanpur, India
+{psingh, vkverma, rpiyush, vinaypn }@iitk.ac.in
+Abstract
+We present a ﬁlter correlation based model compression
+approach for deep convolutional neural networks. Our ap-
+proach iteratively identiﬁes pairs of ﬁlters with the largest
+pairwise correlations and drops one of the ﬁlters from each
+such pair. However, instead of discarding one of the ﬁl-
+ters from each such pair na ¨ıvely, the model is re-optimized
+to make the ﬁlters in these pairs maximally correlated, so
+that discarding one of the ﬁlters from the pair results in
+minimal information loss. Moreover, after discarding the
+ﬁlters in each round, we further ﬁnetune the model to re-
+cover from the potential small loss incurred by the compres-
+sion. We evaluate our proposed approach using a compre-
+hensive set of experiments and ablation studies. Our com-
+pression method yields state-of-the-art FLOPs compression
+rates on various benchmarks, such as LeNet-5, VGG-16,
+and ResNet-50,56, while still achieving excellent predictive
+performance for tasks such as object detection on bench-
+mark datasets.
+1. Introduction
+Recent advances in convolutional neural networks
+(CNN) have yielded state-of-the-art results on many com-
+puter vision tasks, such as classiﬁcation, detection, etc.
+However, training data and storage/computational power re-
+quirements limit their usage in many settings. To address
+this, one line of research in this direction has focused on
+training CNNs with limited data [10, 57, 21, 42, 40, 60].
+Another line of work has focused on model compression
+to make it more efﬁcient in terms of FLOPs (speedup) and
+memory requirements. The memory requirement in CNNs
+can be viewed either as runtime CPU/GPU memory usage
+or storage space for the model. A number of recent works
+[7, 1, 53, 54, 49, 50, 64, 14, 17, 48, 33, 55, 52, 51, 31, 25]
+have explored such possibilities for efﬁcient deep learning.
+Most existing model compression/pruning methods can
+be divided into three categories. The ﬁrst category [5, 11]
+has broadly considered introducing sparsity into the model
+∗Equal contribution.parameters. These approaches give a limited compression
+rate on FLOPs and Total Runtime Memory (TRM), and
+need special software (sparse libraries) support to get the
+desired compression. These approaches provide a good
+compression rate in terms of weights storage, but provide
+limited FLOPs and TRM compression.
+The second category of methods [11, 41, 30, 39, 35]
+has broadly focused on quantization based pruning. Spe-
+cial hardware is needed to provide the acceleration for the
+ﬁnal compressed model. These kinds of model compression
+techniques are primarily designed for IoT devices.
+The third category of methods [7, 1, 64, 50, 49] fo-
+cuses on ﬁlter pruning. These approaches are generic and
+can be used practically without needing any special soft-
+ware/hardware needed for acceleration. These approaches
+provide a high compression rate in terms of FLOPs and
+TRM because of pruning of the whole convolutional ﬁlters
+from the model, which also reduces the depth of the fea-
+ture maps. Sparsity and quantization based approaches are
+complementary to these approaches.
+Filter pruning approaches require some measure to cal-
+culate the importance of the ﬁlter, which is a difﬁcult task
+in general, and many heuristics have been used to measure
+ﬁlter importance. For example, [1] used a brute-force ap-
+proach to discard the ﬁlters. They prune each ﬁlter sequen-
+tially and measure the importance of ﬁlters based on their
+corresponding accuracy drop, which can be impractical for
+large networks. [25] uses the ℓ1norm (sum of absolute val-
+ues) of the ﬁlter to measure the ﬁlter importance, assuming
+that a high ℓ1norm ﬁlter is more likely to have a bigger
+inﬂuence on the feature map. [37, 46] use Taylor expan-
+sion based ﬁlter importance, which is motivated by the early
+work on optimal brain damage [24, 12].
+As discussed in [16], ﬁlter importance based pruning
+methods have certain limitations in the form of require-
+ments that are not always met. Compressed models pro-
+duced by such methods suffer from redundancy because
+these methods don’t consider ﬁlter redundancy while prun-
+ing. Therefore, the ﬁlter importance based pruning method
+is unable to reduce the redundancy present in the model and
+achieve the optimal solution.
+835
+
+
+==== Page 2 ====
+In this work, we propose iteratively removing the ﬁlters
+containing redundant information and getting a subset of
+ﬁlters that are minimally correlated. As also evidenced in
+other recent work, uncorrelated ﬁlters help to reduce over-
+ﬁtting [6, 44] and give a compact model with minimal re-
+dundancy. There are no beneﬁts by keeping redundant ﬁl-
+ters in the model, and it will only result in overﬁtting or
+reduced generalization performance [6, 44]. The works in
+[3, 58] also eliminate the redundancy in convolutional ﬁl-
+ters by applying clustering to feature maps to perform ﬁlter
+pruning. In contrast, we use ﬁlter correlation to measure the
+redundancy present in the pairs of ﬁlters.
+In particular, we present a ﬁlter pruning approach based
+on the correlation coefﬁcient (Pearson correlation coefﬁ-
+cient) of ﬁlter pairs. Unlike other prior works [14, 17, 31,
+25] on ﬁlter pruning, instead of measuring individual ﬁl-
+ter importance, we measure importance for each pair of ﬁl-
+ters. Filter pairs that have the largest correlation (high re-
+dundancy) are given the lowest importance and are chosen
+for further optimization, before eventual pruning. In the op-
+timization step, we further increase the correlation between
+each chosen ﬁlter pair and then ﬁnally prune (discard) one
+ﬁlter from the pair. This optimization step helps to trans-
+fer the knowledge of the ﬁlter to another one before dis-
+carding it. For example, suppose two ﬁlters f1,f2in a pair
+have 60% pairwise correlation. If we discard one ﬁlter, we
+lose some of the information. However, suppose prior to
+pruning, we optimize the model in a way such that the ﬁl-
+ter pair’s correlation increases to 99%. If we now discard
+one of the ﬁlters, we lose little information, and it would be
+safe to prune one of the ﬁlters from the pair (since the two
+ﬁlters in the pair have a high degree of similarity), and ﬁne-
+tuning can quickly recover it. Our approach starts with the
+pre-trained model and then iteratively prunes the redundant
+ﬁlters as shown in Figure 1.
+2. Related Work
+Most of the recent work on deep model compression can
+be categorized into three broad categories.
+2.1. Connection Pruning
+Connection pruning is a direct way to introduce spar-
+sity into the CNN model. One approach for CNN com-
+pression is to prune the unimportant parameters. How-
+ever, it is challenging to deﬁne the importance of parame-
+ters quantitatively. There are several approaches to measure
+the importance of the parameters. Optimal Brain Damage
+[24] and Optimal Brain Surgeon [12] used the second order
+Taylor expansion to calculate the parameters importance.
+However, the second order derivative calculations are very
+costly. [5] used hashing to randomly group the connection
+weights into a single bucket and then ﬁnetune the network.
+[62] proposed the skip layer approach for network compres-
+Figure 1. Correlation-based ﬁlter pruning where strongly corre-
+lated ﬁlter pairs are selected for optimization. The compression
+of the model depends on the user-deﬁned error tolerance limit ( ǫ).
+Henceǫcan be seen as the stopping criteria in our approach.
+sion. [11] proposed an iterative approach where absolute
+values of weights below a certain threshold are set to zero,
+and the drop in accuracy is recovered by ﬁnetuning. This
+approach is very successful when most of the parameters
+lie in the fully connected layer. The main limitation of these
+approaches is the requirement of special hardware/software
+for acceleration at run-time.
+2.2. Filter Pruning
+Filter pruning approaches (which is the focus of our
+work too) do not need any special hardware or software for
+acceleration. The basic idea in ﬁlter pruning [14, 17, 31, 25]
+is to get an estimate of the importance of the ﬁlters and dis-
+card the unimportant ones. After that, at each pruning step,
+re-training is needed to recover from the accuracy drop.
+[19] evaluates the importance of ﬁlter on a subset of the
+training data based on the output feature map. [1] used a
+greedy approach for pruning. They evaluated the ﬁlter im-
+portance by checking the model accuracy after pruning the
+ﬁlter. [37, 25] used similar approach but different measure
+for ﬁlter pruning. [7, 64, 20] used the low-rank approxima-
+tion. [49] used a data-driven approach for calculating ﬁlter
+importance and pruning. [29] performed the channel level
+pruning based on the scaling factor in the training process.
+Recently, group sparsity is also a popular method for ﬁlter
+pruning. [50, 22, 61, 65, 2] explored the ﬁlter pruning based
+on the group sparsity.
+2.3. Quantization
+Weight quantization based approaches have also been
+used in prior works on model compression. [11, 9, 56]
+compressed CNN by combining pruning, quantization, and
+huffman coding. [34] conducted the network compression
+based on the ﬂoat value quantization for model storage.
+Binarization [41] can be used for the network compres-
+sion where each ﬂoat value is quantized to a binary value.
+Bayesian methods [30] are also used for the network quanti-
+zation. The quantization methods require special hardware
+support to get the advantage of the compression.
+Our method is generic and does not require any special
+hardware/software, with the special support we can further
+836
+
+
+==== Page 3 ====
+increase the FLOPs and memory compression because our
+method is complementary to other pruning methods such as
+binary/quantized weights, connection pruning, etc.
+3. Proposed Approach
+3.1. Terminology
+LetLibe theithlayer and i∈[1,2,...K]where
+Kis the number of convolutional layers. The layer Li
+hascoﬁlters which is the number of output channels.
+The set of ﬁlters at layer Liis denoted as FLi, where
+FLi={f1,f2,...,f co}. Each ﬁlter fiis of dimension
+(hk,wk,cin), wherehk,wkandcinare height, width and
+number of input channels, respectively.
+3.2. FLOPs and Memory Size Requirements
+Here we provide a brief analysis to help illustrate the
+effect of architecture hyperparameters on the FLOPs and
+memory consumption (which we will use in our experimen-
+tal results to compare the various approaches).
+For a CNN model, the total number of FLOPs on the
+layerLi(convolutional (FLOPs conv)or fully connected
+(FLOPs fc)) with the batch size B can be given as:
+FLOPs convi=cinwkhkwohoco∗B (1)
+FLOPs fci=cinco∗B (2)
+Here (win,hin,cin) is the input feature map, ( wk,hk,cin) is
+the convolutional ﬁlter and ( wo,ho,co) is the output feature
+map. The total FLOPs across network can be deﬁned as:
+FLOPs =K/summationdisplay
+i=1FLOPs convi+N/summationdisplay
+j=1FLOPs fcj(3)
+HereK,N is the number of convolutional and fully con-
+nected layers respectively. Convolutional ﬁlter of dimen-
+sion (wk,hk,cin) is applied wohocotimes to the input fea-
+ture map of dimension ( win,hin,cin) to produce output fea-
+ture map of dimension ( wo,ho,co). Also, there are two
+sources of memory consumption: 1- feature map size, 2-
+parameter weight size. There are some other memory con-
+sumptions as well, but these are not feasible to estimate like
+those that are related to the implementation details of the
+model, the framework used, etc. So we can estimate the
+lower bound of memory size. The estimated memory re-
+quirement for layer Lican be calculated as
+Mfmi= 4wohoco∗B (4)
+Mwi= 4wkhkcinco (5)
+WhereMfmiis memory required for the feature map
+(wo,ho,co) andMwiis the memory required for parame-
+ter storage at layer Li. So the total memory requirementacross each layers can be calculated as:
+TRM=K+N/summationdisplay
+i=1Mfmi+K+N/summationdisplay
+j=1Mwj (6)
+For the fully connected layer wk,hk,wo,ho= 1 and
+cin,coare the number of incoming and outgoing connec-
+tions respectively. For the convolutional layer cin,cois the
+number of input and output channel respectively. Please
+note that Mfmidepends on the batch size. Therefore the
+methods that are based on sparsity but not ﬁlter pruning only
+reduceMwi. For such approaches, the feature map size re-
+mains the same and grows linearly with respect to the batch
+size.
+3.3. Our Approach
+Our approach iterative prunes a pre-trained model. In
+each iteration, we choose correlated ﬁlter pairs from each
+layer and optimize the selected ﬁlter pairs such that ﬁlters
+in each selected pair are as highly correlated as possible.
+This enables us to safely discard, without information loss,
+one of the ﬁlters (which is redundant) from each of the se-
+lected pairs. We ﬁnetune the compressed model after prun-
+ing. This constitutes one iteration of pruning (Figure 1),
+which can be further repeated to more iterations until we
+could recover accuracy with in the tolerance limit.
+In our approach, we consider the importance of ﬁlter
+pairs for pruning. We use the correlation coefﬁcient of the
+ﬁlter pair to quantify their importance. The ﬁlter pair that
+has the largest correlation coefﬁcient is deﬁned as the least
+important . It is considered as the least important ﬁlter pair
+because of the presence of redundancy (one of the ﬁlters
+from the pair is redundant). However, if we drop one of the
+ﬁlters from this pair, we might also be losing their mutually-
+complementary information, which may or may not be cap-
+tured by the other ﬁlters. Therefore, before discarding one
+of the ﬁlters from the pair, we need to transfer this infor-
+mation to the other ﬁlters by optimizing the model before
+pruning. There may be the case when a ﬁlter belongs to
+multiple highly correlated pairs, then that ﬁlter is pruned
+in the process. It may also be possible that both ﬁlters are
+important in highly correlated ﬁlter pair, and accuracy may
+drop after pruning, but the small ﬁnetuning (1-2 epoch) will
+recover it as we have only removed a redundant ﬁlter from
+the pair.
+Some of the previous approaches like [8, 11, 25] used the
+ℓ1orℓ2regularizer for deﬁning the ﬁlter importance. How-
+ever, using the ℓ1orℓ2regularizer typically works well only
+when there is signiﬁcant redundancy in the model. These
+approaches are unable to give a highly compressed model
+without sacriﬁcing accuracy. If we try to get a highly com-
+pact model with these approaches, the system performance
+degrades rapidly because the strong ℓ1orℓ2regularizer
+837
+
+
+==== Page 4 ====
+Figure 2. Strongly correlated ﬁlters are selected and make them
+highly correlated. Finally, one redundant ﬁlter is pruned.
+starts penalizing the important ﬁlters as well and, therefore,
+cannot achieve a signiﬁcant compression. If we increase
+theℓ2penalty, it starts controlling the model complexity.
+Largeℓ2penalty results in underﬁtting. Therefore these ap-
+proaches can only lead to limited levels of ﬁlter pruning. In
+contrast, in our proposed approach, we learn a minimal ba-
+sis of ﬁlters that are highly uncorrelated. Figure 2 illustrates
+the basic idea of our approach.
+Correlation is the most common and one of the simplest
+statistical measures to quantify data dependence or associ-
+ation. Correlation often refers to how close two variables
+are to have a linear relationship with each other. Let Xand
+Yare two random variables with expected values µXand
+µYand standard deviations σXandσYrespectively. The
+correlation ρXYcan be deﬁned as
+ρXY=E[(X−µX)(Y−µY)]
+σXσY(7)
+HereρXY∈[−1,1], with a high negative or high positive
+value indicates a high degree of linear dependence between
+the two variables. When the correlation is near zero, the two
+variables are linearly independent.
+3.3.1 Episode Selection
+Let us deﬁne the two terms which we will use in the
+proposed pruning process - “Ready-to-prune ( Ri)” and
+“Pruned ( Pi)”. Here Ridenotes ﬁlter pairs selected from
+the layerLifor the optimization process (details in the next
+section). Pidenotes the ﬁlters that are eventually selected
+(one from each pair of Ri) for pruning from the model after
+optimization. Therefore if Nﬁlter pairs are selected in Ri
+then|Pi|=N, i.e., from the layer Li,Nﬁlters will get
+pruned.
+In each layer Li, we ﬁnd out the ﬁlter pairs that have
+the maximum correlation. For calculating the correlation,
+we select all ﬁlters FLi={f1,f2,...,f co}on a layer Li
+withcooutput channels. Each ﬁlter fion the layer Liisof dimension ( wk,hk,cin) is ﬂattened to a vector of size
+wk×hk×cin. Now we can calculate the correlation co-
+efﬁcient for ﬁlter pair by using Eq. 7. In our approach,
+we have considered the magnitude of the correlation coefﬁ-
+cient, thereby giving the same importance for positive and
+negative correlation values. Based on the magnitude of the
+correlation coefﬁcient of each pair, ﬁlter pairs are ordered.
+The ﬁlter pair with the largest correlation value has the
+minimum importance. Some least important ﬁlter pairs are
+selected for the ready-to-prune set Ri(select the ﬁlter pair
+(fa,fb) such that a/\e}atio\slash=b). LetIiare the remaining ﬁlter pairs
+at layerLi. Then:
+PFLi=Ri∪Iis.t.Ri∩Ii=φ (8)
+HerePFLi={(fa,fb) :a∈ {1,2,...co}, b∈
+{1,2,...co}}. The same process is repeated for each layer.
+This selected set of ﬁlter pairs from all the layers ( St) is
+called one episode. Where Stis the set of ﬁlter pairs se-
+lected attthepisode from all Kconvolutional layers.
+St={R1,R2,...,RK} (9)
+This setStis the collection of the ready-to-prune ﬁlter pairs
+from all the layers and used for further optimization such
+that both ﬁlters in each pair contain similar information af-
+ter optimization. Therefore we can safely remove one ﬁlter
+from each pair. The optimization process is explained in the
+next section.
+3.3.2 Optimization
+LetC(Θ)be the cost function of the original model and Θ
+be the model parameters. We optimize this cost function
+with the new regularizer applied to the selected episode (set
+of ﬁlter pairs) St. Our new regularizer (CSt)is as follows:
+CSt= exp
+−/summationdisplay
+X,Y∈Ri,∀Ri∈St|ρXY|
+ (10)
+Here|ρXY|is the magnitude of correlation coefﬁcient of
+the ﬁlter pair (X,Y)inRiandRi∈St. The idea is here to
+make the strongly correlated ﬁlter pair highly correlated (as
+illustrated in Figure 2). Note that Eq. 10 will be minimized
+when/summationtext
+X,Y∈Ri,∀Ri∈St|ρXY|term is maximum, i.e. each
+ﬁlter pair’s magnitude of correlation coefﬁcient |ρXY| →1.
+This new regularizer is added to the original cost function
+so our new objective function is as follows:
+Θ = argmin
+Θ(C(Θ)+λ∗CSt) (11)
+Hereλis the hyper-parameter to control the regularization
+term. Minimizing the Eq. 11 will optimize such that without
+degrading the model performance, it increases the correla-
+tion as high as possible between ﬁlters in each pair belong-
+ing toRi. Therefore we can safely remove one ﬁlter from
+each pair.
+838
+
+
+==== Page 5 ====
+3.3.3 Pruning and Finetuning
+After increasing the correlation between ﬁlters in each pair
+belonging to Ri, we can prune one ﬁlter from each pair be-
+longing to Ri. Our model has a reduced set of the parameter
+Θ′
+Θ′= Θ\{p1,p2...pk} (12)
+Wherepiis the set of ﬁlters ﬁnally selected to be removed
+from the model.
+Further, we ﬁnetune the model w.r.t. the parameter Θ′.
+Since we discarded the redundant ﬁlters from the model,
+the information loss from the model would be minimum.
+Hence the ﬁnetuning process can easily recover from the
+small loss, and the model’s performance can be brought
+back to be nearly the same as the original one. Please note
+that, if two ﬁlters are highly correlated, then their output
+feature maps are also highly correlated because both ﬁlters
+are applied to the same input feature maps.
+4. Experiments
+To evaluate our approach Correlated Filter Pruning
+(CFP), we use three standard models, LeNet-5 [23], VGG-
+16 [47] and ResNet-50,56 [13], for classiﬁcation, and two
+popular models, Faster-RCNN and SSD, for object detec-
+tion. Our experiments were done on GTX 1080 Ti GPU
+and i7-4770 CPU@3.40GHz. Through an extensive set of
+experiments, we show that our proposed approach achieves
+state-of-art compression results. In all our experiments,
+we setλ= 1 to enforce a high correlation for optimizing
+Eq. 11. We can also choose a smaller value of λ, but then
+it would increase the number of epochs in the optimization
+step. A very high value of λmay result in accuracy loss be-
+cause now optimization gives more weight to CSt(Eq. 11)
+thanC(Θ). We empirically found λ= 1is the right choice
+for all our experiments. Filter pairs selection for the opti-
+mization process ( Ri) is proportional to the FLOPs on layer
+Lito reduce the same % of FLOPs from every layer. We si-
+multaneously prune ﬁlters across all layers. We continued
+this ﬁlter pairs selection strategy until we can recover the ac-
+curacy with in the tolerance limit. Ones the tolerance limit
+is achieved, we start individual layer pruning. We pruned
+each layer sequentially from start to end one by one until
+we could recover accuracy with in the tolerance limit.
+4.1. LeNet­5 on MNIST
+MNIST is a handwritten digit dataset contains 60,000
+images for training and 10,000 images for the testing. We
+use the LeNet-5 architecture that contains two convolutional
+layers and two fully connected layers. The complete archi-
+tecture is 20-50-800-500, where 20, 50 are the number of
+convolutional ﬁlters in ﬁrst and second convolutional lay-
+ers respectively. We trained the model from scratch and
+achieved an error rate of 0.83%.Method r1,r2 Error% FLOPs Pruned Flop %
+SSL-2 [61] 5,19 0.80 5.97×10586.42
+SSL-3 [61] 3,12 1.00 2.89×10593.42
+SBP [38] – 0.86 – 90.47
+SparseVD [36] – 0.75 – 54.34
+Baseline 20,500.83±0.094.40×1060.0
+CFP-1 (Ours) 4,5 0.91±0.071.95×10595.56
+CFP-2 (Ours) 3,5 0.95±0.051.58×10596.41
+CFP-3 (Ours) 3,4 1.20±0.091.39×10596.84
+CFP-4 (Ours) 2,3 1.77±0.080.89×10597.98
+Table 1. Pruning results for the LeNet-5 architecture on MNIST.
+Herer1,r2are used to denote the number of remaining ﬁlters in
+ﬁrst and second convolutional layers respectively. We run each
+experiment three times and report the “mean ±std”.
+To show the effectiveness of our proposed approach, we
+conduct the ﬁrst experiment on LeNet-5 for the MNIST
+dataset. As compared to the previous approaches, we
+achieve a much higher FLOPs compression rate with a rel-
+atively small accuracy drop. In prior work, SSL-3 [61],
+report an error of 1.0% on 93.42% FLOPs pruning while
+we achieve 96.41% FLOPs pruning with only 0.95% er-
+ror. Also, note that, as compared to SBP [38], that has only
+90.47% FLOPs pruning with 0.86% error, our approach has
+95.56% FLOPs pruning with the negligible (0.05%) error
+difference. Please refer to Table 1 for a detailed compari-
+son. CFP-1 denotes the ﬁrst compressed model in this iter-
+ative pruning scheme when it shows a competitive accuracy
+as compared to other approaches. We can repeat the pro-
+cess for more iterations to compress the model further and
+can monitor the accuracy after each pruning iteration. This
+helps us assess our approach’s ability to compress the model
+further. CPF-2,3 and 4 denote the compressed models ob-
+tained by such iterative pruning after 2, 3, and 4 iterations,
+respectively.
+4.2. VGG­16 on CIFAR­10
+We next experiment with the VGG-16 architecture on
+CIFAR-10. Each image size is of size 32×32on the RGB
+scale. The VGG-16 convolutional layers architecture is the
+same as [47], and after each convolutional layer, batch nor-
+malization layers are added. We use the same architecture
+and settings as described in [25]. The network is trained
+from scratch and achieves a 6.51% error rate. Figure 3
+shows the layer-wise FLOPs distribution for the original
+and pruned model.
+Like the LeNet-5 pruning results, we observe the same
+pattern for the VGG-16 pruning on the CIFAR-10 dataset.
+We have 80.36% FLOPs pruning with a 6.77% error while
+previous state-of-art approach SBPa [38] has only 68.35%
+FLOPs pruning with 9.0% error. SparseVD [36] has
+55.95% pruning with 7.2% error, while we have 81.93%
+pruning with signiﬁcantly less (7.02%) error. Please refer
+to Table 2 for detail comparison. In the Table 2, CFP-1, and
+839
+
+
+==== Page 6 ====
+Figure 3. The original and pruned model FLOPs on each layer for
+VGG-16 on CIFAR-10.
+Method Error% FLOPs Pruned Flop%
+Li-pruned [25] 6.60 2.06×10834.20
+SBPa [38] 9.00 – 68.35
+SBP [38] 7.50 – 56.52
+SparseVD [36] 7.20 – 55.95
+Baseline 6.51±0.233.137×1080.0
+CFP-1 (Ours) 6.77±0.196.16×10780.36
+CFP-2 (Ours) 7.02±0.165.67×10781.93
+Table 2. Pruning results for VGG-16 architecture on the CIFAR-
+10 dataset. We run each experiment three times and report the
+“mean±std”.
+CPF-2 denote the ﬁrst and second compressed models re-
+spectively (in this iterative pruning scheme). The original
+and pruned FLOPs are shown in Figure 3.
+4.3. Results on ResNet
+4.3.1 ResNet-56 on CIFAR-10
+We use the ResNet-56 architecture [13] on the CIFAR-10
+dataset, which contains the three stages of the convolu-
+tional layer of size 16-32-64, where each convolution layer
+in each stage contains the same 2.36M FLOPs. We trained
+the model from scratch using the same parameters proposed
+by [13] and achieve the error rate of 6.43%. The network
+is pruned into two cycles. In the initial cycle, we selected
+1 ﬁlter pair from each convolutional layer in the ﬁrst stage
+(total 9 ﬁlter pairs), 2 ﬁlter pairs from each convolutional
+layer in the second stage (total 18 ﬁlter pairs) and 4 ﬁlter
+pairs from each convolutional layer in the third stage (total
+36 ﬁlter pairs) to prune the same amount of FLOPs from
+each stage for Stand pruned one ﬁlter from each pair (total
+9, 18 and 36 ﬁlters pruned from ﬁrst, second and third stage
+respectively), till we can recover the accuracy drop with the
+ǫtolerance. In the second cycle, we selected one ﬁlter pair
+(total nine ﬁlter pairs from all convolutional layers in a par-
+ticular stage) in a particular stage for the Stand pruning
+continue till we can recover the model accuracy with the
+ǫtolerance. The results are shown in Table 3. It is clearMethod r1,r2,r3 Error% FLOPs Pruned Flop %
+Li-A [25] — 6.90 1.12×10810.40
+Li-B [25] — 6.94 9.04×10727.60
+NISP [63] — 6.99 – 43.61
+CP [17] — 8.20 – 50.00
+SFP [14] — 6.65 – 52.60
+AMC [15] — 8.10 – 50.00
+Baseline 16,32,64 6.43±0.151.26×1080.0
+CFP-1 10,20,38 6.68±0.124.85×10761.51
+CFP-2 9,18,36 6.93±0.104.08×10767.62
+CFP-3 8,16,27 7.37±0.172.95×10776.59
+Table 3. Pruning results for ResNet-56 architecture on CIFAR-10.
+We run each experiment three times and report the “mean ±std”.
+from the table that as compared to the previous approach,
+our method shows the state of art result. CP [17] has 50.0%
+FLOPs pruning with a 8.2% error, while with only 7.37%
+error, we have signiﬁcantly higher 76.56% FLOPs pruning.
+Similarly, SFP [14] has 52.6% pruning with a 6.65% er-
+ror, and our model has 61.51% pruning with the same error.
+Herer1,r2,r3are used to denote the number of remaining
+ﬁlters in each convolutional layer within the three stages.
+We use the same approach as [8] to resolve the skip connec-
+tion inconsistency during the ﬁlter pruning.
+4.3.2 ResNet-50 on ImageNet
+We experiment with the ResNet-50 model on the large-scale
+ImageNet [45] dataset. The results are shown in Table 4.
+We follow the same settings as mentioned in [17]. As com-
+pared to ThiNet-50, we have similar FLOPs pruning with
+signiﬁcantly better accuracy.
+Other proposed approaches, such as channel pruning
+(CP) [17] and structured probabilistic pruning (SPP) [59]
+have∼50% FLOPs pruning, but their error rate is high.
+In particular, CP has a 9.2%error, and SPP has a 9.6%er-
+ror. Our proposed approach is highly competitive with these
+approaches in terms of FLOPs pruning, while also yield-
+ing signiﬁcantly better accuracy. Please refer to Table 4 for
+more details.
+4.4. Ablation Study
+In the following section, we present an ablation study on
+how our correlation-based criterion helps in preserving the
+information in the model during ﬁlter pruning, how ﬁnetun-
+ing helps after discarding one of the ﬁlters from the ﬁlter
+pair and analyze the correlations among the ﬁlters retained
+in the ﬁnal model.
+4.4.1 Optimization w.r.t. Accuracy
+Recall that, before discarding ﬁlters directly based on corre-
+lation, we further optimize the ﬁlter correlation such that the
+840
+
+
+==== Page 7 ====
+Method Error (%) Pruned Flop (%)
+ThiNet-50 [32] 9.0 ∼50
+CP [17] 9.2 ∼50
+SPP [59] 9.6 ∼50
+WAE [4] 9.6 46.8
+Baseline 7.8 0.0
+CFP (Ours) 8.6 49.6
+Table 4. ResNet-50 Pruning results on the ImageNet with the other
+state-of-art approaches. The baseline network’s top-5 accuracy is
+92.2% (https://github.com/KaimingHe/deep-residual-networks).
+Model OPT Error (%) PF (%)
+LeNet-5 (CFP-3)No 1.81 96.84
+Yes 1.20 96.84
+LeNet-5 (CFP-4)No 2.32 97.98
+Yes 1.77 97.98
+VGG-16 (CFP-1)No 7.20 80.36
+Yes 6.77 80.36
+VGG-16 (CFP-2)No 7.61 81.93
+Yes 7.02 81.93
+Table 5. Effect of the correlation optimization given by equation-
+[10] for the LeNet-5 and VGG-16 ( OPT : Optimization, and PF:
+Pruned Flop).
+strongly correlated ﬁlter becomes even more strongly corre-
+lated (using the regularizer based on Eq. 10). We have found
+that if we discard the ﬁlter without optimization, the model
+suffers from the signiﬁcant accuracy drop due to the loss of
+potentially mutually-complementary information. There-
+fore, before discarding one of the ﬁlters from the pair, we
+need to transfer this information to the other ﬁlters that re-
+main in the model after pruning using Eq. 11.
+Please refer to Table 5 to see the effect of the optimiza-
+tion. LeNet and VGG-16 compressed models achieve better
+accuracy with optimization.
+4.4.2 Analysis of correlation among ﬁlters in the ﬁnal
+compressed model
+In the case of VGG-16 on the CIFAR-10, initially, the max-
+imum ﬁlter correlation is 0.7, but in the ﬁnal compressed
+model, the maximum ﬁlter correlation is nearly 0.1, which
+shows that we have successfully removed the redundant ﬁl-
+ters. At the same time, the fact that the classiﬁcation accu-
+racy does not drop much (Table 2), indicates that the useful
+discriminative ﬁlters are preserved. Here, we ﬁnd a subset
+of ﬁlters that are minimally correlated but preserves maxi-
+mal information for our ﬁnally compressed model. These
+uncorrelated ﬁlters help to reduce the overﬁtting [6, 44] and
+give a compact model with the least possible redundancy.
+4.5. Speedup and Memory Size
+The pruned FLOPs is not necessarily equivalent to prac-
+tical model speedup because FLOPs give the theoretical
+Figure 4. Model performance on the CPU (i7-4770
+CPU@3.40GHz) and GPU (TITAN GTX-1080 Ti) for VGG-16
+on CIFAR-10.
+Figure 5. Increase in the total memory size w.r.t. batch size for
+VGG-16 on CIFAR-10.
+speedup. The practical speedup can be very different from
+the result reported in terms of pruned FLOPs percentage.
+The practical speedup depends on the many other factors,
+for example, parallelization bottleneck on intermediate lay-
+ers, I/O operation, etc. Also, total run-time memory (TRM)
+does not depend only on the compressed model parameters
+size but also on the feature maps (FM), batch-size (BS), the
+dynamic library used by Cuda, all the supporting header-
+ﬁle, etc. Here we don‘t have control over all the parameters
+but Model parameters size (MPS), FM, and BS. To show the
+practical speedup and Memory size, we experiment with the
+VGG-16 model over the CIFAR-10 dataset. The result for
+the speedup and TRM are shown in the Figure 4 and Fig-
+ure 5 respectively.
+FM is the most important factor for reducing the run-
+time memory since it grows linearly w.r.t. batch size and
+quadratic w.r.t. image size while MPS is ﬁxed. The ﬁlter
+pruning approach reduces the model parameters as well as
+feature maps memory size while all the approaches based
+on sparsity in the model are reducing only the MPS, and the
+size of the FM remains the same. Hence batch size has the
+bottleneck. If we have a limited batch size, this reduces the
+parallelism in the GPU, resulting in the speed drop. TRM
+can be deﬁned as:
+TRM=MPS+(FM∗4∗BS) (13)
+841
+
+
+==== Page 8 ====
+ModelAPSize Parametersprohibitory mandatory danger mAP
+SSD512-O 96.83 86.93 87.05 90.27 98.7 MB 24.7M
+SSD512-P 98.35 88.45 89.01 91.94 4.0 MB (24.7 ×) 0.99M (4.0%)
+Table 6. Class wise AP for SSD512-original(O) and SSD512-pruned(P) model on GTSDB dataset.
+Model dataAvg. Precision, IoU: Avg. Precision, Area Avg. Recall, #Dets: Avg. Recall, Area:
+0.5:0.95 0.5 0.75 S M L 1 10 100 S M L
+F-RCNN original trainval35K 27.5 48.7 28.1 12.4 31.5 38.7 25.7 38.8 39.8 21.2 45.5 55.0
+F-RCNN pruned trainval35K 27.8 48.4 28.5 13.3 31.6 38.6 26.1 39.5 40.6 22.6 45.7 55.4
+Table 7. Generalization results are shown on the MS-COCO dataset. Pruned ResNet-50 (CFP) used as a base model for Faster-RCNN.
+Where S, M, and L are the small, medium, and large area ranges respectively for evaluation. 1, 10, and 100 denotes thresholds on max
+detections per image (http://cocodataset.org/#detection-eval).
+It is clear from Figure 5 that with the increase in BS, TRM
+memory increases. Therefore we cannot go for a big batch
+size. While Figure 4 shows that for the small batch size
+system performance (speedup) degraded. Therefore for the
+speedup, we have to choose a bigger BS, but there is a mem-
+ory bottleneck on the GPU or CPU. Hence in the proposed
+approach, we prune the whole convolutional ﬁlter so that
+FM memory can be reduced.
+4.6. Generalization Ability
+4.6.1 Compression for Object Detection
+To show the generalization ability of our approach, we also
+show the result on the detection network. In this experiment
+we have taken two most popular object detector SSD [28]
+on GTSDB dataset and Faster RCNN [43] on MS-COCO
+[27]. In the case of SSD, we achieve ∼25×compression
+in terms of model parameters with signiﬁcant improvement
+in AP. For faster RCNN, we have used ResNet-50 as a base
+network.
+4.6.2 SSD512 on German trafﬁc detection benchmarks
+In this experiment, we evaluate the generalization ability
+of our pruned model, VGG-16 CFP-2, which is pruned
+on CIFAR-10. First, we trained original SSD512 on Ger-
+man trafﬁc detection benchmarks (GTSDB) [18] dataset,
+In which ImageNet pre-trained base network was used. In
+the second case, we replace the base network of SSD512
+with our pruned model, VGG-16 CFP-2. After training, we
+analyzed the model and found the model is over-ﬁtted be-
+cause GTSDB is a small scale dataset. Our pruned SSD512
+model detects the object from the initial layer only, which is
+CONV4 3, and we removed all other remaining layers af-
+ter CONV4 3. After doing this, we observed a signiﬁcant
+improvement in the mAP and ∼25×compression in model
+size. Hence our pruned model successfully generalizes the
+object detection task on the GTSDB dataset. Refer to Ta-
+ble 6 for the detailed experimental results.4.6.3 Faster RCNN on COCO
+We experiment on the COCO detection datasets with 80
+object classes [27]. 80k train images and 35k val images
+are used for training (trainval35K) [26]. We report the de-
+tection accuracies over the 5k unused val images (mini-
+val). In this ﬁrst, we trained Faster-RCNN with the Ima-
+geNet pre-trained ResNet-50 base model. The results are
+shown in Table 7. In the second experiment, we used
+our pruned ResNet-50 model (CFP), which is pruned on
+the ILSVRC-2012 dataset as given in Table 4. Then we
+used our pruned ResNet-50 (CFP) model as a base network
+in Faster-RCNN. In the Faster-RCNN implementation, we
+used ROI Align instead of ROI Pooling. We found that the
+pruned model shows slightly better performances in some
+cases (mAP@0.75, mAP@0.5:0.95). Refer to the Table 7
+for more details.
+5. Conclusion
+We have proposed a novel approach for ﬁlter pruning,
+which is guided by pairwise correlations of ﬁlters. Un-
+like the previous heuristics for measuring individual ﬁlters
+importance for pruning, we proposed a new approach for
+considering ﬁlter pairs importance based on the redundancy
+present in the pair. In the pruning process, we iteratively
+reduce the redundancy in the model. Our approach, as com-
+pared to the existing methods, shows state-of-art results.
+The efﬁcacy of our method is demonstrated via a compre-
+hensive set of experiments and ablation studies. We have
+shown the generalization capability of our approach for the
+object detection task.
+Acknowledgment:
+PS is supported by the Research-I Foundation at IIT
+Kanpur. VKV acknowledges support from Visvesvaraya
+PhD Fellowship and PR acknowledges support from
+Visvesvaraya Young Faculty Fellowship.
+842
+
+
+==== Page 9 ====
+References
+[1] R. Abbasi-Asl and B. Yu. Structural compression of convolu-
+tional neural networks based on greedy ﬁlter pruning. arXiv
+preprint arXiv:1705.07356 , 2017.
+[2] J. M. Alvarez and M. Salzmann. Learning the number of
+neurons in deep networks. In NIPS , pages 2270–2278, 2016.
+[3] B. O. Ayinde and J. M. Zurada. Building efﬁcient convnets
+using redundant feature pruning. ICLR , 2018.
+[4] T. Chen, L. Lin, W. Zuo, X. Luo, and L. Zhang. Learning
+a wavelet-like auto-encoder to accelerate deep neural net-
+works. AAAI , 2018.
+[5] W. Chen, J. Wilson, S. Tyree, K. Weinberger, and Y . Chen.
+Compressing neural networks with the hashing trick. In
+ICML , pages 2285–2294, 2015.
+[6] M. Cogswell, F. Ahmed, R. Girshick, L. Zitnick, and D. Ba-
+tra. Reducing overﬁtting in deep networks by decorrelating
+representations. ICLR , 2016.
+[7] E. L. Denton, W. Zaremba, J. Bruna, Y . LeCun, and R. Fer-
+gus. Exploiting linear structure within convolutional net-
+works for efﬁcient evaluation. In NIPS , 2014.
+[8] X. Ding, G. Ding, J. Han, and S. Tang. Auto-balanced ﬁlter
+pruning for efﬁcient convolutional neural networks. AAAI ,
+2018.
+[9] A. Dubey, M. Chatterjee, and N. Ahuja. Coreset-based neu-
+ral network compression. 2018.
+[10] C. Finn, K. Xu, and S. Levine. Probabilistic model-agnostic
+meta-learning. NIPS , 2018.
+[11] S. Han, H. Mao, and W. J. Dally. Deep compression: Com-
+pressing deep neural networks with pruning, trained quanti-
+zation and huffman coding. ICLR , 2016.
+[12] B. Hassibi and D. G. Stork. Second order derivatives for
+network pruning: Optimal brain surgeon. In NIPS , 1993.
+[13] K. He, X. Zhang, S. Ren, and J. Sun. Deep residual learning
+for image recognition. In CVPR , pages 770–778, 2016.
+[14] Y . He, G. Kang, X. Dong, Y . Fu, and Y . Yang. Soft ﬁlter
+pruning for accelerating deep convolutional neural networks.
+IJCAI , 2018.
+[15] Y . He, J. Lin, Z. Liu, H. Wang, L.-J. Li, and S. Han. Amc:
+Automl for model compression and acceleration on mobile
+devices. In The European Conference on Computer Vision
+(ECCV) , September 2018.
+[16] Y . He, P. Liu, Z. Wang, and Y . Yang. Pruning ﬁlter via geo-
+metric median for deep convolutional neural networks accel-
+eration. CVPR , 2019.
+[17] Y . He, X. Zhang, and J. Sun. Channel pruning for accelerat-
+ing very deep neural networks. In ICCV , page 6, 2017.
+[18] S. Houben, J. Stallkamp, J. Salmen, M. Schlipsing, and
+C. Igel. Detection of trafﬁc signs in real-world images: The
+German Trafﬁc Sign Detection Benchmark. In IJCNN , num-
+ber 1288, 2013.
+[19] H. Hu, R. Peng, Y .-W. Tai, and C.-K. Tang. Network trim-
+ming: A data-driven neuron pruning approach towards efﬁ-
+cient deep architectures. arXiv preprint arXiv:1607.03250 ,
+2016.
+[20] M. Jaderberg, A. Vedaldi, and A. Zisserman. Speeding up
+convolutional neural networks with low rank expansions.
+arXiv preprint arXiv:1405.3866 , 2014.[21] T. Kim, J. Yoon, O. Dia, S. Kim, Y . Bengio, and S. Ahn.
+Bayesian model-agnostic meta-learning. NIPS , 2018.
+[22] V . Lebedev and V . Lempitsky. Fast convnets using group-
+wise brain damage. In CVPR , pages 2554–2564, 2016.
+[23] Y . LeCun, L. Bottou, Y . Bengio, and P. Haffner. Gradient-
+based learning applied to document recognition. Proceed-
+ings of the IEEE , 86(11):2278–2324, 1998.
+[24] Y . LeCun, J. S. Denker, and S. A. Solla. Optimal brain dam-
+age. In NIPS , pages 598–605, 1990.
+[25] H. Li, A. Kadav, I. Durdanovic, H. Samet, and H. P. Graf.
+Pruning ﬁlters for efﬁcient convnets. ICLR , 2017.
+[26] T.-Y . Lin, P. Doll ´ar, R. B. Girshick, K. He, B. Hariharan, and
+S. J. Belongie. Feature pyramid networks for object detec-
+tion. In CVPR , page 4, 2017.
+[27] T.-Y . Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ra-
+manan, P. Doll ´ar, and C. L. Zitnick. Microsoft coco: Com-
+mon objects in context. In ECCV , pages 740–755. Springer,
+2014.
+[28] W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. Reed, C.-Y .
+Fu, and A. C. Berg. Ssd: Single shot multibox detector. In
+ECCV , pages 21–37. Springer, 2016.
+[29] Z. Liu, J. Li, Z. Shen, G. Huang, S. Yan, and C. Zhang.
+Learning efﬁcient convolutional networks through network
+slimming. In ICCV , pages 2755–2763. IEEE, 2017.
+[30] C. Louizos, K. Ullrich, and M. Welling. Bayesian compres-
+sion for deep learning. In NIPS , pages 3288–3298, 2017.
+[31] J.-H. Luo, J. Wu, and W. Lin. Thinet: A ﬁlter level prun-
+ing method for deep neural network compression. In ICCV ,
+pages 5058–5066, 2017.
+[32] J.-H. Luo, H. Zhang, H.-Y . Zhou, C.-W. Xie, J. Wu, and
+W. Lin. Thinet: pruning cnn ﬁlters for a thinner net. IEEE
+transactions on pattern analysis and machine intelligence ,
+2018.
+[33] P. Mazumder, P. Singh, and V . Namboodiri. Cpwc: Con-
+textual point wise convolution for object recognition. arXiv
+preprint arXiv:1910.09643 , 2019.
+[34] H. Miao, A. Li, L. S. Davis, and A. Deshpande. Towards
+uniﬁed data and lifecycle management for deep learning. In
+ICDE , pages 571–582. IEEE, 2017.
+[35] A. Mishra and D. Marr. Apprentice: Using knowledge dis-
+tillation techniques to improve low-precision network accu-
+racy. arXiv preprint arXiv:1711.05852 , 2017.
+[36] D. Molchanov, A. Ashukha, and D. Vetrov. Variational
+dropout sparsiﬁes deep neural networks. In ICML , pages
+2498–2507, 2017.
+[37] P. Molchanov, S. Tyree, T. Karras, T. Aila, and J. Kautz.
+Pruning convolutional neural networks for resource efﬁcient
+inference. ICLR , 2017.
+[38] K. Neklyudov, D. Molchanov, A. Ashukha, and D. P. Vetrov.
+Structured bayesian pruning via log-normal multiplicative
+noise. In NIPS , pages 6775–6784, 2017.
+[39] A. Polino, R. Pascanu, and D. Alistarh. Model com-
+pression via distillation and quantization. arXiv preprint
+arXiv:1802.05668 , 2018.
+[40] S. Qiao, C. Liu, W. Shen, and A. Yuille. Few-shot image
+recognition by predicting parameters from activations. 2018.
+843
+
+
+==== Page 10 ====
+[41] M. Rastegari, V . Ordonez, J. Redmon, and A. Farhadi. Xnor-
+net: Imagenet classiﬁcation using binary convolutional neu-
+ral networks. In ECCV , pages 525–542. Springer, 2016.
+[42] S. Reed, Y . Chen, T. Paine, A. van den Oord, S. M. A. Es-
+lami, D. Rezende, O. Vinyals, and N. de Freitas. Few-shot
+autoregressive density estimation: Towards learning to learn
+distributions. In ICLR , 2018.
+[43] S. Ren, K. He, R. Girshick, and J. Sun. Faster r-cnn: Towards
+real-time object detection with region proposal networks. In
+NIPS , pages 91–99, 2015.
+[44] P. Rodr ´ıguez, J. Gonz `alez, G. Cucurull, J. M. Gonfaus, and
+X. Roca. Regularizing cnns with locally constrained decor-
+relations. ICLR , 2017.
+[45] O. Russakovsky, J. Deng, H. Su, J. Krause, S. Satheesh,
+S. Ma, Z. Huang, A. Karpathy, A. Khosla, M. Bernstein,
+et al. Imagenet large scale visual recognition challenge.
+IJCV , 115(3):211–252, 2015.
+[46] A. Sharma, N. Wolfe, and B. Raj. The incredible shrink-
+ing neural network: New perspectives on learning repre-
+sentations through the lens of pruning. arXiv preprint
+arXiv:1701.04465 , 2017.
+[47] K. Simonyan and A. Zisserman. Very deep convolutional
+networks for large-scale image recognition. ICLR , 2015.
+[48] P. Singh, V . S. R. Kadi, and V . P. Namboodiri. Falf convnets:
+Fatuous auxiliary loss based ﬁlter-pruning for efﬁcient deep
+cnns. Image and Vision Computing , page 103857, 2019.
+[49] P. Singh, V . S. R. Kadi, N. Verma, and V . P. Namboodiri.
+Stability based ﬁlter pruning for accelerating deep cnns. In
+2019 IEEE Winter Conference on Applications of Computer
+Vision (WACV) , pages 1166–1174. IEEE, 2019.
+[50] P. Singh, R. Manikandan, N. Matiyali, and V . Namboodiri.
+Multi-layer pruning framework for compressing single shot
+multibox detector. In 2019 IEEE Winter Conference on Ap-
+plications of Computer Vision (WACV) , pages 1318–1327.
+IEEE, 2019.
+[51] P. Singh, P. Mazumder, and V . P. Namboodiri. Accu-
+racy booster: Performance boosting using feature map re-
+calibration. arXiv preprint arXiv:1903.04407 , 2019.
+[52] P. Singh, M. Varshney, and V . P. Namboodiri. Coopera-
+tive initialization based deep neural network training. arXiv
+preprint arXiv:2001.01240 , 2020.
+[53] P. Singh, V . K. Verma, P. Rai, and V . P. Namboodiri. Het-
+conv: Beyond homogeneous convolution kernels for deep
+cnns. International Journal of Computer Vision , pages 1–
+21, 2019.
+[54] P. Singh, V . K. Verma, P. Rai, and V . P. Namboodiri. Het-
+conv: Heterogeneous kernel-based convolutions for deep
+cnns. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , pages 4835–4844, 2019.
+[55] P. Singh, V . K. Verma, P. Rai, and V . P. Namboodiri. Play and
+prune: Adaptive ﬁlter pruning for deep model compression.
+International Joint Conference on Artiﬁcial Intelligence (IJ-
+CAI) , 2019.
+[56] F. Tung and G. Mori. Clip-q: Deep network compression
+learning by in-parallel pruning-quantization. In The IEEE
+Conference on Computer Vision and Pattern Recognition
+(CVPR) , June 2018.[57] V . K. Verma, G. Arora, A. Mishra, and P. Rai. Generalized
+zero-shot learning via synthesized examples. CVPR , 2018.
+[58] D. Wang, L. Zhou, X. Zhang, X. Bai, and J. Zhou. Explor-
+ing linear relationship in feature map subspace for convnets
+compression. arXiv preprint arXiv:1803.05729 , 2018.
+[59] H. Wang, Q. Zhang, Y . Wang, and H. Hu. Structured prob-
+abilistic pruning for convolutional neural network accelera-
+tion. BMVC , 2017.
+[60] W. Wang, Y . Pu, V . K. Verma, K. Fan, Y . Zhang, C. Chen,
+P. Rai, and L. Carin. Zero-shot learning via class-conditioned
+deep generative models. AAAI , 2017.
+[61] W. Wen, C. Wu, Y . Wang, Y . Chen, and H. Li. Learning
+structured sparsity in deep neural networks. In NIPS , pages
+2074–2082, 2016.
+[62] Z. Wu, T. Nagarajan, A. Kumar, S. Rennie, L. S. Davis,
+K. Grauman, and R. Feris. Blockdrop: Dynamic inference
+paths in residual networks. In CVPR , pages 8817–8826,
+2018.
+[63] R. Yu, A. Li, C.-F. Chen, J.-H. Lai, V . I. Morariu, X. Han,
+M. Gao, C.-Y . Lin, and L. S. Davis. Nisp: Pruning networks
+using neuron importance score propagation. CVPR , 2018.
+[64] X. Zhang, J. Zou, X. Ming, K. He, and J. Sun. Efﬁcient
+and accurate approximations of nonlinear convolutional net-
+works. In NIPS , pages 1984–1992, 2015.
+[65] H. Zhou, J. M. Alvarez, and F. Porikli. Less is more: Towards
+compact cnns. In ECCV , pages 662–677. Springer, 2016.
+844
+
+

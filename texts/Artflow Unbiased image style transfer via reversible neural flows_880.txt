@@ -1,0 +1,874 @@
+==== Page 1 ====
+ArtFlow: Unbiased Image Style Transfer via Reversible Neural Flows
+Jie An1∗Siyu Huang2∗Yibing Song3Dejing Dou2Wei Liu4Jiebo Luo1
+1University of Rochester2Baidu Research3Tencent AI Lab4Tencent Data Platform
+{jan6,jluo }@cs.rochester.edu {huangsiyu,doudejing }@baidu.com
+yibingsong.cv@gmail.com wl2223@columbia.edu
+Abstract
+Universal style transfer retains styles from reference
+images in content images. While existing methods have
+achieved state-of-the-art style transfer performance, they
+are not aware of the content leak phenomenon that the im-
+age content may corrupt after several rounds of stylization
+process. In this paper, we propose ArtFlow to prevent con-
+tent leak during universal style transfer. ArtFlow consists
+of reversible neural ﬂows and an unbiased feature transfer
+module. It supports both forward and backward inferences
+and operates in a projection-transfer-reversion scheme. The
+forward inference projects input images into deep features,
+while the backward inference remaps deep features back to
+input images in a lossless and unbiased way. Extensive ex-
+periments demonstrate that ArtFlow achieves comparable
+performance to state-of-the-art style transfer methods while
+avoiding content leak.
+1. Introduction
+Neural style transfer aims at transferring the artistic
+style from a reference image to a content image. Start-
+ing from [ 11,13], numerous works based on iterative op-
+timization [ 12,44,30,34] and feed-forward networks [ 23,
+53,3,63] improve style transfer from either visual qual-
+ity or computational efﬁciency. Despite tremendous efforts,
+these methods do not generalize well for multiple types
+of style transfer. Universal style transfer (UST) is pro-
+posed to improve this generalization ability. The represen-
+tative UST methods include AdaIN [ 20], WCT [ 32], and
+Avatar-Net [ 45]. These methods are continuously extended
+by [15,22,60,1,45,33,40,31,2,56]. While achieving
+favorable results as well as generalizations, these methods
+are limited to disentangling and reconstructing image con-
+tent during the stylization process. Fig. 1shows some ex-
+amples. Existing methods [ 32,20,45] effectively stylize
+∗J. An and S. Huang contribute equally. This work is done when J.
+An is an intern in Tencent AI Lab. The code is available at https://
+github.com/pkuanjie/ArtFlow .
+AdaIN WCT
+(a) Content (c) Round 1 (d) Round 20 (b) Style
+Avatar-Net
+Figure 1. Content leak visualization. Existing style transfer meth-
+ods are not effective to preserve image content after several rounds
+of stylization process as shown in (d), although their performance
+is state-of-the-art in the ﬁrst round as shown in (c).
+content images in (c). However, image contents are cor-
+rupted after several rounds of stylization process where we
+send the reference image and the output result into these
+methods. We deﬁne this phenomenon as content leak and
+provide an analysis in the following:
+Content leak appears due to the design of UST methods
+that usually consist of three parts: the ﬁrst part is a ﬁxed en-
+coder for image embedding, the second part is a learnable
+decoder to remap deep features back to images, and the third
+part is a style transfer module based on deep features. We
+observe that the ﬁrst part is ﬁxed. The appearance of content
+leak indicates the accumulated image reconstruction errors
+brought by the decoder, or the biased training process of ei-
+ther the decoder or the style transfer module. Speciﬁcally,
+the content leaks of WCT [ 32] and its variants [ 31,40,56]
+is mainly caused by the image reconstruction error of the
+decoder. The content leak of AdaIN series [ 20,22,60] and
+Avatar-Net [ 45] are additionally caused by the biased de-
+coder training and a biased style transfer module, respec-
+tively. Sec. 3shows more analyses.
+In this work, we propose an unbiased style transfer
+framework called ArtFlow to robustify exisiting UST meth-
+ods upon overcoming content leak. Different from the
+prevalent encoder-transfer-decoder structure, ArtFlow in-
+862
+
+
+==== Page 2 ====
+Encoder T Decoder
+<latexit sha1_base64="b9hFIKv11REtT+yoCRluE9Oj0gY=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi94q2g9oQ9lsJ+3SzSbsboQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IBFcG9f9dgorq2vrG8XN0tb2zu5eef+gqeNUMWywWMSqHVCNgktsGG4EthOFNAoEtoLRzdRvPaHSPJaPZpygH9GB5CFn1Fjp4a7HeuWKW3VnIMvEy0kFctR75a9uP2ZphNIwQbXueG5i/Iwqw5nASambakwoG9EBdiyVNELtZ7NTJ+TEKn0SxsqWNGSm/p7IaKT1OApsZ0TNUC96U/E/r5Oa8MrPuExSg5LNF4WpICYm079JnytkRowtoUxxeythQ6ooMzadkg3BW3x5mTTPqt5F1b0/r9Su8ziKcATHcAoeXEINbqEODWAwgGd4hTdHOC/Ou/Mxby04+cwh/IHz+QMRMI2n</latexit>Ic
+<latexit sha1_base64="eIhn9OZP49FeRz0Ek6p8+vDZTm8=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi94q2g9oQ9lsJ+3SzSbsboQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IBFcG9f9dgorq2vrG8XN0tb2zu5eef+gqeNUMWywWMSqHVCNgktsGG4EthOFNAoEtoLRzdRvPaHSPJaPZpygH9GB5CFn1Fjp4a6ne+WKW3VnIMvEy0kFctR75a9uP2ZphNIwQbXueG5i/Iwqw5nASambakwoG9EBdiyVNELtZ7NTJ+TEKn0SxsqWNGSm/p7IaKT1OApsZ0TNUC96U/E/r5Oa8MrPuExSg5LNF4WpICYm079JnytkRowtoUxxeythQ6ooMzadkg3BW3x5mTTPqt5F1b0/r9Su8ziKcATHcAoeXEINbqEODWAwgGd4hTdHOC/Ou/Mxby04+cwh/IHz+QMpcI23</latexit>IsOut PFN T
+<latexit sha1_base64="b9hFIKv11REtT+yoCRluE9Oj0gY=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi94q2g9oQ9lsJ+3SzSbsboQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IBFcG9f9dgorq2vrG8XN0tb2zu5eef+gqeNUMWywWMSqHVCNgktsGG4EthOFNAoEtoLRzdRvPaHSPJaPZpygH9GB5CFn1Fjp4a7HeuWKW3VnIMvEy0kFctR75a9uP2ZphNIwQbXueG5i/Iwqw5nASambakwoG9EBdiyVNELtZ7NTJ+TEKn0SxsqWNGSm/p7IaKT1OApsZ0TNUC96U/E/r5Oa8MrPuExSg5LNF4WpICYm079JnytkRowtoUxxeythQ6ooMzadkg3BW3x5mTTPqt5F1b0/r9Su8ziKcATHcAoeXEINbqEODWAwgGd4hTdHOC/Ou/Mxby04+cwh/IHz+QMRMI2n</latexit>Ic
+<latexit sha1_base64="eIhn9OZP49FeRz0Ek6p8+vDZTm8=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi94q2g9oQ9lsJ+3SzSbsboQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IBFcG9f9dgorq2vrG8XN0tb2zu5eef+gqeNUMWywWMSqHVCNgktsGG4EthOFNAoEtoLRzdRvPaHSPJaPZpygH9GB5CFn1Fjp4a6ne+WKW3VnIMvEy0kFctR75a9uP2ZphNIwQbXueG5i/Iwqw5nASambakwoG9EBdiyVNELtZ7NTJ+TEKn0SxsqWNGSm/p7IaKT1OApsZ0TNUC96U/E/r5Oa8MrPuExSg5LNF4WpICYm079JnytkRowtoUxxeythQ6ooMzadkg3BW3x5mTTPqt5F1b0/r9Su8ziKcATHcAoeXEINbqEODWAwgGd4hTdHOC/Ou/Mxby04+cwh/IHz+QMpcI23</latexit>Is
+Out
+(a) Universal Style Transfer Framework (b) ArtFlow Framework
+Figure 2. A comparison between the auto-encoder based style
+transfer framework and the proposed ArtFlow framework.
+troduces both forward and backward inferences to formu-
+late a projection-transfer-reversion pipeline. This pipeline
+is based on neural ﬂows [ 5] and only contains a Projection
+Flow Network (PFN) in conjunction with an unbiased fea-
+ture transfer module. The neural ﬂow refers to a number
+of deep generative models [ 5,18] which estimate density
+through a series of reversible transformations. Our PFN
+follows the neural ﬂow model GLOW [ 28] which consists
+of a chain of revertible operators including activation nor-
+malization layers, invertible 1×1convolutions, and afﬁne
+coupling layers [ 6]. Fig. 2shows the structure of ArtFlow.
+It ﬁrst projects both the content and style images into latent
+representations via forward inference. Then, it makes unbi-
+ased style transfer upon deep features and reconstructs the
+stylized images via reversed feature inference.
+The proposed PFN avoids the image reconstruction er-
+ror and image recovery bias which usually appear in the
+encoder-decoder framework. PFN allows unbiased and
+lossless feature extraction and image recovery. To this end,
+PFN facilitates the comparison of style transfer modules
+in a fair manner. Based on PFN, we perform theoretical
+and empirical analyses of the inherent biases of style trans-
+fer modules adopted by WCT, AdaIN, and Avatar-Net. We
+show that the transfer modules of AdaIN and WCT are un-
+biased, while the transfer module of Avatar-Net is biased
+towards style. Consequently, we adopt the transfer modules
+of AdaIN and WCT as the transfer modules for ArtFlow to
+achieve an unbiased style transfer.
+The contributions of this work are three-fold:
+•We reveal the Content Leak issue of the state-of-the-
+art style transfer algorithms and identify the three main
+causes of the Content Leak in AdaIN [ 20], WCT [ 32],
+and Avatar-Net [ 45].
+•We propose an unbiased, lossless, and reversible net-
+work named PFN based on neural ﬂows, which allows
+both theoretical and empirical analyses of the inherent
+biases of the popular style transfer modules.
+•Based on PFN in conjunction with an unbiased style
+transfer module, we propose a novel style transfer
+framework, i.e., ArtFlow, which achieves comparable
+style transfer results to state-of-the-art methods while
+avoiding the Content Leak issue.
+2. Related Work
+Image Style Transfer . Image style transfer is a long-
+Figure 3. Loss curves of AdaIN [ 20] training: Using both content
+and style losses vs. only using the content loss.
+standing research topic. Before deep neural networks [ 49,
+37,59,57] are applied to the style transfer, several algo-
+rithms based on stroke rendering [ 16], image analogy [ 17,
+46,10,48,35,51,50], and image ﬁltering [ 61] are pro-
+posed to make artistic style transfer. These methods usu-
+ally have to trade-off between style transfer quality, gen-
+eralization, and efﬁciency. Gatys et al. [11,13] introduce
+a Gram loss upon deep features to represent image styles,
+which opens up the neural style transfer era. Inspired by
+Gatys et al., numerous neural style transfer methods have
+been proposed. We categorize these methods into one style
+per model [ 29,54,23,53,55,58,44,30], multi-style per
+model [ 7,3,19,14], and universal style transfer meth-
+ods [ 4,32,20,45,15,2,56,38,60,1] with respect to their
+generalization abilities. In this paper, our ArtFlow belongs
+to universal style transfer and it consists of reversible neural
+ﬂows. The forward and backward inferences are utilized for
+lossless and unbiased image recovery.
+Neural ﬂows . Neural ﬂows refer to a subclass of deep gen-
+erative models, which learns the exact likelihood of high
+dimensional observations ( e.g., natural images, texts, and
+audios) through a chain of reversible transformations. As
+a pioneering work of neural ﬂows, NICE [ 5] is proposed
+to transform low dimensional densities to high dimensional
+observations with a stack of afﬁne coupling layers. Fol-
+lowing NICE, a series of neural ﬂows, including RealNVP
+[6], GLOW [ 28], and Flow++ [ 18], are proposed to improve
+NICE with more powerful and ﬂexible reversible transfor-
+mations. The recently proposed neural ﬂows [ 28,18,39]
+are capable of synthesizing high-resolution natural/face im-
+ages, realistic speech data [ 43,26], and performing make-
+up transfer [ 8]. In this work, the proposed ArtFlow consists
+of a reversible network PFN and an unbiased feature trans-
+fer module. The content leak can be addressed via loss-
+less forward and backward inferences and unbiased feature
+transfer. In comparison, BeautyGlow [ 8] shares the similar
+spirits but is not applicable for unbiased style transfer.
+3. Pre-analysis
+Before introducing the proposed ArtFlow, we ﬁrst make
+a pre-analysis to uncover the Content Leak phenomenon of
+the state-of-the-art style transfer algorithms and analyze the
+863
+
+
+==== Page 3 ====
+(a) Input (b) Round 1 (c) Round 20 (d) Round 40
+Figure 4. Multiple rounds of image encoding and decoding using
+the auto-encoder of AdaIN [ 20].
+causes of Content Leak. We make the aforementioned pre-
+analysis by answering two questions: What Content Leak is
+and why Content Leak happens.
+3.1. What is Content Leak?
+For a style transfer algorithm, Content Leak occurs be-
+cause the stylization results lose some content information.
+Although the existing state-of-the-art style transfer algo-
+rithms, e.g., AdaIN [ 20], WCT [ 32], and Avatar-Net [ 45],
+can produce good style transfer results, they still suffer from
+the Content Leak issue. Since it is hard to directly extract
+the content information from the stylized image and com-
+pare it with the input content image, we adopt an alterna-
+tive way to show empirical evidence of the Content Leak
+phenomenon. More speciﬁcally, we ﬁrst perform the style
+transfer with an input content-style pair based on a style
+transfer algorithm. We then take the stylized image as the
+new content and repeatedly perform the style transfer pro-
+cess for 20 times. Fig. 1shows the results of our exper-
+iments for AdaIN (row 1), WCT (row 2), and Avatar-Net
+(row 3). According to Fig. 1, when we perform style trans-
+fer for 20 rounds, we can hardly recognize any detail of the
+content image. Such an empirical evidence indicates that
+the Content Leak phenomenon occurs in all AdaIN, WCT,
+and Avatar-Net. In the following, we discuss the causes of
+the Content Leak, which imply that the Content Leak issue
+also exists in other state-of-the-art style transfer algorithms.
+3.2. Why Does Content Leak Happen?
+Taking AdaIN [ 15], WCT [ 32], and Avatar-Net [ 45] as
+three representatives of style transfer algorithms, we study
+the causes of the Content Leak phenomenon.
+Reconstruction error. A straightforward explanation to
+Content Leak is that the decoder of existing style transfer
+algorithms cannot achieve lossless image reconstruction of
+the input content image. For example, all AdaIN, WCT,
+and Avatar-Net adopt VGG19 [ 47] as the encoder and train
+a structurally symmetrical decoder to invert the features of
+VGG19 back to the image space. Although an image recon-
+struction loss [ 32] or a content loss [ 20] is used to train the
+decoder, Li et al. [32] acknowledge that the decoder is far
+from perfect due to the loss of spatial information brought
+by the pooling operations in the encoder. Consequently, theaccumulated image reconstruction error may gradually dis-
+turb the content details and lead to the Content Leak.
+Biased decoder training. The above-mentioned recon-
+struction error can only partially explain the Content Leak
+phenomenon. In addition, biased decoder training is an-
+other cause. We take the training scheme of AdaIN as an
+example to explain how its loss function settings lead to
+Content Leak. AdaIN trains the decoder with a weighted
+combination of a content loss Lcand a style loss Ls, where
+Lc=/bardblF(G(t))−t/bardbl2, (1)
+Ls=/summationdisplay
+i=1...L/bardblµ(φi(G(t)))−µ(φi(s))/bardbl2 (2)
++/summationdisplay
+i=1...L/bardblσ(φi(G(t)))−σ(φi(s))/bardbl2.
+Heretdenotes the output of the adaptive instance normal-
+ization,FandGrepresent the encoder and the decoder,
+respectively, φidenotes a layer in VGG19 used to com-
+pute the style loss, and µ,σ represent the mean and stan-
+dard deviation of feature maps, respectively. Due to Ls, the
+decoder is trained to trade off between LcandLs, rather
+than trying to reconstruct images perfectly. Fig. 3shows
+the training loss curves of AdaIN with and without Ls.
+When we train the decoder of AdaIN with only Lc, the con-
+verged value of Lc(cyan curve) is signiﬁcantly smaller than
+training with the weighted combination of LcandLs(blue
+curve). Consequently, the auto-encoder of AdaIN is biased
+towards rendering more artistic effects, which causes Con-
+tent Leak. Fig. 4shows the image reconstruction results
+by propagating through the auto-encoder of AdaIN for 50
+rounds. We take the output of the auto-encoder in the previ-
+ous round as the input of the next round and perform image
+reconstruction repeatedly. With the increase of the infer-
+ence rounds, weird artistic patterns gradually appear in the
+produced results, which indicates that the auto-encoder of
+AdaIN may memorize image styles in training and bias to-
+wards the training styles in inference.
+Biased style transfer module. Biased style transfer mod-
+ule is another cause of the Content Leak. We take the Style
+Decorator in Avatar-Net as an example. For the normalized
+content feature fcand style feature fs, the key mechanism
+of the Style Decorator is motivated by the deep image anal-
+ogy [ 35], which is composed of two steps. In the ﬁrst step,
+the algorithm ﬁnds a corresponding patch in fsfor every
+patch infcaccording to the content similarity between two
+patches. In the next step, fcsis formed by replacing patches
+infcwith the corresponding patches in fs. Since such a
+patch replacement is irreversible, fccannot be recovered
+fromfcs, which makes fcsbe biased towards style and con-
+sequently causes the Content Leak phenomenon.
+We summarize and illustrate three main causes of Con-
+tent Leak in Fig. 5. While the reconstruction error may dis-
+turb the content information in the output image, the biased
+864
+
+
+==== Page 4 ====
+<latexit sha1_base64="W/41vBkDcdn/twQMk+7h3EZPSv8=">AAAB7nicbVA9SwNBEJ2LXzF+RS1tFoNgFe5E0TJoo10EYwLJEfY2m2TJ3u6xOyeEIz/CxkIRW3+Pnf/GTXKFJj4YeLw3w8y8KJHCou9/e4WV1bX1jeJmaWt7Z3evvH/waHVqGG8wLbVpRdRyKRRvoEDJW4nhNI4kb0ajm6nffOLGCq0ecJzwMKYDJfqCUXRS866b6RQn3XLFr/ozkGUS5KQCOerd8lenp1kac4VMUmvbgZ9gmFGDgkk+KXVSyxPKRnTA244qGnMbZrNzJ+TEKT3S18aVQjJTf09kNLZ2HEeuM6Y4tIveVPzPa6fYvwozoZIUuWLzRf1UEtRk+jvpCcMZyrEjlBnhbiVsSA1l6BIquRCCxZeXyeNZNbio+vfnldp1HkcRjuAYTiGAS6jBLdShAQxG8Ayv8OYl3ov37n3MWwtePnMIf+B9/gCXdI+8</latexit>Iout<latexit sha1_base64="djRhg0G2LUAFch7eeP0VDknmiDo=">AAAB6HicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi8cW7Ae0oWy2k3btZhN2N0IJ/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4bua3n1BpHssHM0nQj+hQ8pAzaqzUCPvlilt15yCrxMtJBXLU++Wv3iBmaYTSMEG17npuYvyMKsOZwGmpl2pMKBvTIXYtlTRC7WfzQ6fkzCoDEsbKljRkrv6eyGik9SQKbGdEzUgvezPxP6+bmvDGz7hMUoOSLRaFqSAmJrOvyYArZEZMLKFMcXsrYSOqKDM2m5INwVt+eZW0LqreVdVtXFZqt3kcRTiBUzgHD66hBvdQhyYwQHiGV3hzHp0X5935WLQWnHzmGP7A+fwBzEOM7g==</latexit>fF
+G
+<latexit sha1_base64="izKm7+vwrVDURZIXw1pnbDyYoJU=">AAAB7XicbVDLSgMxFL2pr1pfVZdugkVwVWZE0WXRje4q2Ae0Q8mkmTY2kwxJRihD/8GNC0Xc+j/u/BvTdhbaeiBwOOdecs8JE8GN9bxvVFhZXVvfKG6WtrZ3dvfK+wdNo1JNWYMqoXQ7JIYJLlnDcitYO9GMxKFgrXB0M/VbT0wbruSDHScsiMlA8ohTYp3UvOtlXE565YpX9WbAy8TPSQVy1Hvlr25f0TRm0lJBjOn4XmKDjGjLqWCTUjc1LCF0RAas46gkMTNBNrt2gk+c0seR0u5Ji2fq742MxMaM49BNxsQOzaI3Ff/zOqmNrgKXJ0ktk3T+UZQKbBWeRsd9rhm1YuwIoZq7WzEdEk2odQWVXAn+YuRl0jyr+hdV7/68UrvO6yjCERzDKfhwCTW4hTo0gMIjPMMrvCGFXtA7+piPFlC+cwh/gD5/AKxljzE=</latexit>Iin<latexit sha1_base64="W/41vBkDcdn/twQMk+7h3EZPSv8=">AAAB7nicbVA9SwNBEJ2LXzF+RS1tFoNgFe5E0TJoo10EYwLJEfY2m2TJ3u6xOyeEIz/CxkIRW3+Pnf/GTXKFJj4YeLw3w8y8KJHCou9/e4WV1bX1jeJmaWt7Z3evvH/waHVqGG8wLbVpRdRyKRRvoEDJW4nhNI4kb0ajm6nffOLGCq0ecJzwMKYDJfqCUXRS866b6RQn3XLFr/ozkGUS5KQCOerd8lenp1kac4VMUmvbgZ9gmFGDgkk+KXVSyxPKRnTA244qGnMbZrNzJ+TEKT3S18aVQjJTf09kNLZ2HEeuM6Y4tIveVPzPa6fYvwozoZIUuWLzRf1UEtRk+jvpCcMZyrEjlBnhbiVsSA1l6BIquRCCxZeXyeNZNbio+vfnldp1HkcRjuAYTiGAS6jBLdShAQxG8Ayv8OYl3ov37n3MWwtePnMIf+B9/gCXdI+8</latexit>Iout<latexit sha1_base64="djRhg0G2LUAFch7eeP0VDknmiDo=">AAAB6HicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi8cW7Ae0oWy2k3btZhN2N0IJ/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4bua3n1BpHssHM0nQj+hQ8pAzaqzUCPvlilt15yCrxMtJBXLU++Wv3iBmaYTSMEG17npuYvyMKsOZwGmpl2pMKBvTIXYtlTRC7WfzQ6fkzCoDEsbKljRkrv6eyGik9SQKbGdEzUgvezPxP6+bmvDGz7hMUoOSLRaFqSAmJrOvyYArZEZMLKFMcXsrYSOqKDM2m5INwVt+eZW0LqreVdVtXFZqt3kcRTiBUzgHD66hBvdQhyYwQHiGV3hzHp0X5935WLQWnHzmGP7A+fwBzEOM7g==</latexit>fF
+G
+<latexit sha1_base64="izKm7+vwrVDURZIXw1pnbDyYoJU=">AAAB7XicbVDLSgMxFL2pr1pfVZdugkVwVWZE0WXRje4q2Ae0Q8mkmTY2kwxJRihD/8GNC0Xc+j/u/BvTdhbaeiBwOOdecs8JE8GN9bxvVFhZXVvfKG6WtrZ3dvfK+wdNo1JNWYMqoXQ7JIYJLlnDcitYO9GMxKFgrXB0M/VbT0wbruSDHScsiMlA8ohTYp3UvOtlXE565YpX9WbAy8TPSQVy1Hvlr25f0TRm0lJBjOn4XmKDjGjLqWCTUjc1LCF0RAas46gkMTNBNrt2gk+c0seR0u5Ji2fq742MxMaM49BNxsQOzaI3Ff/zOqmNrgKXJ0ktk3T+UZQKbBWeRsd9rhm1YuwIoZq7WzEdEk2odQWVXAn+YuRl0jyr+hdV7/68UrvO6yjCERzDKfhwCTW4hTo0gMIjPMMrvCGFXtA7+piPFlC+cwh/gD5/AKxljzE=</latexit>Iin<latexit sha1_base64="W/41vBkDcdn/twQMk+7h3EZPSv8=">AAAB7nicbVA9SwNBEJ2LXzF+RS1tFoNgFe5E0TJoo10EYwLJEfY2m2TJ3u6xOyeEIz/CxkIRW3+Pnf/GTXKFJj4YeLw3w8y8KJHCou9/e4WV1bX1jeJmaWt7Z3evvH/waHVqGG8wLbVpRdRyKRRvoEDJW4nhNI4kb0ajm6nffOLGCq0ecJzwMKYDJfqCUXRS866b6RQn3XLFr/ozkGUS5KQCOerd8lenp1kac4VMUmvbgZ9gmFGDgkk+KXVSyxPKRnTA244qGnMbZrNzJ+TEKT3S18aVQjJTf09kNLZ2HEeuM6Y4tIveVPzPa6fYvwozoZIUuWLzRf1UEtRk+jvpCcMZyrEjlBnhbiVsSA1l6BIquRCCxZeXyeNZNbio+vfnldp1HkcRjuAYTiGAS6jBLdShAQxG8Ayv8OYl3ov37n3MWwtePnMIf+B9/gCXdI+8</latexit>Iout<latexit sha1_base64="djRhg0G2LUAFch7eeP0VDknmiDo=">AAAB6HicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi8cW7Ae0oWy2k3btZhN2N0IJ/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4bua3n1BpHssHM0nQj+hQ8pAzaqzUCPvlilt15yCrxMtJBXLU++Wv3iBmaYTSMEG17npuYvyMKsOZwGmpl2pMKBvTIXYtlTRC7WfzQ6fkzCoDEsbKljRkrv6eyGik9SQKbGdEzUgvezPxP6+bmvDGz7hMUoOSLRaFqSAmJrOvyYArZEZMLKFMcXsrYSOqKDM2m5INwVt+eZW0LqreVdVtXFZqt3kcRTiBUzgHD66hBvdQhyYwQHiGV3hzHp0X5935WLQWnHzmGP7A+fwBzEOM7g==</latexit>fF
+G
+<latexit sha1_base64="izKm7+vwrVDURZIXw1pnbDyYoJU=">AAAB7XicbVDLSgMxFL2pr1pfVZdugkVwVWZE0WXRje4q2Ae0Q8mkmTY2kwxJRihD/8GNC0Xc+j/u/BvTdhbaeiBwOOdecs8JE8GN9bxvVFhZXVvfKG6WtrZ3dvfK+wdNo1JNWYMqoXQ7JIYJLlnDcitYO9GMxKFgrXB0M/VbT0wbruSDHScsiMlA8ohTYp3UvOtlXE565YpX9WbAy8TPSQVy1Hvlr25f0TRm0lJBjOn4XmKDjGjLqWCTUjc1LCF0RAas46gkMTNBNrt2gk+c0seR0u5Ji2fq742MxMaM49BNxsQOzaI3Ff/zOqmNrgKXJ0ktk3T+UZQKbBWeRsd9rhm1YuwIoZq7WzEdEk2odQWVXAn+YuRl0jyr+hdV7/68UrvO6yjCERzDKfhwCTW4hTo0gMIjPMMrvCGFXtA7+piPFlC+cwh/gD5/AKxljzE=</latexit>Iin
+T<latexit sha1_base64="LN5MpOS3XwzpOC3TV6a1k0M0LRQ=">AAAB7nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi8cK9gPaUDbbTbt0swm7E6GE/ggvHhTx6u/x5r9x0+agrQ8GHu/NMDMvSKQw6LrfTmltfWNzq7xd2dnd2z+oHh61TZxqxlsslrHuBtRwKRRvoUDJu4nmNAok7wSTu9zvPHFtRKwecZpwP6IjJULBKFqp0x9TzMLZoFpz6+4cZJV4BalBgeag+tUfxiyNuEImqTE9z03Qz6hGwSSfVfqp4QllEzriPUsVjbjxs/m5M3JmlSEJY21LIZmrvycyGhkzjQLbGVEcm2UvF//zeimGN34mVJIiV2yxKEwlwZjkv5Oh0JyhnFpCmRb2VsLGVFOGNqGKDcFbfnmVtC/q3lXdfbisNW6LOMpwAqdwDh5cQwPuoQktYDCBZ3iFNydxXpx352PRWnKKmWP4A+fzB5Y0j7s=</latexit>ˆf<latexit sha1_base64="W/41vBkDcdn/twQMk+7h3EZPSv8=">AAAB7nicbVA9SwNBEJ2LXzF+RS1tFoNgFe5E0TJoo10EYwLJEfY2m2TJ3u6xOyeEIz/CxkIRW3+Pnf/GTXKFJj4YeLw3w8y8KJHCou9/e4WV1bX1jeJmaWt7Z3evvH/waHVqGG8wLbVpRdRyKRRvoEDJW4nhNI4kb0ajm6nffOLGCq0ecJzwMKYDJfqCUXRS866b6RQn3XLFr/ozkGUS5KQCOerd8lenp1kac4VMUmvbgZ9gmFGDgkk+KXVSyxPKRnTA244qGnMbZrNzJ+TEKT3S18aVQjJTf09kNLZ2HEeuM6Y4tIveVPzPa6fYvwozoZIUuWLzRf1UEtRk+jvpCcMZyrEjlBnhbiVsSA1l6BIquRCCxZeXyeNZNbio+vfnldp1HkcRjuAYTiGAS6jBLdShAQxG8Ayv8OYl3ov37n3MWwtePnMIf+B9/gCXdI+8</latexit>Iout<latexit sha1_base64="djRhg0G2LUAFch7eeP0VDknmiDo=">AAAB6HicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi8cW7Ae0oWy2k3btZhN2N0IJ/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4bua3n1BpHssHM0nQj+hQ8pAzaqzUCPvlilt15yCrxMtJBXLU++Wv3iBmaYTSMEG17npuYvyMKsOZwGmpl2pMKBvTIXYtlTRC7WfzQ6fkzCoDEsbKljRkrv6eyGik9SQKbGdEzUgvezPxP6+bmvDGz7hMUoOSLRaFqSAmJrOvyYArZEZMLKFMcXsrYSOqKDM2m5INwVt+eZW0LqreVdVtXFZqt3kcRTiBUzgHD66hBvdQhyYwQHiGV3hzHp0X5935WLQWnHzmGP7A+fwBzEOM7g==</latexit>fForward
+Reverse
+<latexit sha1_base64="izKm7+vwrVDURZIXw1pnbDyYoJU=">AAAB7XicbVDLSgMxFL2pr1pfVZdugkVwVWZE0WXRje4q2Ae0Q8mkmTY2kwxJRihD/8GNC0Xc+j/u/BvTdhbaeiBwOOdecs8JE8GN9bxvVFhZXVvfKG6WtrZ3dvfK+wdNo1JNWYMqoXQ7JIYJLlnDcitYO9GMxKFgrXB0M/VbT0wbruSDHScsiMlA8ohTYp3UvOtlXE565YpX9WbAy8TPSQVy1Hvlr25f0TRm0lJBjOn4XmKDjGjLqWCTUjc1LCF0RAas46gkMTNBNrt2gk+c0seR0u5Ji2fq742MxMaM49BNxsQOzaI3Ff/zOqmNrgKXJ0ktk3T+UZQKbBWeRsd9rhm1YuwIoZq7WzEdEk2odQWVXAn+YuRl0jyr+hdV7/68UrvO6yjCERzDKfhwCTW4hTo0gMIjPMMrvCGFXtA7+piPFlC+cwh/gD5/AKxljzE=</latexit>Iin
+T<latexit sha1_base64="LN5MpOS3XwzpOC3TV6a1k0M0LRQ=">AAAB7nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE0WPRi8cK9gPaUDbbTbt0swm7E6GE/ggvHhTx6u/x5r9x0+agrQ8GHu/NMDMvSKQw6LrfTmltfWNzq7xd2dnd2z+oHh61TZxqxlsslrHuBtRwKRRvoUDJu4nmNAok7wSTu9zvPHFtRKwecZpwP6IjJULBKFqp0x9TzMLZoFpz6+4cZJV4BalBgeag+tUfxiyNuEImqTE9z03Qz6hGwSSfVfqp4QllEzriPUsVjbjxs/m5M3JmlSEJY21LIZmrvycyGhkzjQLbGVEcm2UvF//zeimGN34mVJIiV2yxKEwlwZjkv5Oh0JyhnFpCmRb2VsLGVFOGNqGKDcFbfnmVtC/q3lXdfbisNW6LOMpwAqdwDh5cQwPuoQktYDCBZ3iFNydxXpx352PRWnKKmWP4A+fzB5Y0j7s=</latexit>ˆf
+(a) Reconstruction Error (b) Biased Image Recovery (c) Biased Transfer Module (d) ArtFlow: Unbiased Network/Transfer
+Figure 5. Causes of the Content Leak phenomenon. (a) Reconstruction error, i.e., the content of output image is disturbed. (b) Biased image
+recovery, i.e., the output image shifts to a biased style via the decoder. (c) Biased style transfer module, i.e., the stylized feature shifts to a
+biased style via feature stylization. The red dash lines in (b) and (c) denote unbiased positions of the manifolds. (d) The proposed ArtFlow
+scheme, where both the network and the transfer module are not biased, while the backbone network does not introduce any reconstruction
+error. Notations – FandG: encoder and decoder used by existing style transfer algorithms, respectively. T: style transfer module, e.g.,
+AdaIN or WCT. IinandIout: input and output images. fandˆf: vanilla and stylized deep features of Iin.Actnorm
+Additive Coupling
+8x
+1x1 ConvSqueeze
+Content
+Style
+Output
+Squeeze
+Actnorm
+Additive Coupling
+8x
+1x1 Conv <latexit sha1_base64="qVD4yMYsflyHDPn6/JWBpnLG5ow=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0nEoseiF48V7Qe0oWy2k3bpZhN2N0IJ/QlePCji1V/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4dua3n1BpHstHM0nQj+hQ8pAzaqz0EPZZv1xxq+4cZJV4OalAjka//NUbxCyNUBomqNZdz02Mn1FlOBM4LfVSjQllYzrErqWSRqj9bH7qlJxZZUDCWNmShszV3xMZjbSeRIHtjKgZ6WVvJv7ndVMTXvsZl0lqULLFojAVxMRk9jcZcIXMiIkllClubyVsRBVlxqZTsiF4yy+vktZF1atV3fvLSv0mj6MIJ3AK5+DBFdThDhrQBAZDeIZXeHOE8+K8Ox+L1oKTzxzDHzifPz1ejcQ=</latexit>fc
+<latexit sha1_base64="Y2gzOpTRfmF/fFym2eEnUhtH2D4=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0nEoseiF48V7Qe0oWy2k3bpZhN2N0IJ/QlePCji1V/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4dua3n1BpHstHM0nQj+hQ8pAzaqz0EPZ1v1xxq+4cZJV4OalAjka//NUbxCyNUBomqNZdz02Mn1FlOBM4LfVSjQllYzrErqWSRqj9bH7qlJxZZUDCWNmShszV3xMZjbSeRIHtjKgZ6WVvJv7ndVMTXvsZl0lqULLFojAVxMRk9jcZcIXMiIkllClubyVsRBVlxqZTsiF4yy+vktZF1atV3fvLSv0mj6MIJ3AK5+DBFdThDhrQBAZDeIZXeHOE8+K8Ox+L1oKTzxzDHzifP1WejdQ=</latexit>fs
+<latexit sha1_base64="zAnkwkWkA80pWk81D5qkvnpdLuU=">AAAB7XicbVDLSgNBEOz1GeMr6tHLYBA8hV1R9Bj04jGCeUASwuxkNhkzO7PM9AphyT948aCIV//Hm3/jJNmDJhY0FFXddHeFiRQWff/bW1ldW9/YLGwVt3d29/ZLB4cNq1PDeJ1pqU0rpJZLoXgdBUreSgyncSh5MxzdTv3mEzdWaPWA44R3YzpQIhKMopMaUS9jdtIrlf2KPwNZJkFOypCj1it9dfqapTFXyCS1th34CXYzalAwySfFTmp5QtmIDnjbUUVjbrvZ7NoJOXVKn0TauFJIZurviYzG1o7j0HXGFId20ZuK/3ntFKPrbiZUkiJXbL4oSiVBTaavk74wnKEcO0KZEe5WwobUUIYuoKILIVh8eZk0zivBZcW/vyhXb/I4CnAMJ3AGAVxBFe6gBnVg8AjP8ApvnvZevHfvY9664uUzR/AH3ucP11+PTQ==</latexit>fcs
+Style Tansfer ModuleContent Feature
+Style Feature
+Stylized Feature
+Projection: Forward Inference Reversion: Reverse Inference
+Figure 6. The framework of the proposed ArtFlow. For style transfer, Artﬂow works in a projection-transfer-reversion scheme. Projection :
+Extracting deep features of content and style images via the forward inference. Transfer : Transferring the content and style features to the
+stylized feature via the style transfer module. Reversion : Transforming the stylized feature to the stylized image via the reverse inference.
+image recovery and the biased transfer module may lead to
+a style shift in the output image.
+4. Method
+4.1. Overview of the ArtFlow Framework
+In this work, we present a novel unbiased style transfer
+framework named ArtFlow to address the Content Leak is-
+sue of the state-of-the-art style transfer approaches. Differ-
+ent from the encoder-transfer-decoder scheme commonly
+used in existing neural style transfer algorithms, ArtFlow
+performs image style transfer through a projection-transfer-
+reversion scheme. As shown in Fig. 6, ArtFlow relies on a
+reversible neural ﬂow model, named Projection Flow Net-
+work (PFN). In the projection step, the content images and
+style images are fed into PFN for lossless deep feature ex-
+traction via the forward propagation of PFN. In the transfer
+step, the content and style features are transferred to the
+stylized feature with an unbiased style transfer module. In
+thereversion step, the stylized feature is reconstructed to
+a stylized image via the reverse propagation of PFN. Since
+the information ﬂow in PFN and the unbiased style transfer
+module are both lossless and unbiased, ArtFlow achieves
+unbiased image style transfer to avoid the Content Leak.
+In the following, we ﬁrst discuss the details of PFN inSection 4.2. Then, we discuss the choice of the unbiased
+style transfer module by performing both theoretical and
+quantitative analyses of the inherent biases of existing trans-
+fer modules in Section 4.3.
+4.2. Projection Flow Network
+Projection Flow Network (PFN) serves as both the deep
+feature extractor and image synthesizer of our ArtFlow
+framework. In this work, we construct PFN by following
+the effective Glow model [ 28]. As shown in Fig. 6, PFN
+consists of a chain of three learnable reversible transfor-
+mations, i.e., additive coupling, invertible 1 ×1 convolution,
+and Actnorm. All the components of PFN are reversible,
+making PFN fully reversible that the information is lossless
+during the forward and reverse propagation. In the follow-
+ing, we describe the three reversible transformations.
+Additive coupling. Dinh et al. [5,6] proposed an expres-
+sive reversible transformation named afﬁne coupling layer.
+In this work, we adopt a special case of afﬁne coupling, i.e.,
+additive coupling, for PFN. The forward computation of ad-
+ditive coupling is
+xa,xb= split( x)
+yb= NN(xa)+xb
+y= concat( xa,yb).
+865
+
+
+==== Page 5 ====
+Thesplit() function splits a tensor into two halves along the
+channel dimension. NN() is (any) neural network where
+the input and the output have the same shape. The concat()
+function concatenates two tensors along the channel dimen-
+sion. The reverse computation of additive coupling can be
+easily derived.
+We observe that a ﬂow model with additive coupling lay-
+ers is sufﬁcient to handle the style transfer task in exper-
+iments. Moreover, the additive coupling is more efﬁcient
+and stable than the afﬁne coupling in model training. There-
+fore, we employ additive coupling instead of afﬁne coupling
+as the expressive transformation layer in PFN.
+Invertible 1 ×1 convolution. Since the additive coupling
+layer only processes a half of the feature maps, it is nec-
+essary to permute the channel dimensions of feature maps,
+so that each dimension can affect all the other dimensions
+[5,6]. We follow Glow [ 28] to use a learnable invertible
+1×1 convolution layer for ﬂexible channel permutation, as
+yi,j=Wxi,j. (3)
+Wis the weight matrix of shape c×c, wherecis the channel
+dimension of tensor xandy. Its reverse function is xi,j=
+W−1yi,j.
+Actnorm. We follow Glow [ 28] to use the activation
+normalization layer (Actnorm) as an alternative to batch
+normalization [ 21]. Actnorm performs per-channel afﬁne
+transformation on tensor x, as
+yi,j=w⊙xi,j+b, (4)
+wherei,jdenote a spatial position on the tensor. wandb
+are the scale and bias parameters of afﬁne transformation,
+and they are learnable in model training. The reverse funci-
+ton isxi,j= (yi,j−b)/w.
+In addition to the three reversible transformations, the
+squeeze operation is inserted into certain parts of PFN to
+reduce the spatial size of 2D feature maps. The squeeze
+operation splits the features into smaller patches along the
+spatial dimension and then concatenates the patches along
+the channel dimension.
+4.3. Unbiased Content­Style Separation
+Which style transfer module should ArtFlow use to
+achieve the unbiased style transfer? To answer this ques-
+tion, we ﬁrst make a theoretical analysis of the biases of
+two popular style transfer modules, i.e., the adaptive in-
+stance normalization in AdaIN, and the whitening and col-
+oring transforms in WCT.
+The mechanism of the universal style transfer meth-
+ods can be regarded as a natural evolution of the bilin-
+ear model proposed by Tenenbaum and Freeman in [ 52],
+which separates an image into a content factor Cand a
+style factor Sand then makes style transfer by replacingthe style factor Sin the content image with that in the tar-
+get image. Similarly, the universal style transfer methods
+assume that the content information and the style infor-
+mation in the deep feature space are disentangled explic-
+itly [ 20,32,31,40,2,1,56,22,60] or implicitly [ 4,45].
+For example, AdaIN [ 20] separates deep features into nor-
+malized feature maps and mean/std vectors, which can be
+regarded as the content factor Cand style factor S, respec-
+tively.
+Following the theoretical framework of the Bilinear
+Model [ 52], we can deﬁne the unbiased style transfer as:
+Deﬁnition 1 Suppose we have a bilinear style transfer
+modulefcs=C(fc)S(fs), whereC,S denote the con-
+tent factor and the style factor in the bilinear model, re-
+spectively. fcsis an unbiased style transfer module if
+C(fcs) =C(fc)andS(fcs) =S(fs).
+Based on Def. 1, we have the following two theorems.
+Theorem 1 The adaptive instance normalization in AdaIN
+is an unbiased style transfer module.
+Theorem 2 The whitening and coloring transform in WCT
+is an unbiased style transfer module.
+The proofs for Theorems 1and2can be found in the supple-
+mentary material. The Style Decorator in Avatar-Net [ 45]
+does not ﬁt the bilinear model, while the empirical analy-
+sis in Sec. 3.2shows that Style Decorator is a biased style
+transfer module .
+In addition to the theoretical analyses, we also quanti-
+tatively verify the unbiased property of the transfer mod-
+ules in AdaIN and WCT. Quantitatively studying the prop-
+erty of popular style transfer modules is an unsolved ques-
+tion because the auto-encoder used by existing universal
+style transfer methods has signiﬁcant image reconstruction
+errors and may be biased towards styles as discussed in
+Sec. 3.2. Consequently, the produced style transfer results
+using auto-encoders cannot precisely reﬂect the effects of
+the style transfer modules upon deep features. The pro-
+posed PFN addresses this issue. Speciﬁcally, if we take the
+forward inference and the reverse inference of the proposed
+PFN as the encoder and decoder, respectively, we can obtain
+a lossless and unbiased “auto-encoder” for style transfer,
+which can avoid the inﬂuence of the image reconstruction
+error and the biased image recovery brought by the decoder.
+By using the proposed PFN as the lossless feature projec-
+tor/inverter, we make a quantitative analysis about the con-
+tent and style reconstruction errors of the transfer modules
+in AdaIN and WCT. Fig. 7demonstrates two ﬁndings: 1)
+Considering (a) vs. (b) and (c) vs. (d), the proposed PFN can
+indeed make lossless and unbiased content and style recon-
+struction while the auto-encoder based on VGG19 cannot.
+866
+
+
+==== Page 6 ====
+(a) AdaIN
+(c) WCT (d) ArtFlow+WCT
+(b) ArtFlow+AdaIN
+Figure 7. Content error between F(G(fcs))andfcand the style
+error between F(G(fcs))andfs. ArtFlow with the transfer mod-
+ules of AdaIN/WCT achieves lossless content/style reconstruction.
+2) (b) and (d) quantitatively verify that the transfer module
+of AdaIN and WCT are unbiased.
+Based on theoretical and quantitative analyses to transfer
+modules in AdaIN and WCT, we let the adaptive instance
+normalization and the whitening and coloring transforms be
+two options for ArtFlow to achieve unbiased style transfer.
+5. Experiments
+To demonstrate that ArtFlow can achieve unbiased style
+transfer, we conduct extensive experiments. We make a
+comparison between the proposed ArtFlow and state-of-
+the-art style transfer algorithms in terms of stylization ef-
+fect, computing time, content leak, and content factor vi-
+sualization. Moreover, we present a new interesting appli-
+cation named reverse style transfer, which can only be per-
+formed by ArtFlow. More qualitative results, portrait style
+transfer images, and user study results are available in sup-
+plementary materials.
+5.1. Experimental Settings
+Dataset. Following the existing style transfer methods
+[20,32], we use the MS-COCO dataset [ 36] as the content
+images and the WikiArt dataset [ 41] as the style images. In
+training, we resize the input images to 512 ×512 and ran-
+domly crop each image to 256 ×256.
+Network architecture. As shown in Fig. 6, the proposed
+PFN consists of two ﬂow blocks, where each block con-
+tains eight neural ﬂows. Each ﬂow is a stack of an Actnorm
+layer, an invertible 1 ×1 convolution, and an additive cou-
+pling layer. More studies on the number of blocks and ﬂows
+can be found in the supplementary material.Training. We implement our ArtFlow on the PyTorch
+framework [ 42]. We train ArtFlow for 60,000 iterations us-
+ing an Adam optimizer [ 27] with a batch size of 2, an initial
+learning rate of 1e-4, and a learning rate decay of 5e-5. The
+training of ArtFlow takes about 12 hours on a single RTX
+2080Ti GPU. We adopt the content loss Lcin Eq. 1and
+style loss Lsin Eq. 2as the training objective of ArtFlow.
+The loss weights of LcandLsare set to 0.1 and 1, respec-
+tively.
+5.2. Style Transfer Results
+To demonstrate the style transfer ability of the proposed
+ArtFlow, we compare the style transfer results of ArtFlow in
+conjunction with the transfer module of AdaIN/WCT with
+the state-of-the-art universal style transfer algorithms, i.e.,
+StyleSwap [ 4], AdaIN [ 20], WCT [ 32], LinearWCT [ 31],
+OptimalWCT [ 40], and Avatar-Net [ 45].
+Visual comparison. Fig.8shows the style transfer results
+by all the compared algorithms. While all the compared
+methods can produce good style transfer results, different
+methods create distinct artistic effects, e.g., WCT and Op-
+timalWCT can create more colorful artistic effects, Linear-
+WCT, AdaIN, ArtFlow can preserve more content details,
+and Avatar-Net can render more ﬁne textures. The proposed
+ArtFlow in conjunction with AdaIN/WCT can produce vi-
+sually comparable style transfer results to the state-of-the-
+art style transfer algorithms. It is worth noting that the style
+transfer results by ArtFlow preserve more details of the con-
+tent image (please zoom in to compare the details of the
+billboards in the top row results), which conﬁrms that Art-
+Flow corrects the biased style transfer issue of the compared
+methods and avoids the Content Leak. Moreover, we also
+perform portrait style transfer with the proposed ArtFlow.
+To train the portrait style transfer model, we use FFHQ [ 25]
+as the content and Metfaces [ 24] as the style. As Fig. 9
+shows, ArtFlow can also achieve good artistic style transfer
+results on portrait images.
+Quantitative comparison. In addition to the visual com-
+parison, we also make a quantitative comparison. Inspired
+by [62], we adopt the Structural Similarity Index (SSIM)
+and the content loss between the original contents and styl-
+ized images as the metric to measure the performance of
+the content information preservation in style transfer. To
+measure the ability to create artistic effects of a style trans-
+fer algorithm, inspired by [ 32], we use the mean square
+error of Gram matrices between the style and the style-
+transferred images. As Tab. 1shows, ArtFlow achieves
+the highest SSIM score, which indicates that the proposed
+methods have a stronger ability to preserve more content
+information. While StyleSwap achieves the best content
+loss and a good SSIM score, its style transfer results do
+not look as good as the results produced by ArtFlow. Re-
+garding the Gram loss, since ArtFlow mainly addresses the
+867
+
+
+==== Page 7 ====
+(a) Content (b) Style (c) StyleSwap (d) AdaIN (e) WCT
+(f) LinearWCT (g) OptimalWCT (h) Avatar-Net (i) ArtFlow+AdaIN (j) ArtFlow+WCT
+Figure 8. Style transfer results of the state-of-the-art universal style transfer algorithms.
+Table 1. Quantitative evaluation results of universal stylization methods. The computing time is evaluated on 512 ×512 images.
+Method StyleSwap AdaIN WCT LinearWCT OptimalWCT Avatar-Net Self-Contained ArtFlow+AdaIN ArtFlow+WCT
+SSIM↑ 0.44 0.29 0.27 0.35 0.21 0.31 0.23 0.45 0.47
+Content Loss ↓ 2.22 3.10 3.35 2.57 4.33 3.35 3.00 2.58 2.80
+Gram Loss ↓ 0.00482 0.00127 0.00074 0.00093 0.00035 0.00099 0.00473 0.00098 0.00078
+Time (seconds) ↓ 0.272 0.064 0.997 0.092 1.808 9.129 0.156 0.408 0.428
+(a) Content (b) Style (c) ArtFlow
+Figure 9. Portrait style transfer results using the proposed ArtFlow.
+Content Leak issue and corrects the biases towards style im-
+ages, it is reasonable that ArtFlow does not achieve the low-
+est Gram loss. It is worth noting that ArtFlow in conjunc-
+tion with AdaIN achieves a lower Gram loss than vanilla
+AdaIN while ArtFlow in conjunction with WCT has a sim-
+ilar Gram loss compared with WCT itself, indicating that
+ArtFlow can solve the Content Leak issue without hurt-
+ing the stylization ability of AdaIN/WCT. In the third row
+of Tab. 1, we also show the computing time for all the
+compared methods. ArtFlow+AdaIN is slower than vanillaAdaIN since PFN does not adopt any pooling operations.
+Therefore, it requires more computations in the higher lay-
+ers than AdaIN. Comparing with WCT, since ArtFlow does
+not need the multi-level stylization strategy used by WCT,
+ArtFlow+WCT is faster than vanilla WCT.
+5.3. Content Leak
+As discussed in Sec. 3, if the Content Leak happens,
+the content information would gradually disintegrate when
+we perform style transfer repeatedly. To demonstrate that
+the proposed ArtFlow can avoid the Content Leak phe-
+nomenon, we use the above way to visualize and compare
+the Content Leak phenomenon in AdaIN, WCT, Avatar-Net,
+and their counterparts in conjunction with the proposed Art-
+Flow. We also show the result by [ 9] because it also ad-
+dresses the content leak issue. As Fig. 10shows, the Con-
+tent Leak appears in vanilla AdaIN, WCT, Avatar-Net, and
+Self-Content [ 9] when we perform the style transfer for 20
+rounds. In contrast, when we replace the VGG19 based
+auto-encoder with the proposed PFN in AdaIN/WCT, the
+Content Leak disappears completely, which indicates that
+ArtFlow in conjunction with AdaIN/WCT can effectively
+solve the Content Leak problem and therefore achieve un-
+biased style transfer. Regarding Avatar-Net, as discussed
+in Sec. 3.2, since the Style Decorator in Avatar-Net is in-
+herently biased towards style, ArtFlow combining the Style
+868
+
+
+==== Page 8 ====
+Content Style
+Round 1 Round 20
+Round 1 Round 20AdaIN WCT Avatar-Net ArtFlow+AdaIN ArtFlow+WCT ArtFlow+Avatar-Net
+ Self-Contained
+Figure 10. A comparison of the Content Leak phenomenon. We show the style transfer results of the ﬁrst round and the 20-th round.
+Table 2. User study results of universal stylization methods.
+Method StyleSwap AdaIN WCT LinearWCT OptimalWCT Avatar-Net ArtFlow
+V otes↑ 7 19 64 257 60 78 314
+(a) Input (b) AdaIN (c) WCT (d) ArtFlow+AdaIN
+Figure 11. Visualization of content features of AdaIN, WCT, and
+the proposed ArtFlow.
+Decorator as the transfer module cannot achieve unbiased
+style transfer. However, by replacing the auto-encoder with
+PFN, the Content Leak phenomenon is still signiﬁcantly al-
+leviated by Avatar-Net.
+5.4. Content­Style Separation
+As discussed in Sec. 4.3, AdaIN and WCT can be re-
+garded as an evolution of the Bilinear Model in [ 52]. Tak-
+ing the view of the bilinear model, the mechanism of AdaIN
+and WCT can be regarded as: 1) disentangling the content
+and style factors in the deep feature space, and 2) replacing
+the style factor of the content image with the style factor of
+the style image. Since such a disentangled representation
+of the content and style exists in the feature space, we can
+visualize the pure content by inverting the content factor
+back to an image. Fig. 11shows the inverted content factor
+in AdaIN, WCT, and ArtFlow in conjunction with AdaIN.
+Compared with the inverted content factor of AdaIN and
+WCT, the results by ArtFlow contain signiﬁcantly less style
+effects ( e.g., colors) along with sharper image structures.
+Fig. 11shows that ArtFlow can achieve unbiased content-
+style separation while AdaIN and WCT cannot.
+6. User Study
+To quantitatively demonstrate that the proposed ArtFlow
+has the comparable style transfer performance with the
+state-of-the-art algorithms, we perform a user study. Ouruser study is based on the validation dataset that consists
+of 43 content images and 27 style images. We obtain the
+style transfer results of StyleSwap, AdaIN, WCT, Linear-
+WCT, OptimalWCT, Avatar-Net, and the proposed ArtFlow
+on every content-style pair, respectively. We ﬁnally obtain
+1161 style transfer results for each method. In user study,
+we list all style transfer results of a content-style pair and let
+the user to choose ONE most preferable style transfer result.
+We eventually collect 799 effective votes. Tab. 2shows the
+style transfer results. The proposed ArtFlow obtains more
+votes compared with other style transfer methods, which
+demonstrates that our method has comparable style transfer
+performance with the state-of-the-art methods.
+7. Conclusion
+In this paper, we reveal a common issue in the state-of-
+the-art style transfer algorithms, i.e., the Content Leak phe-
+nomenon. Upon analyzing the main causes of the Content
+Leak, we present a new style transfer framework named
+ArtFlow. Unlike the existing style transfer algorithms,
+which adopt the VGG19 based auto-encoder to extract deep
+features, ArtFlow introduces a reversible neural ﬂow-based
+network named PFN, thus enabling both the forward and re-
+verse inferences to project images into the feature space and
+invert features back to the image space, respectively. Art-
+Flow in conjunction with an unbiased style transfer module,
+e.g., either AdaIN or WCT, achieves comparable style trans-
+fer results while avoiding the Content Leak phenomenon.
+Furthermore, because PFN can achieve lossless and unbi-
+ased image projection and reversion, the proposed ArtFlow
+can facilitate a better content-style separation and thus en-
+able the reversion of the style transfer in a lossless manner.
+8. Acknowledgement
+This work is supported in part by NSF awards IIS-
+1704337, IIS-1813709, and our corporate sponsors.
+869
+
+
+==== Page 9 ====
+References
+[1] Jie An, Tao Li, Haozhi Huang, Li Shen, Xuan Wang, Yongyi
+Tang, Jinwen Ma, Wei Liu, and Jiebo Luo. Real-time univer-
+sal style transfer on high-resolution images via zero-channel
+pruning. arXiv preprint arXiv:2006.09029 , 2020.
+[2] Jie An, Haoyi Xiong, Jun Huan, and Jiebo Luo. Ultrafast
+photorealistic style transfer via neural architecture search. In
+AAAI , 2020.
+[3] Dongdong Chen, Lu Yuan, Jing Liao, Nenghai Yu, and Gang
+Hua. Stylebank: an explicit representation for neural image
+style transfer. In CVPR , 2017.
+[4] Tian Qi Chen and Mark Schmidt. Fast patch-based style
+transfer of arbitrary style. arXiv preprint arXiv:1612.04337 ,
+2016.
+[5] Laurent Dinh, David Krueger, and Yoshua Bengio. Nice:
+Non-linear independent components estimation. arXiv
+preprint arXiv:1410.8516 , 2014.
+[6] Laurent Dinh, Jascha Sohl-Dickstein, and Samy Bengio.
+Density estimation using real nvp. In ICLR , 2017.
+[7] Vincent Dumoulin, Jonathon Shlens, and Manjunath Kudlur.
+A learned representation for artistic style. In ICLR , 2017.
+[8] Chen et al. Beautyglow: On-demand makeup transfer frame-
+work with reversible generative network. In CVPR , 2019.
+[9] Chen et al. Self-contained stylization via steganography for
+reverse and serial style transfer. In WACV , 2020.
+[10] Oriel Frigo, Neus Sabater, Julie Delon, and Pierre Hellier.
+Split and match: example-based adaptive patch sampling for
+unsupervised style transfer. In CVPR , 2016.
+[11] Leon Gatys, Alexander S Ecker, and Matthias Bethge. Tex-
+ture synthesis using convolutional neural networks. In
+NeurIPS , 2015.
+[12] Leon A Gatys, Matthias Bethge, Aaron Hertzmann, and Eli
+Shechtman. Preserving color in neural artistic style transfer.
+arXiv preprint arXiv:1606.05897 , 2016.
+[13] Leon A Gatys, Alexander S Ecker, and Matthias Bethge.
+A neural algorithm of artistic style. arXiv preprint
+arXiv:1508.06576 , 2015.
+[14] Xinyu Gong, Haozhi Huang, Lin Ma, Fumin Shen, Wei Liu,
+and Tong Zhang. Neural stereoscopic image style transfer.
+InECCV , 2018.
+[15] Shuyang Gu, Congliang Chen, Jing Liao, and Lu Yuan. Ar-
+bitrary style transfer with deep feature reshufﬂe. In CVPR ,
+2018.
+[16] Aaron Hertzmann. Painterly rendering with curved brush
+strokes of multiple sizes. In SIGGRAPH , 1998.
+[17] Aaron Hertzmann, Charles E Jacobs, Nuria Oliver, Brian
+Curless, and David H Salesin. Image analogies. In SIG-
+GRAPH , 2001.
+[18] Jonathan Ho, Xi Chen, Aravind Srinivas, Yan Duan, and
+Pieter Abbeel. Flow++: Improving ﬂow-based generative
+models with variational dequantization and architecture de-
+sign. In ICML , 2019.
+[19] Haozhi Huang, Hao Wang, Wenhan Luo, Lin Ma, Wenhao
+Jiang, Xiaolong Zhu, Zhifeng Li, and Wei Liu. Real-time
+neural style transfer for videos. In CVPR , 2017.[20] Xun Huang and Serge J Belongie. Arbitrary style transfer
+in real-time with adaptive instance normalization. In ICCV ,
+2017.
+[21] Sergey Ioffe and Christian Szegedy. Batch normalization:
+Accelerating deep network training by reducing internal co-
+variate shift. In ICML , pages 448–456, 2015.
+[22] Yongcheng Jing, Xiao Liu, Yukang Ding, Xinchao Wang,
+Errui Ding, Mingli Song, and Shilei Wen. Dynamic instance
+normalization for arbitrary style transfer. In AAAI , 2020.
+[23] Justin Johnson, Alexandre Alahi, and Li Fei-Fei. Perceptual
+losses for real-time style transfer and super-resolution. In
+ECCV , 2016.
+[24] Tero Karras, Miika Aittala, Janne Hellsten, Samuli Laine,
+Jaakko Lehtinen, and Timo Aila. Training generative
+adversarial networks with limited data. arXiv preprint
+arXiv:2006.06676 , 2020.
+[25] Tero Karras, Samuli Laine, and Timo Aila. A style-based
+generator architecture for generative adversarial networks. In
+CVPR , 2019.
+[26] Jaehyeon Kim, Sungwon Kim, Jungil Kong, and Sun-
+groh Yoon. Glow-tts: A generative ﬂow for text-to-
+speech via monotonic alignment search. arXiv preprint
+arXiv:2005.11129 , 2020.
+[27] Diederik P Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. arXiv preprint arXiv:1412.6980 ,
+2014.
+[28] Durk P Kingma and Prafulla Dhariwal. Glow: Generative
+ﬂow with invertible 1x1 convolutions. In NeurIPS , 2018.
+[29] Chuan Li and Michael Wand. Combining markov random
+ﬁelds and convolutional neural networks for image synthesis.
+InCVPR , 2016.
+[30] Shaohua Li, Xinxing Xu, Liqiang Nie, and Tat-Seng Chua.
+Laplacian-steered neural style transfer. In ACM MM , 2017.
+[31] Xueting Li, Sifei Liu, Jan Kautz, and Ming-Hsuan Yang.
+Learning linear transformations for fast arbitrary style trans-
+fer. In CVPR , 2019.
+[32] Yijun Li, Chen Fang, Jimei Yang, Zhaowen Wang, Xin Lu,
+and Ming-Hsuan Yang. Universal style transfer via feature
+transforms. In NeurIPS , 2017.
+[33] Yijun Li, Ming-Yu Liu, Xueting Li, Ming-Hsuan Yang, and
+Jan Kautz. A closed-form solution to photorealistic image
+stylization. In ECCV , 2018.
+[34] Yanghao Li, Naiyan Wang, Jiaying Liu, and Xiaodi
+Hou. Demystifying neural style transfer. arXiv preprint
+arXiv:1701.01036 , 2017.
+[35] Jing Liao, Yuan Yao, Lu Yuan, Gang Hua, and Sing Bing
+Kang. Visual attribute transfer through deep image analogy.
+InSIGGRAPH , 2017.
+[36] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays,
+Pietro Perona, Deva Ramanan, Piotr Doll ´ar, and C Lawrence
+Zitnick. Microsoft coco: Common objects in context. In
+ECCV , pages 740–755, 2014.
+[37] Hongyu Liu, Bin Jiang, Yibing Song, Wei Huang, and Chao
+Yang. Rethinking image inpainting via a mutual encoder-
+decoder with feature equalizations. In ECCV , 2020.
+[38] Xiao-Chang Liu, Xuan-Yi Li, Ming-Ming Cheng, and
+Peter Hall. Geometric style transfer. arXiv preprint
+arXiv:2007.05471 , 2020.
+870
+
+
+==== Page 10 ====
+[39] Xuezhe Ma, Xiang Kong, Shanghang Zhang, and Eduard
+Hovy. Macow: Masked convolutional generative ﬂow. In
+NeurIPS , 2019.
+[40] Lu Ming, Zhao Hao, Yao Anbang, Chen Yurong, Xu Feng,
+and Zhang Li. A closed-form solution to universal style
+transfer. In ICCV , 2019.
+[41] K Nichol. Painter by numbers, wikiart. https://www.
+kaggle.com/c/painter-by-numbers , 2016.
+[42] Adam Paszke, Sam Gross, Soumith Chintala, Gregory
+Chanan, Edward Yang, Zachary DeVito, Zeming Lin, Alban
+Desmaison, Luca Antiga, and Adam Lerer. Automatic dif-
+ferentiation in PyTorch. In NIPS Autodiff Workshop , 2017.
+[43] Ryan Prenger, Rafael Valle, and Bryan Catanzaro. Waveg-
+low: A ﬂow-based generative network for speech synthesis.
+InICASSP , pages 3617–3621, 2019.
+[44] Eric Risser, Pierre Wilmot, and Connelly Barnes. Stable and
+controllable neural texture synthesis and style transfer using
+histogram losses. arXiv preprint arXiv:1701.08893 , 2017.
+[45] Lu Sheng, Ziyi Lin, Jing Shao, and Xiaogang Wang. Avatar-
+net: multi-scale zero-shot style transfer by feature decora-
+tion. In CVPR , 2018.
+[46] YiChang Shih, Sylvain Paris, Connelly Barnes, William T
+Freeman, and Fr ´edo Durand. Style transfer for headshot por-
+traits. ACM Transactions on Graphics , 33(4):148, 2014.
+[47] Karen Simonyan and Andrew Zisserman. Very deep convo-
+lutional networks for large-scale image recognition. arXiv
+preprint arXiv:1409.1556 , 2014.
+[48] Yibing Song, Linchao Bao, Shengfeng He, Qingxiong Yang,
+and Ming-Hsuan Yang. Stylizing face images via multiple
+exemplars. CVIU , 2017.
+[49] Yibing Song, Chao Ma, Lijun Gong, Jiawei Zhang, Ryn-
+son WH Lau, and Ming-Hsuan Yang. Crest: Convolutional
+residual learning for visual tracking. In ICCV , 2017.
+[50] Yibing Song, Jiawei Zhang, Lijun Gong, Shengfeng He, Lin-
+chao Bao, Jinshan Pan, Qingxiong Yang, and Ming-Hsuan
+Yang. Joint face hallucination and deblurring via structure
+generation and detail enhancement. IJCV , 2019.
+[51] Yibing Song, Jiawei Zhang, Shengfeng He, Linchao Bao,
+and Qingxiong Yang. Learning to hallucinate face images
+via component generation and enhancement. In IJCAI , 2017.
+[52] Joshua B Tenenbaum and William T Freeman. Separating
+style and content with bilinear models. Neural Computation ,
+12(6):1247–1283, 2000.
+[53] Dmitry Ulyanov, Vadim Lebedev, Andrea Vedaldi, and Vic-
+tor S Lempitsky. Texture networks: feed-forward synthesis
+of textures and stylized images. In ICML , 2016.
+[54] D Ulyanov, A Vedaldi, and VS Lempitsky. Instance nor-
+malization: the missing ingredient for fast stylization. arXiv
+preprint arXiv:1607.08022 , 2016.
+[55] Dmitry Ulyanov, Andrea Vedaldi, and Victor S Lempitsky.
+Improved texture networks: maximizing quality and diver-
+sity in feed-forward stylization and texture synthesis. In
+CVPR , 2017.
+[56] Huan Wang, Yijun Li, Yuehai Wang, Haoji Hu, and Ming-
+Hsuan Yang. Collaborative distillation for ultra-resolution
+universal style transfer. In CVPR , 2020.[57] Ning Wang, Wengang Zhou, Yibing Song, Chao Ma, Wei
+Liu, and Houqiang Li. Unsupervised deep representation
+learning for real-time tracking. IJCV , 2021.
+[58] Xin Wang, Geoffrey Oxholm, Da Zhang, and Yuan-Fang
+Wang. Multimodal transfer: a hierarchical deep convolu-
+tional neural network for fast artistic style transfer. In CVPR ,
+2017.
+[59] Yinglong Wang, Yibing Song, Chao Ma, and Bing Zeng.
+Rethinking image deraining via rain streaks and vapors. In
+ECCV , 2020.
+[60] Zhizhong Wang, Lei Zhao, Haibo Chen, Lihong Qiu, Qi-
+hang Mo, Sihuan Lin, Wei Xing, and Dongming Lu. Diver-
+siﬁed arbitrary style transfer via deep feature perturbation. In
+CVPR , 2020.
+[61] Holger Winnem ¨oller, Sven C. Olsen, and Bruce Gooch.
+Real-time video abstraction. ACM Transactions on Graph-
+ics, 25(3):1221–1226, 2006.
+[62] Jaejun Yoo, Youngjung Uh, Sanghyuk Chun, Byeongkyu
+Kang, and Jung-Woo Ha. Photorealistic style transfer via
+wavelet transforms. In ICCV , 2019.
+[63] Hang Zhang and Kristin Dana. Multi-style gener-
+ative network for real-time transfer. arXiv preprint
+arXiv:1703.06953 , 2017.
+871
+
+

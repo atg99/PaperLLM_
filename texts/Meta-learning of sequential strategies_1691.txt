@@ -1,0 +1,1553 @@
+==== Page 1 ====
+DEEPMIND TECH REPORT, JULY 22, 2019, V1.1 1
+Meta-learning of Sequential Strategies
+Pedro A. Ortega, Jane X. Wang, Mark Rowland, Tim Genewein, Zeb Kurth-Nelson, Razvan Pascanu,
+Nicolas Heess, Joel Veness, Alex Pritzel, Pablo Sprechmann, Siddhant M. Jayakumar, Tom McGrath, Kevin
+Miller, Mohammad Azar, Ian Osband, Neil Rabinowitz, András György, Silvia Chiappa, Simon Osindero,
+Yee Whye Teh, Hado van Hasselt, Nando de Freitas, Matthew Botvinick, and Shane Legg
+DeepMind
+Abstract —In this report we review memory-based meta-
+learning as a tool for building sample-efﬁcient strategies that
+learn from past experience to adapt to any task within a target
+class. Our goal is to equip the reader with the conceptual
+foundations of this tool for building new, scalable agents that
+operate on broad domains. To do so, we present basic algorithmic
+templates for building near-optimal predictors and reinforcement
+learners which behave as if they had a probabilistic model that
+allowed them to efﬁciently exploit task structure. Furthermore,
+we recast memory-based meta-learning within a Bayesian frame-
+work, showing that the meta-learned strategies are near-optimal
+because they amortize Bayes-ﬁltered data, where the adaptation
+is implemented in the memory dynamics as a state-machine
+of sufﬁcient statistics. Essentially, memory-based meta-learning
+translates the hard problem of probabilistic sequential inference
+into a regression problem.
+Index Terms —meta-learning, generality, sample-efﬁciency,
+memory, sufﬁcient statistics, Bayesian statistics, Thompson sam-
+pling, Bayes-optimality.
+I. I NTRODUCTION
+How do we build agents that perform well over a wide
+range of tasks? Achieving this generality (or universality) is
+considered by many research agendas to be one of the core
+challenges in artiﬁcial intelligence (AI) [Solomonoff, 1964,
+Gottfredson, 1997, Hernandez-Orallo, 2000, Hutter, 2004].
+Generality is at the heart of IQ tests [Spearman, 1904, Raven,
+1936, Urbina, 2011] and the measure of intelligence suggested
+by Legg and Hutter [2007].
+Meta-learning is a practical machine learning approach to
+building general AI systems such as classiﬁers, predictors, and
+agents. Broadly speaking, meta-learning aims to produce ﬂex-
+ible, data-efﬁcient learning systems through the acquisition of
+inductive biases from data [Bengio et al., 1991, Schmidhuber
+et al., 1996, Thrun and Pratt, 1998]. In contrast to systems
+that build in such biases by design, in meta-learning they
+are acquired by training on a distribution over tasks . For
+example, an agent trained to ﬁnd rewards in one maze will
+simply learn the solution to that maze, but an agent trained on
+mazes drawn from a broad class will learn a general-purpose
+strategy for exploring new mazes [Wang et al., 2016, Duan
+et al., 2016]. Systems trained in this way are able to absorb
+structure in the task distribution that allows them to adapt
+efﬁciently and generalize to new tasks, effectively leveraging
+past experience to speed up new learning. Therefore, a meta-
+learner can be thought of as a primary learning system that
+progressively improves the learning of a secondary system[Bengio et al., 1991, Schmidhuber et al., 1996, Thrun and
+Pratt, 1998, Hochreiter et al., 2001].
+This method has been shown to be remarkably effective in
+practice, especially in combination with deep learning archi-
+tectures. Recent years have brought a wealth of approaches
+centered on meta-learning different aspects of the learn-
+ing process, such as learning the optimizer [Andrychowicz
+et al., 2016, Li and Malik, 2016, Ravi and Larochelle, 2016,
+Wichrowska et al., 2017, Chen et al., 2018b], the metric space
+[Vinyals et al., 2016, Snell et al., 2017], the initial network
+parameters [Finn et al., 2017, Nichol and Schulman, 2018],
+the learning targets [Xu et al., 2018], conditional distributions
+[Wang et al., 2017, Garnelo et al., 2018, Gordon et al., 2018,
+Zintgraf et al., 2018, Chen et al., 2018a], or even the entire
+learning procedure using a memory-based architecture such as
+a recurrent neural network [Santoro et al., 2016, Wang et al.,
+2016, Duan et al., 2016, Denil et al., 2016, Mishra et al., 2018].
+Some approaches have also taken advantage of modularity as
+an inductive bias to learn modules to be re-used in transfer
+tasks [Reed and De Freitas, 2015].
+In this report we focus on this last class of memory-
+based meta-learning methods , which aim to ﬁnd sequential
+strategies that learn from experience. Speciﬁcally, we aim for
+a theoretical understanding of such meta-learning methods by
+recasting them within a Bayesian framework. Our goal is to
+provide a basic algorithmic template to which various meta-
+learning procedures conform, showing that learned strategies
+are capable of performing near-optimally. We hope that this
+deeper conceptual understanding will provide the foundations
+for new, scalable models.
+The signiﬁcance of memory-based meta-learning meth-
+ods rests in their ability to build—in a scalable and data-
+driven way—systems that behave as if they had a proba-
+bilistic model of the future. Agents with probabilistic models
+possess inductive biases that allow them to quickly draw
+structured inferences based on experience. However, building
+these agents is very challenging: typically, constructing them
+involves specifying both the probabilistic models and their
+inference procedures either by hand or through probabilistic
+programming.
+In contrast, meta-learning offers a simple alternative: to
+precondition a system with training samples in order to ﬁx
+the right inductive biases necessary at test time. The key
+insight is that the meta-training process generates training
+samples that are implicitly ﬁltered according to Bayes rule,
+i.e. the samples are drawn directly from the posterior pre-arXiv:1905.03030v2  [cs.LG]  18 Jul 2019
+
+==== Page 2 ====
+2 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+dictive distribution . Combined with a suitably chosen cost
+function, meta-learning can use these Bayes-ﬁltered samples
+to regress an adaptive strategy that solves a task quickly by
+implicitly performing Bayesian updates “under the hood”—
+that is, without computing the (typically intractable) Bayesian
+updates explicitly. In this way, memory-based meta-learning
+agents can behave as if they possess a probabilistic model
+[Orhan and Ma, 2017]. Moreover, the agents track, in their
+memory dynamics, the Bayesian sufﬁcient statistics necessary
+for estimating the uncertainties for solving the task. Note
+that this conceptualization is distinct from but extends ideas
+presented in Baxter [1998, 2000], which considered only the
+supervised learning case, and Finn et al. [2017], Grant et al.
+[2018], in which the inference step is built-in and constrained
+to only a few gradient-descent steps.
+This report is structured as follows. Throughout, we focus
+on simple toy examples before moving on to discuss issues
+with scaling and practical applications. Section II reviews
+sequential predictions. This is the most basic application
+of meta-learning of sequential strategies, as it only requires
+regressing the statistics of the training samples. The analysis
+of the sequential prediction case will also serve as a basis for
+studying other applications and for investigating the structure
+of the solutions found through meta-learning. Section III
+reviews the sequential decision-making case. Here we show
+how to combine the basic meta-learning scheme with a policy
+improvement method. We illustrate this with two minimal
+examples: one for building Thompson sampling agents, which
+is the natural extension of the prediction case, and another for
+building Bayes-optimal agents. Finally, Section IV discusses
+the connection between meta-learning and Bayesian statis-
+tics, the spontaneous emergence of meta-learned solutions in
+(single-task) online learning, and future challenges.
+II. S EQUENTIAL PREDICTION
+We start our analysis with the problem of sequential pre-
+diction, i.e. the task of forecasting the future based on past
+experience. We use this case because sequential prediction
+is the most basic application of meta-learning, and it will
+lay down the basics for analyzing other applications such as
+sequential decision-making.
+Consider the following sequence prediction problems:
+I) 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, ?
+II) 1, 4, 9, 16, 25, ?
+III) 1, 2, 3, 4, ?
+What is the next number in the sequence? The answers are
+given by :
+I) 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1
+II) 1, 4, 9, 16, 25, 36
+III) 1, 2, 3, 4, 29
+These are justiﬁed as follows. Sequence (I) is a unary encoding
+of the natural numbers. (II) is the sequence of quadratic
+numberss(t) =t2. Finally, (III) is the sequence s(t) =
+t4 10t3+ 35t2 49t+ 24 . Intuitively however, 29 feels very
+unlikely, as 5 (i.e. the next natural number) seems a far more
+natural choice compared to the complex 4th-degree polynomial
+[Hutter, 2004].In spite of the enormous number of possible explanations,
+we were remarkably good at predicting the next element in the
+sequence. Our prediction ability is at the same time general
+and data-efﬁcient. We possess inductive biases that allowed
+us to quickly narrow down the space of possible sequences to
+just a few, even though there isn’t any obvious shared structure
+among the three examples; furthermore, these biases permitted
+us to judge the relative plausibilities of competing predictions
+(such as “29” versus “5” in the previous example). Our
+prediction strategy appears to follow two principles: we main-
+tained every possible explanation/hypothesis we could think
+of given resource constraints ( Epicurus’ principle ), and we
+deemed simpler explanations as being more likely ( Occam’s
+razor ). These are also the core principles underlying Bayesian
+statistics, which is arguably the gold standard for computing
+predictions given the inductive biases [Jaynes, 2003].
+But where do these inductive biases come from? How does a
+learner know what is most parsimonious? Here, meta-learning
+provides a simple answer: a learner, through repeated exposure
+to various tasks, effectively captures the statistics of the data,
+which translate into the inductive biases necessary for future
+predictions.
+In the following we will brieﬂy review how to make
+sequential predictions using Bayesian ideas. Then, we will
+show how to numerically approximate this prediction strategy
+using meta-learning.
+A. Problem setup
+We now formalize the setup for sequential prediction. For
+convenience, we limit ourselves to ﬁnite observation spaces
+and discrete time.1Outputs are distributions over ﬁnite spaces
+unless stated otherwise.
+Our goal is to set up a generative process over trajectories
+(i.e. ﬁnite sequences of observations), where the trajectories
+are drawn not from a single generator, but from a class
+of generators. Each generator will correspond to a possible
+“ground truth” that we want the system to consider as a
+hypothesis. By deﬁning a loss function, we tell the system
+what to do (i.e. the task to perform) or what to predict under
+each situation. Training the system with this generative process
+then encourages the system to adopt the different generators
+as potential hypotheses.
+1) Sequences: LetXbe a ﬁnite alphabet of observations.
+The set of (ﬁnite) strings over Xis written asX, which
+includes the empty string .X1denotes the set of one-way
+inﬁnite sequences over X. For concreteness, we assume that
+X:= [N] :=f1;2;:::;Ng, whereNcould be very large. For
+strings, subindices correspond to (time) indices as in xt, and
+we use obvious shorthands for substrings such as xt:t+k:=
+xtxt+1:::xt+k, andx<t:=x1:t 1. If the length Tis implicit
+from the context, then we also write strings of length Tsimply
+as, from the word trajectory .
+1Note however that this assumption comes with a loss of generality.
+Extensions to e.g. continuous domains typically require additional (geometric)
+assumptions which are beyond the scope of this report.
+
+==== Page 3 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 3
+2) Generators/Hypotheses: The domain of possible
+(stochastic) generators will be modeled using a set of
+generators , formalized as a class Pof distributions over
+inﬁnite sequences in X1. These will become, after training,
+theset of hypotheses of the system, and henceforth we will
+use the terms “generator” and “hypotheses” interchangeably.
+Speciﬁcally, we demand that for each distribution P2 P
+over strings, the probability P(xtjx<t)of any next symbol
+xtgiven any past x<tis speciﬁed.2The probability of
+an observation string xtis then equal to the product
+P(xt) =Qt
+k=1P(xkjx<k). Deﬁning the conditionals also
+uniquely determines the distribution over inﬁnite sequences.3
+We will also index the distributions in Pby a countable
+parameter set , so that each member is a distribution
+P2P, where2.4To use a notation that ﬁts neatly the
+Bayesian interpretation, we will write P(xtj;x<t)rather than
+P(xtjx<t); that is, where the parameter 2is interpreted
+as a conditional.
+Finally we place prior probabilities P()over the members
+in. This will play the role of our measure of simplicity (or
+inductive bias) of a hypothesis, where a simpler one possesses
+more prior mass.5
+Example 1. (Dice roll prediction) In a dice roll prediction
+problem, the set of hypotheses is given by a collection of
+N-sided “dice” that generate i.i.d. rolls according to the
+categorical distribution, that is (with a slight abuse of notation)
+xP(x=ij) =i, whereiis thei-th element of the
+probability vector 2([N]). If there arejjsuch dice,
+then a possible prior distribution is the uniform P() =1
+jj.
+Indeed, this example can be generalized to the set of all
+probability vectors in the simplex ([N]), with a uniform
+prior density. In this case, the whole process (i.e. ﬁrst sampling
+the parameter and then sampling the observation sequence
+x1;x2;:::) is known as a Dirichlet-Categorical process .
+Example 2. (Optional: Algorithmic sequence prediction) In
+the introductory example we used sequences that are gener-
+ated according to patterns. These patterns can be formalized
+as algorithms.6Algorithmic information theory allows us to
+formalize a well-known, very large hypothesis class [Vitanyi
+and Li, 1997]. Take a universal Turing machine Uthat takes
+a binary-encoded program 2f0;1gand produces a binary
+sequenceU() =x1x2:::as a result.7Then we can generate
+a random binary sequence by providing the universal Turing
+2This requirement avoids the technical subtleties associated to conditioning
+on pasts having probability zero.
+3More precisely, a collection of consistent distributions may be deﬁned
+over each of the spaces Xtfort2Nvia the conditionals speciﬁed above.
+Kolmogorov’s extension theorem then states that there exists a distribution P
+over inﬁnite sequences in X1(with respect to the sigma-algebra generated
+by cylinder sets  wX1, where  wdenotes the set containing all one-way
+inﬁnite sequences having a common preﬁx w2X) that is consistent with
+the distributions over ﬁnite sequences deﬁned via conditionals.
+4This choice of the cardinality of the set of parameters is for simplifying our
+mathematical exposition. In practice, the extension to uncountable parameter
+sets is straightforward (see the Dirichlet example below)
+5Measuring “simplicity” in this way is justiﬁed by the implied description
+length of the hypothesis under an optimal code, namely  log2P()bits.
+6In fact, Example 1 is a special case of a collection of algorithms.
+7We assume that the universal Turing machine is preﬁx-free, and that it
+outputs trailing zeros after reaching a halting state.machineUwith fair coin ﬂips, and then running the machine
+on this input.
+In this case, each hypothesis is a (degenerate) distribution
+over sequences, where P(xj) = 1 ifxis a preﬁx of U()and
+zero otherwise. The prior distribution over binary programs is
+P() = 2 l(), wherel()is the length of the program .8
+The resulting distribution over sequences is known as the
+algorithmic prior andSolomonoff’s prior .
+3) Strategies: The system uses a strategy to solve a task.
+In general, strategies can implement predictions (over obser-
+vations) and/or policies (distributions over actions). In the
+prediction case, we formally deﬁne a strategy as a distribu-
+tionover strings inX1. This is probability distribution
+that characterizes the system’s outputs, and it should not be
+confused with the generators. Then, (xtjx<t)will denote a
+prediction over the next symbol xtgiven the past x<t.9The
+set of candidate strategies available to the agent is denoted as
+.
+4) Losses: We consider tasks that can be formalized as
+the minimization of a loss function. A loss function is a
+function`that maps a strategy 2and a trajectory
+2Xinto a real-valued cost `(;)2R. Intuitively, this
+captures the loss of using the strategy under the partial
+observability of the parameter when the trajectory is . For
+instance, in sequential predictions, a typical choice for the loss
+function is the log-loss`(;) = log(), also known as
+thecompression loss ; in sequential decision-making problems,
+one typically chooses a negative utility, such as the negative
+(discounted) cumulative sum of rewards.
+5) Goal: The aim of the system is to minimize the expected
+loss
+E[`] =X
+P()hX
+P(j)`(;)i
+; (1)
+with respect to the strategy . That is, the objective is the
+expected loss of a trajectory , but generated by a latent
+hypothesis(i.e. the ground truth) randomly chosen according
+to the desired inductive bias P(). This is the standard
+objective in Bayesian decision-theory in which the system has
+to choose in the face of (known) uncertainty [Savage, 1972].
+Notice that this setup assumes the realizable case, that is, the
+case in which the true generative distribution is a member of
+the class of hypotheses pondered by the system.
+B. Universality: Bayesian answer
+We start by showing how to solve the prediction problem
+from a purely Bayesian point of view. This brief digression is
+necessary in order to fully understand the statistical properties
+of the samples generated during meta-learning. It is worth
+pointing out that the Bayesian solution is typically viewed
+as following directly from an interpretation of probabilities as
+degrees of belief rather than from an optimization problem
+8Strictly speaking, this distribution might be un-normalized, and we refer
+the reader to Vitanyi and Li [1997] for a detailed technical discussion.
+9Throughpout the paper, for any distribution overX1, we deﬁne(xt)
+as the marginal distribution over the ﬁrst tsymbols, i.e. (xt) =(fx02
+X1:x0
+t=xtg). Then,(xtjx<t)is deﬁned as (xtjx<t) =(xt)
+(x<t).
+
+==== Page 4 ====
+4 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+[Jaynes, 2003]. This shouldn’t be a distraction however, as
+we will later express the Bayesian solution in terms of the
+compression loss in order to establish the connection to meta-
+learning.
+The classical Bayesian approach consists in using a predic-
+torgiven by the mixture distribution
+() =P() =X
+P()P(j) (2)
+in which the probability of given trajectory is given by com-
+bining the probabilities predicted by the individual hypotheses
+weighted by their prior probabilities. The prior probabilities
+are the initial inductive biases.
+The mixture distribution automatically implements an adap-
+tiveprediction strategy, and not a static average predictor as a
+naive reading of its deﬁnition might suggest. This is seen as
+follows. The Bayes rule and (2) easily imply that given past
+datax<t, we can predict the next observation xtusing the
+posterior predictive distribution obtained by conditioning 
+on the past:
+(xtjx<t) =P(xtjx<t) =X
+P(jx<t)P(xtj;x<t):(3)
+As (3) shows, the prediction of xtis given by the average
+prediction made by the different hypotheses, but weighted by
+theposterior probabilities P(jx<t), i.e. the weights updated
+by the data.
+These predictions converge to the true distribution with
+more data;10that is, with probability one,
+ 
+(xtjx<t) P(xtj;x<t)
+!0 (4)
+whereis the latent parameter of the true generator [Hutter,
+2004, Theorem 3.19] (In contrast, notice that the posterior
+distribution P(jx<t)does notconverge in general). From
+the standpoint of lossless compression , Bayesian prediction
+is the optimal strategy. The rate of convergence in (4), or
+more precisely, the convergence rate of the average excess
+compression loss (a.k.a. regret) can easily be established (see,
+e.g., Cesa-Bianchi and Lugosi [2006]): for any ,tand
+sequencext,
+ 1
+tlog(xt) +1
+tlogP(xtj)1
+tlogP():
+That is, depending on the task-prior P(), the average excess
+compression loss converges to zero at an O(1=t)rate.
+To prepare the ground for the next section on meta-learning,
+we will characterize the construction of the mixture distri-
+bution in terms of a solution to an optimization problem.
+For this, we use a central result from information theory. As
+suggested above, we can use the compression loss to regress
+the statistics of the distribution over trajectories. Formally, we
+choose`(;) = log(). Then, we optimize (1)
+= arg min
+nX
+P()hX
+P(j)`(;)io
+(5)
+= arg min
+n
+ X
+P() log()o
+:
+10Notice however that in general the posterior probabilities (jx<t)do
+not converge unless we impose stricter conditions.whereP() =P
+P()P(j). The resulting expected pre-
+diction loss is the cross-entropy of()from the marginal
+P(), which implies the minimizer () =P(); that is,
+precisely the desired Bayesian mixture distribution having the
+optimal prediction properties [Dawid et al., 1999].
+C. Universality: meta-learning answer
+In a nutshell, meta-learning consists of ﬁnding a minimizer
+for a Monte-Carlo approximation of the expected loss (1).
+More precisely, consider a learning architecture (say, a deep
+learning architecture trained by gradient descent) that imple-
+ments a function class F, where each member f2F maps
+a trajectory 2Xinto a probability f() =()of the
+trajectory. Then, we can approximate the expected loss (1) as
+E[`]1
+NNX
+n=1`(f;(n)); (6)
+wheref(n)gnareNi.i.d. samples drawn from randomly
+chosen generators as
+(n)P()
+(n)P(j(n)):
+The goal of meta-learning is to ﬁnd a function f2 F
+that minimizes (6). Since the loss depends on the sampled
+trajectories(n)but not on the parameters (n), the Monte-
+Carlo objective implicitly marginalizes over the generators.11
+The computation graph is shown in Figure 1.
+We assume that optimizing the Monte-Carlo estimate (6)
+will give a minimizer fwith the property
+f()()
+for the most probable .12While this gives us a method
+for modeling the probabilities of trajectories, for sequential
+predictions we need to incorporate some additional structure
+into the regression problem.
+To do sequential predictions, i.e. implementing (xtjx<t),
+the above optimization does not sufﬁce; instead, we have to
+impose the correct functional interface constraints onto the
+regression problem in order to get a system that can map his-
+tories into predictions. This is done by setting up the target loss
+so that the solution implements the required function interface.
+Speciﬁcally, we seek a function f2F that maps histories
+x<t2Xinto predictions f(x<t) =(xtjx<t)2(X)of
+the next observation xt2X, thereby also respecting the causal
+structure of the task. If we use a memory-based architecture,
+such as a recurrent neural network [Elman, 1990, Jordan, 1997,
+Hochreiter et al., 2001, Kolen and Kremer, 2001, Graves,
+2012], then the function fconforms to the interface
+(t;mt) =f(xt 1;mt 1); (7)
+11The technique of sampling the parameters rather than marginalizing over
+them explicitly was also called root-sampling in Silver and Veness [2010].
+12We will avoid discussions of the approximation quality here. It sufﬁces
+to say that this depends on the learning model used; in particular, on whether
+the optimum is realizable, and on the smoothness properties of the model near
+the optimum.
+
+==== Page 5 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 5
+value
+sampled
+value
+function
+loss
+functionagent
+generator
+Figure 1. Basic computation graph for meta-learning a trajectory predictor.
+The loss function depends only on the trajectory , not on the parameter .
+Thus, the strategy must marginalize over the latent parameter .
+wheret2(X)is the current prediction vector, mtand
+mt 12 M are the preceding and current memory states
+respectively, and xt 12 X is the preceding observation.
+Furthermore, we ﬁx the initial state . This is a sufﬁcient
+condition for the system to make predictions that marginalize
+over the hypotheses. Obviously, since mtmust remember all
+the necessary past information, the set of possible memory
+statesMneeds to be sufﬁciently large for it to possess the
+capacity for encoding the sufﬁcient statistics of the pasts
+inX. See discussion below in Section II-D.
+We need instantaneous predictions. The associated instan-
+taneous loss function for this interface (7) is then
+`t=`(t;xt) = logt(xt); (8)
+so that the Monte-Carlo approximation of the expected loss (6)
+becomes
+1
+NNX
+n=1`(f;(n)) =1
+NNX
+n=1TX
+t`(n)
+t; (9)
+where`(n)
+tare Monte-Carlo samples of the instantaneous log-
+loss. The computation graph is shown in Figure 2 and the
+pseudo-code is listed in Algorithm 1.13Arguably the most
+important result in the realizable setting is that,14ifNis large,
+and the minimum of (9) is attained, then the minimizer f2F
+implements a function
+f(xt 1;mt 1) = 
+t;mt
+where, crucially, the instantaneous prediction tis
+t(xt)(xtjx<t) =X
+P(jx<t)P(xtj;x<t);(10)
+13Note that one could separate learning and sampling in Algorithm 1 by
+ﬁrst sampling Nmodels and corresponding observation sequences, and then
+feed the corresponding observation in the "observe" step of the algorithm.
+In later sections, however, the prediction of the agent will affect how the
+observations evolve; we chose to present sampling and prediction/learning
+in this interleaved way to have a more uniﬁed presentation style with
+Algorithms 2 and 3, given in the next section.
+14Realizable is when the minimizer fof the Monte-Carlo loss is in F.i.e. the optimal sequential prediction in which the Bayesian
+update is automatically amortized (or pre-computed) [Ritchie
+et al., 2016]. In practice, this means that we can use fwithout
+updating the parameters of the model (say, changing the
+weights of the neural network) to predict the future from the
+past, as the prediction algorithm is automatically implemented
+by the recursive function fwith the help of the memory
+statemt. The next section discusses how this is implemented
+in the solution.
+generatoragent
+Figure 2. Computation graph for meta-learning a sequential prediction
+strategy. The agent function fgenerates a prediction tof the observation xt
+based on the past, captured in the last observation xt 1and the state mt 1.
+The top diagram illustrates the computation graph for a whole sequence (of
+lengthT= 4), while the lower diagram shows a detailed view of a single
+step computation.
+Algorithm 1: Meta-learning a prediction strategy
+Data: PriorP(), generators P(xtj;x<t), and initial
+predictor f, memory state m, and observation x.
+Result: Meta-learned predictor f.
+f f (initialize function)
+whilefnot converged do
+L 0 (reset loss)
+forn= 1;2;:::;N do (rollout batch)
+(x0;m0) (x;m) (reset memory state)
+P() (sample parameter)
+fort= 1;2;:::;T do (perform rollout)
+(t;mt) f(xt 1;mt 1) (predict)
+xtP(xtj;x<t) (observe)
+`t= logt(xt) (instantaneous loss)
+L L+`t (accumulate total loss)
+f MinimizationStep( f;L) (do an update step)
+return f
+D. Anatomy of meta-learned agents
+How does the function f2F implement the sequential
+strategy with amortized prediction (10)? In which sense does
+
+==== Page 6 ====
+6 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+this strategy rely on an internal model? First, let us review the
+conditions:
+1)Choice of loss function: The choice of the loss function
+speciﬁes what solving the task means, i.e. what we want
+the agent to do as a function of the data.
+2)Functional interface: Since the agent is ultimately im-
+plemented as a function, the choice of the interface
+(e.g. mapping entire trajectories into probabilities versus
+mapping pasts into predictions) is crucial. Obviously this
+choice is implicit in the practice of any regression-based
+machine learning technique. Nevertheless, we point this
+out because it is especially important in sequential prob-
+lems, as it determines how the agent is situated within
+the task, that is, what informational (and ultimately
+causal) constraints the agent is subject to for solving
+a task.
+3)Monte-Carlo marginalization: Marginalizing analyti-
+cally over the generators is in general intractable, except
+for special cases such as in some exponential families
+[Koopman, 1936, Abramovich and Ritov, 2013]. Instead,
+meta-learning performs a Monte-Carlo marginalization.
+Furthermore, in the sequential setting, the marginaliza-
+tion hides the identity of the generator, thereby forcing
+the model to ﬁnd a function that uses the past experience
+to improve on the loss. This, in turn, leads to the numer-
+ical approximation of amortized Bayesian estimators, as
+long as the ﬁrst state is ﬁxed across all the samples.
+As a result, we obtain a function fthat performs the
+following operations:
+1)New prediction: ftakes the past input xt 1and
+memory state mt 1to produce a new prediction t
+minimizing the instantaneous loss `t.
+2)New memory state: In order to perform the new pre-
+diction,fcombines the past input xt 1and memory
+statemt 1to produce a new memory state mtthat acts
+as a sufﬁcient statistic of the entire past x<t. That is,
+there exists a sufﬁcient statistic function extracting all
+the necessary information from the past to predict the
+future, i.e.
+(xtjx<t) = 
+xt(x<t)
+;
+and this function is related to fvia the equation
+(x<t) =f(xt 1;mt 1).
+That is, the recursive function fimplements a state machine
+[Sipser, 2006] (or transducer) in which the states correspond to
+memory states, the transitions are the changes of the memory
+state caused by an input, and where the outputs are the
+predictions. We can represent this state machine as a labeled
+directed graph. Figure 3 shows a state machine predicted by
+theory and Figure 4 shows a meta-learned state machine.
+The state machine thus implements a dynamics driven by
+the input, where the state captures the sufﬁcient statistics of
+the past [Kolen and Kremer, 2001]. However, it is important
+to note that the objective (9) does not enforce the minimality
+of the state machine (at least not without post-processing
+[Kolen, 1994]). Indeed, in practice this is often not the case,
+implying that the states do not correspond to the minimal
+(0,0)
+(1,0) (0,1)
+(2,0) (1,1) (0,2)
+(0,3) (1,2) (2,1) (3,0)
+(3,1) (2,2) (1,3)Figure 3. Minimal state machine for a predictor of coin tosses with a ﬁxed,
+unknown bias. The hypothesis class can be modeled as a 2-sided coin (see
+Example 1). Dark and light state transitions correspond to observing the
+outcomes ‘Head’ and ‘Tail’ respectively, and the states are annotated with
+(nH;nT), the number of times Head and Tail have been observed. The
+predictions made from each state are shown in the stacked bar charts: the
+probability of Head is P(xt=Hjx<t) =nH+1
+t+2(which is how these
+predictions are implemented in a computer program). Note how different
+observations sequences can lead to the same state (e.g. HT and TH).
+Figure 4. Meta-learned state machine for a predictor of coin tosses. The ﬁgure
+shows the memory dynamics of a standard memory-based predictor projected
+onto the ﬁrst two eigenvectors. Notice the striking similarity with Figure 3.
+The predictor consists of 20 LSTM cells with softmax predictions, which was
+trained using Algorithm 1 on 1000 batches of 100 rollouts, where rollouts were
+of length 10. For training, we used the Adam optimization algorithm [Kingma
+and Ba, 2014].
+
+==== Page 7 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 7
+sufﬁcient statistics and that optimization runs with different
+initial conditions (e.g. random seeds) can produce different
+state machines. Furthermore, as with any machine learning
+method, the accuracy of the transitions of input-state pairs
+(x;m)that never occurred during training depend on the
+generalization ability of the function approximator. This is
+especially the case for input sequences that are longer than
+the lengthTof the trajectories seen during training.
+State machines are important because they reﬂect symmetry
+relations due to their intimate relation to semigroups [Krohn
+et al., 1968]. If a node in the graph has two or more incoming
+arrows, then there exist two past observation strings (1)and
+(2), not necessarily of the same length, such that
+ 
+((1))
+= 
+((2))
+;
+that is, they map onto the same sufﬁcient statistics [Diaco-
+nis, 1988], and hence, all the trajectories that emanate from
+those states are jointly amortized. Thus, analyzing the graph
+structure can reveal the invariances of the data relative to the
+task. In particular, a minimal state machine captures all the
+invariances. For instance, an exchangeable stochastic sequence
+(in which the sequence is generated i.i.d. conditional on the
+hypothesis) leads to a state machine with lattice structure as
+in Figure 3.
+III. S EQUENTIAL DECISION -MAKING
+We now describe two ways of constructing interactive
+agents, i.e. agents that exchange actions and observations with
+an external environment. Many of the lessons learned in the
+sequential prediction case carry over. The main additional
+difﬁculty is that, in the decision-making case, unlike in the
+prediction case, the optimal policy (which is needed in order to
+generate the trajectories using the right distribution for meta-
+learning) is not available. Hence, we need to interleave two
+processes : a meta-learning process that implicitly amortizes
+the marginalization over the generators; and a policy improve-
+ment process that anneals toward the optimal policy.
+A. Thompson sampling
+We can leverage the ideas from the sequential prediction
+case to create an adaptive agent that acts according to proba-
+bility matching—and more speciﬁcally, Thompson sampling
+[Thompson, 1933]—to address the exploration-exploitation
+problem [Sutton et al., 1998]. For this, we need generators
+that not only produce observations, but also optimal actions
+provided by experts, which are then used as teaching signals.
+In particular, provided we know the expert policies, Thomp-
+son sampling translates the reinforcement learning problem
+into an inference problem. Hence, meta-training a Thompson
+sampler is akin to meta-training a sequential predictor, with
+the crucial difference that we want our system to predict
+expert actions rather than observations. Due to this, Thompson
+samplers are optimal in the compression sense (i.e. using
+the log-loss), but not in the Bayes-optimal sense (see next
+subsection).
+Formally, this time we consider distributions P2P over
+interaction sequences, that is, strings in (AO ), whereAandOare discrete sets of actions and observation respectively. We
+underline symbols to glue them together, so aot:= (at;ot).
+Then, a generator is a member P2P deﬁning a distribution
+over strings
+P(aoTj) =TY
+tP(atj;ao<t)P(otj;ao<tat)
+where the conditional probabilities
+P(otj;ao<tat)andP(atj;ao<t)
+are the probabilities of the next observation otand of the
+next action atgiven the past, respectively. One can interpret
+theP(atj;ao<t)as the desired (or optimal) policy provided
+by an expert when the observations follow the statistics
+P(otj;ao<tat). In addition, these probabilities must match
+the causal structure of the interactions for our following
+derivation to be correct.15
+Thompson sampling can be characterized as sampling the
+actions directly from the posterior predictive [Ortega and
+Braun, 2010]. As in Bayesian prediction, consider the mixture
+distribution
+P(aoT) =X
+P(aoTj)P():
+Then we can generate actions by sampling them from the
+posterior predictive
+at+1P(at+1j^aot) =X
+P(at+1j;aot)P(j^aot)
+(11)
+where the “hat” as in “ ^a” denotes a causal intervention and
+whereP(j^aot)is recursively given by16
+P(j^aot) =P(otj;ao<t)P(j^ao<t)P
+0P(otj0;ao<t)P(0j^ao<t)(12)
+In other words, we continuously condition on the past, treating
+actions as interventions and observations as normal (Bayesian)
+conditions. More precisely, unlike observations, past actions
+were generated by the agent without knowledge of the un-
+derlying parameter (hence the atandare independent
+conditional on the past experience), and the causal intervention
+mathematically accounts for this fact.
+Meta-learning a Thompson sampling agent follows a
+scheme analogous to sequential prediction. We seek a strat-
+egythat amortizes the posterior predictive over ac-
+tions (11):
+(atjao<t)P(atj^ao<t) =X
+P(atj;ao<t)P(j^ao<t):
+This strategy conforms to the functional interface
+(t;mt) =f(at 1;ot 1;mt 1); (13)
+15In practice, this is achieved by enforcing a particular factorization of the
+joint probability distribution over parameters and interactions into conditional
+probabilities that reﬂect the causal structure—see Pearl [2009].
+16See Pearl [2009] for a thorough deﬁnition of causal interventions.
+Equations (11) and (12) are non-trivial and beyond the scope of this report; we
+refer the reader to Ortega and Braun [2010] for their derivation. In particular,
+note thatP(at+1j;aot)in (11) does not have interventions.
+
+==== Page 8 ====
+8 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+wheret2(A)is the current policy vector, mtandmt 12
+Mare the preceding and current memory states respectively,
+andaot 12AO is the preceding interaction.
+Next we derive the loss function. As in Bayesian predic-
+tion, Thompson sampling optimizes the compression of the
+interaction sequence characterized by the expected log-loss.
+This is easiest written recursively in terms of the instantaneous
+expected log-loss as
+E
+ X
+P(j^ao<t)hX
+atP(atj;ao<t) log(atjao<t)i
+(14)
+for each action atgiven its past ao<t.17For a Monte-Carlo
+approximation, we sample trajectories f(n)gnas
+(n)P()
+a(n)
+t(atjao(n)
+<t)for allt
+o(n)
+tP(otj(n);ao(n)
+<ta(n)
+t)for allt:9
+>>=
+>>;(15)
+In particular, note how actions are drawn from the agent’s
+policy, not from the generator. This ensures that the agent does
+not use any privileged information about the generator’s iden-
+tity, thus covering the support over all the trajectories that the
+agent might explore. Then, we can choose the instantaneous
+loss function as the cross-entropy
+`t= X
+atP(atj;ao<t) logt(at) (16)
+evaluated on the sampled trajectories. This is known as (a
+variant of) policy distillation [Rusu et al., 2015]. Again, this
+only works if we have access to the ground-truth optimal
+policy for each environment. The computation graph is shown
+in Figure 5 and the pseudo-code is listed in Algorithm 2
+Figure 5. Detail of the computation graph for meta-learning a Thompson
+sampling agent. The actions atare generated from the agent’s policy t. The
+expert policy 
+tis only used for generating a loss signal `t.
+Finally, we note that the above meta-training algorithm
+is designed for ﬁnding agents that implicitly update their
+posterior after each time step. However, this can lead to
+unstable policies that change their behavior (i.e. expert policy)
+in each time step. Such inconsistencies can be addressed by
+updating the posterior only after experiencing longer interac-
+tion sequences—for instance, only after an episode. We refer
+17The expected log-loss for observations is omitted, as we only need to
+regress the policy here.Algorithm 2: Meta-learning a Thompson sampler
+Data: PriorP(), generators P(otj;ao<tat), and
+policiesP(atj;ao<t); and initial predictor f,
+memory state m, and interaction a;o.
+Result: Meta-learned predictor f.
+f f (initialize function)
+whilefnot converged do
+L 0 (reset loss)
+forn= 1;2;:::;N do (rollout batch)
+(a0;o0;m0) (a;o;m) (reset memory state)
+P() (sample parameter)
+fort= 1;2;:::;T do (perform rollout)
+(t;mt) f(at 1;ot 1;mt 1) (policy)
+att(at) (act)
+otP(otj;ao<tat) (observe)
+`t= P
+atP(atjao<t) logt(at)(inst. loss)
+L L+`t (accumulate total loss)
+f MinimizationStep( f;L) (do an update step)
+return f
+the reader to [Russo et al., 2018, Osband and Van Roy, 2016,
+Ouyang et al., 2017] for a detailed discussion.
+B. Bayes-Optimality
+Bayes-optimal sequential decision-making is the decision
+strategy that follows from the theory of subjective expected
+utility [Savage, 1972] and the method of dynamic program-
+ming [Bellman, 1954]. Roughly, it consists in always picking
+an action that maximizes the value , that is, the expected sum of
+future rewards under the best future actions. Methodologically,
+it requires solving a stochastic partial difference equation
+modeling the value for given boundary conditions, where the
+latter typically constrain the value to zero everywhere along
+the planning horizon [Bertsekas, 2008]. Due to this, learning
+a Bayes-optimal policy is far more challenging than learning
+a Thompson sampling strategy. Here we also depart from the
+log-loss, and use a reward function instead to characterize the
+task goals.
+In this case the generators are distributions P2P over
+observation sequences conditioned on past interactions, where
+each member P2P deﬁnes a conditional distribution
+P(oTj;ao<tat) =TY
+tP(otj;ao<tat):
+However, unlike the Thompson sampling case, here we seek a
+global optimal policy P(atjao<t)which is indirectly deﬁned
+via a reward function as discussed later. This global policy will
+by construction solve the exploration-exploitation problem in
+a Bayes-optimal way, although it is tailored speciﬁcally to the
+given task distribution.
+Because the optimal policy is unknown, in practice during
+training we only have access to trajectories that are drawn
+from a distribution Pthat results from the interactions
+
+==== Page 9 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 9
+between the expected task and a custom policy .Pis given
+by
+P(aoT) =X
+P()TY
+t(atjao<t)P(otj;ao<tat);
+that is, a distribution where actions are drawn from the
+agent’s current strategy and where observations are drawn
+from a randomly chosen generator as described in (15) from
+Thompson sampling.
+As mentioned above, we specify the agent’s objective with
+a reward function. This is a global reward function rthat maps
+every interaction aot2AO and pastao<t2(AO )into
+a scalar value r(aotjao<t)2R, indicating the interaction’s
+desirability. Furthermore, we deﬁne the action-value function
+for a policy as the expected sum of rewards given a past,18
+that is,
+Q(atjao<t) =EhTX
+k=tr(aokjao<k)ao<tati
+(17)
+where the expectation Edenotes an expectation w.r.t. the
+distribution P. Notice that this deﬁnition implicitly equates
+the rewards after the horizon Twith zero. An optimal policy
+P(atjao<t)is deﬁned as any policy that maximizes (17) for
+any pastao<t. Note that this is a recursive deﬁnition that can
+be solved using dynamic programming.
+Meta-learning a Bayes-optimal policy can be done in nu-
+merous ways: here we settle on inferring the optimal policy
+via estimating the action-values for concreteness, but other
+methods (e.g. using policy gradients) work as well. We seek
+amortizing the action-values using a vector qt2RjAj:
+qt(at)Q(atjao<t):
+The functional interface conforms to
+(qt;mt) =f(at 1;ot 1;mt 1)
+whereqt2RjAjis the current action-value vector used for
+constructing the policy; mtandmt 12M are the preceding
+and current memory states respectively; and aot 12AO
+is the preceding interaction, which implicitly also provides the
+reward.19
+As the instantaneous loss-function `tfor regressing the
+action-values, we can for instance use the TD-error
+`t=n 
+rt+qt+1(at+1)
+ qt(at)o2
+:
+Crucially, this is only a function of the value qt(at)of the
+current action. The target value 
+rt+qt+1(at+1)
+, given
+by the sum of the current reward rt=r(aotjao<t)and
+the valueqt+1(at+1)of the next action, is kept constant,
+ensuring that the boundary conditions are propagated in the
+right direction, namely backwards in time.
+To regress the optimal policy, we use simulated annealing
+[Kirkpatrick et al., 1983]. Speciﬁcally, we start from a random
+policy and then slowly crystallize an optimal policy. To do so,
+18For simplicity, we assume that rewards are undiscounted.
+19If the reward is not a function of actions and observations, then it needs
+to be passed explicitly alongside the last interaction.actions are drawn as att(at)from a policy built from the
+action-values using e.g. the softmax function
+t(at) =expfqt(at)gP
+aexpfqt(a)g;
+where the inverse temperature  >0is a parameter controlling
+the stochasticity of the policy: 0yields a nearly uniform
+policy and0a nearly deterministic one. During meta-
+training, the inverse temperature is annealed (cooled), starting
+from= 0 and ending in a large value for . This gives
+the model time to regress the action-values by sampling sub-
+optimal branches before committing to a speciﬁc policy. Good
+cooling schedules are typically determined empirically [Mitra
+et al., 1986, Nourani and Andresen, 1998]. The pseudo-code
+is listed in Algorithm 3.
+Algorithm 3: Meta-learning a Bayes-optimal policy
+Data: PriorP(), generators P(otj;ao<tat), and
+reward function r(aotj;ao<t); and initial
+predictor f, inverse temperature , memory state
+m, and interaction a;o.
+Result: Meta-learned predictor f.
+f f (initialize function)
+  (initialize inv. temp.)
+whilefnot converged do
+L 0 (reset loss)
+forn= 1;2;:::;N do (rollout batch)
+(a0;o0;m0) (a;o;m ) (reset memory state)
+P() (sample parameter)
+fort= 1;2;:::;T do (perform rollout)
+(qt;mt) f(at 1;ot 1;mt 1) (Q-values)
+t(at) exp(qt(at))P
+aexp(qt(a))(policy)
+att(at) (act)
+otP(otj;ao<tat) (observe)
+rt r(aotj;ao<tat) (reward)
+ift 11then (compute previous loss)
+qtarget Constant(rt 1+qt(at))
+`t 1= 
+qtarget qt 1(at 1)2
+L L+`t 1 (accumulate total loss)
+qtarget Constant(rT) (last target)
+`T= 
+qtarget qT(aT)2(last inst. loss)
+L L+`T (accumulate total loss)
+f MinimizationStep( f;L) (do an update step)
+ CoolingSchedule( ) (update inv. temp.)
+return f
+IV. D ISCUSSION
+A. Meta-learning and Bayesian statistics
+Meta-learning is intimately connected to Bayesian statistics
+regardless of the loss function, due to the statistics of the gen-
+
+==== Page 10 ====
+10 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+erated trajectories. When regressing a sequential strategy using
+a Monte-Carlo estimation, we sample trajectories f(n)gnas20
+(n)P()
+x(n)
+tP(xtj(n);x(n)
+<t)for allt.
+However, from the point of view of the system that has already
+seen the past x<t, the transition xtlooks, on average, as if it
+were sampled with probability
+P(xtjx<t) =X
+P(xtj;x<t)P(jx<t); (18)
+that is, from the Bayesian posterior predictive distribution,
+which in turn induces the (implicit) update of the hypothesis
+P(jxt)/P(jx<t)P(xtj;x<t): (19)
+Hence, (18) and (19) together show that the samples are
+implicitly ﬁltered according to Bayes’ rule. It is precisely
+this statistical property that is harvested through memory-
+based meta-learning. As shown in Section II, meta-learning a
+Bayesian sequence predictor corresponds to directly regressing
+the statistics of the samples; due to this, it can be considered
+the most basic form of meta-learning. In contrast, the two
+sequential decision makers from Section III do not regress
+the statistics directly but rather use their correspondence to a
+Bayesian ﬁltration to build adaptive policies.
+Conceptually, using a generative process to produce Bayes-
+ﬁltered samples is an old idea. It is the rationale driving many
+practical implementations of Bayesian models [Bishop, 2016],
+and one of the key ideas in Monte-Carlo methods for Bayes-
+optimal planning [Silver and Veness, 2010, Guez et al., 2012].
+B. Sample complexity of strategies
+Current model-free RL algorithms such as deep RL algo-
+rithms (e.g. DQN [Mnih et al., 2013] or A3C [Mnih et al.,
+2016]) are known to be sample inefﬁcient. The sample com-
+plexity can potentially be improved by using a suitable model-
+based approach with strong inductive biases. Full probabilistic
+model-based approaches (i.e. those that do not work with
+expectation models) can rely on hand-crafted probabilistic
+models that possess little structure (e.g. Dirichlet priors over
+state transitions) or have intractable (exact) posterior distribu-
+tions. This can make such approaches unwieldy in practice.
+More commonly, traditional approaches have used expec-
+tation models [Sutton et al., 2012, Schmidhuber, 1990], or
+deterministic abstract models [Watter et al., 2015, Silver et al.,
+2016]. However, so far there has been limited success scaling
+probabilistic modeling to improve sample efﬁciency in the
+context of deep reinforcement learning.
+Meta-learning addresses this problem in a conceptually
+straightforward manner. It automates the synthesis of near-
+optimal algorithms, by searching in algorithm space (or au-
+tomata space) in order to ﬁnd a new reinforcement learning
+algorithm that is tailored to a given class of tasks, exploiting
+20For sequential-decision making problems, we assume that the policy
+improvement steps have already converged. In this case, the actions are drawn
+from the target distribution for meta-learning, and we can safely ignore the
+distinction between actions and observations.the structure and using the desired inductive biases. The meta-
+learned algorithms minimize the sample complexity at test time
+because they directly minimize the expected loss averaged over
+all generators. In the examples we have seen, meta-learning
+ﬁnds sequential algorithms, which when deployed perform
+near-optimally, minimizing the sample complexity. The ﬂip
+side is that meta-learning can be very expensive at meta-
+training time due to the slow convergence of the Monte-Carlo
+approximation and the very large amount of data required by
+current popular neural architectures during the meta-training
+phase.
+C. Spontaneous meta-learning
+Meta-learning can also occur spontaneously in online re-
+gression when the capacity of the agent is bounded and the
+data is produced by a single generator . Unfortunately, the
+downside is that we cannot easily control what will be meta-
+learned. In particular, spontaneous meta-learning could lead to
+undesirable emergent properties, which is considered an open
+research problem in AI safety [Ortega et al., 2018]. To see
+how meta-learning happens, consider the sequential prediction
+case. All we need is to show how the conditions for meta-
+learning occur naturally; that is, by identifying the Monte-
+Carlo samples and their latent parameters.
+LetMandZbe the agent’s and the generator’s set of
+internal states respectively, and let Xbe the set of observa-
+tions. Assume that the dynamics are deterministic (stochastic
+dynamics can be modeled using pseudo-random transitions)
+and implemented by functions f;g;h , so that the sequence of
+observations x1;x2;:::2X , agent states m1;m2;:::2M ,
+and generator states z1;z2;:::2Z are given by
+xt=h(zt) (observations)
+mt+1=f(xt;mt) (agent states)
+zt+1=g(zt); (generator states)
+(with arbitrary initial values z0,m0) as illustrated in Figure 6.
+Furthermore, assume that MandZareﬁnite .21Then, for a
+sufﬁciently long sequence there must exist a state m2M
+that is visited inﬁnitely often when given an inﬁnite stream
+of observations. We can use mto segment the sequence
+of observations into (variable-length) trajectories (1);(2);:::
+which we can identify as Monte-Carlo samples from a class of
+generators as illustrated by the example in Table I. The n-th
+trajectory(n)is deﬁned by the ﬁrst substring delimited by
+then-th and (n+1)-th occurrence of m, and deﬁne y(n)
+t2X
+as thet-th observation of the n-th trajectory, e.g. y(2)
+1=x5
+because(2)=x5x6x7. Finally, the task parameter (n)of the
+n-th trajectory is the state of the generator at the beginning of
+the sequence.
+Given this identiﬁcation, an online learning algorithm that
+updatesfbased on a sufﬁciently large window of the past will
+effectively perform batch updates based on a set of trajectories
+sampled by different “generators”, thereby performing meta-
+learning.
+21This assumption can be relaxed to compact metric spaces using tools
+from dynamical systems theory that are beyond the scope of this report.
+
+==== Page 11 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 11
+Table I
+EXAMPLE SEGMENTATION OF AN INPUT SEQUENCE IN SPONTANEOUS META -LEARNING .
+Input:x1x2x3x4x5x6x7x8x9x10
+Agent State: m1mm3mm5m6mm8m7m
+Generator State: z1z2z3z4z5z6z7z8z9z10
+Trajectory: (na) (1)(2)(3)
+Derived Input: (na) y(1)
+1y(1)
+2y(2)
+1y(2)
+2y(2)
+3y(3)
+1y(3)
+2y(3)
+3
+Derived Parameter: (na) (1)=z2(2)=z4 (3)=z7
+Figure 6. Dynamics of spontaneous meta-learning. The (pseudorandom)
+generator with states in Zproduces observations in X, which drive the
+agent’s memory state-transitions in M. A loop in the memory space with
+endpoints equal m2M corresponds to a trajectory generated by a latent
+parameter.
+D. Capacity limitations
+In our analysis, we have assumed that the solution found is
+the minimizer of the meta-learning objective. This is a very
+strong assumption. In practice, the difﬁculty of actually ﬁnding
+a near-optimal solution depends on many factors.
+The ﬁrst and most important factor is of course the model
+used for regression. Properties such as e.g. the inductive
+biases of the model implementing the function class F, the
+smoothness of the loss landscape, the optimizer, and the
+memory capacity, play fundamental roles in any machine
+learning method, and meta-learning is no exception.
+Another important factor is the task class, including both
+the space of hypotheses and the loss function. Together they
+shape the complexity of the strategy to regress via meta-
+learning. In particular, the invariances in the state machine
+(see Section II-D) reduce the number of distinct mappings
+from past experiences x<tinXto instantaneous strategies
+tinthe regressor has to learn. Conversely, in the worst
+case when there are no invariances, the number of distinct
+mappings grows exponentially in the maximum length Tof
+the trajectories.
+E. Selected future challenges
+a) Task structure: Meta-learning crucially relies on the
+skillful design of the class of tasks. Previous work has shown
+that agents can meta-learn to perform a variety of task if
+the task distributions have been designed accordingly, such
+as learning to identify a best option [Denil et al., 2016, Wanget al., 2016] or learning to reason causally [Dasgupta et al.,
+2019]
+In each case, the practitioner must ask the question: if
+the meta-learned strategy should have a capability X, what
+property Y must the class of tasks posses? For instance, how
+should we design the generators so that we can generalize
+out-of-distribution and beyond the length of the trajectories
+sampled during meta-learning?
+Addressing questions like these entail further questions
+regarding the structure of tasks; but to date, we are not aware
+of an adequate language or formalism to conceptualize this
+structure rigorously. In particular, we expect to gain: a better
+understanding of the dynamical structure of solutions; predict
+the structure of the sufﬁcient statistics that a class of tasks
+gives rise to; and compare two tasks classes and determine if
+they are equivalent (or similar) in some sense.
+b) Beyond expected losses: In the basic meta-learning
+scheme the strategies minimize the expected loss. Minimizing
+an expectation disregards the higher-order moments of the loss
+distribution (e.g. variance), leading to risk-insensitive strate-
+gies that are brittle under model uncertainty. Going beyond
+expected losses means that we have to change our certainty-
+equivalent —that is, the way we aggregate uncertain losses into
+a single value [Hansen and Sargent, 2008].
+Changing the certainty-equivalent changes the attitude to-
+wards risk. This has important applications ranging from safety
+& robustness [van den Broek et al., 2010, Ortega and Legg,
+2018] to games & multi-agent tasks [McKelvey and Palfrey,
+1995, 1998, Littman, 1994]. For instance, if the agent is trained
+on an imperfect simulator of the real-world, we would want
+the agent to explore the world cautiously.
+Risk-sensitive strategies can be meta-learned by tweaking
+the statistics of the generative process. For instance, by chang-
+ing the prior over generators as a function of the strategy’s per-
+formance, we can meta-learn strategies that are risk-sensitive.
+For games, it might be necessary to simultaneously meta-train
+multiple agents in order to ﬁnd the equilibrium strategies.
+c) Continual learning: The continual learning problem
+asks an agent to learn sequentially, incorporating skills and
+knowledge in a non-disruptive way. There are strong links
+between the continual learning problem and the meta-learning
+problem.
+On one hand, the traditional meta-learning setting assumes
+a ﬁxed distribution of tasks, which can be restrictive and
+unrealistic. Allowing the distribution to change over time not
+only would be crucial from a practical perspective, but could
+also be used as a tool to reﬁne the task distribution in order to
+induce the right properties in the learned solution. Continual or
+
+==== Page 12 ====
+12 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+incremental variants of the meta-learning problem is however
+an under-explored topic (e.g. Nagabandi et al. [2019] touches
+on this topic).
+On the other hand, meta-learning can be seen as part of
+the solution for the continual learning problem. In principle
+continual learning is ill-deﬁned. Remembering a potentially
+inﬁnite set of skills is unfeasible within a ﬁnite model.
+While continual learning usually focuses on 0-shot transfer
+[Goodfellow et al., 2014, Parisi et al., 2018, Kirkpatrick et al.,
+2017], or how well the agent remembers a previously seen
+task without any adaptation, this might be the wrong measure.
+A relaxation of this approach, e.g. explored by Kaplanis
+et al. [2018], would be to measure how fast one recovers
+performance, which converts continual learning into a meta-
+learning problem. The compression of all seen tasks becomes
+the meta-learning algorithm that the agent needs to infer and
+that can be exploited to recover the solution of the task.
+However the tasks are not seen necessarily in an i.i.d. fashion.
+So while the mechanism outlined in this work could describe
+such a solution to a continual learning problem, it is unclear
+how to approach the learning problem in practice.
+F . Conclusions
+Reinforcement learning algorithms based on probabilistic
+models promise to address many of the shortcomings—in par-
+ticular, the sample-inefﬁciency—of model-free reinforcement
+learning approaches. However, the implementation of such
+systems is very challenging and, more often than not, depends
+on domain expertise, i.e. human knowledge, hand-crafted in
+the form of probabilistic models that are either tractable but too
+simple to be useful, or outright intractable. Such an approach
+does not scale.
+Memory-based meta-learning offers a conceptually simple
+alternative for the construction of agents implicitly based
+on probabilistic models that leverages data and large-scale
+computation. In essence, meta-learning transforms the hard
+problem of probabilistic inference into a curve ﬁtting problem.
+Here we have provided three meta-learning templates: one for
+building predictors, one for Thompson samplers, and one for
+Bayes-optimal agents respectively. In all of them, the key idea
+is to precondition a slow-learning system by exposing it to
+a distribution over trajectories drawn from a broad class of
+tasks, so that the meta-learned system ends up implementing
+a general and fast sequential strategy—that is, a strategy with
+the right inductive biases.
+We have also shown why this approach works and how
+the meta-learned strategies are implemented. Basically, the
+resulting strategies are near-optimal by construction because
+meta-learning directly trains on a Monte-Carlo approximation
+of the expected cost over possible hypotheses. The sequential
+data drawn during this Monte-Carlo approximation is implic-
+itly Bayes-ﬁltered, and the Bayesian updates are amortized by
+the meta-learned strategy. Moreover, we have shown that the
+adaptation strategy is implemented as a state machine in the
+agent’s memory dynamics, which is driven by the data the
+agent experiences. A given memory state then represents the
+agent’s information state, and, more precisely, the sufﬁcientstatistics for predicting its future interactions. The structure of
+the transition graph encodes the symmetries in the task distri-
+bution: paths that have the same initial and ﬁnal information
+state are indistinguishable, and thus equivalent for the purposes
+of modulating the future behavior of the agent.
+Finally, we note that meta-learning also converts complex
+probabilistic inference problems into regression problems in
+one-shot settings, when meta-learning is applied without mem-
+ory (e.g. Orhan and Ma 2017). A key distinction of the
+sequential setting with memory is that meta-learning also
+produces an update rule.
+Our hope is that readers will ﬁnd these insights useful,
+and that they will use the ideas presented here as a con-
+ceptual starting point for the development of more advanced
+algorithms and theoretical investigations. There are many
+remaining challenges for the future, such as understanding task
+structure, dealing with out-of-distribution generalization, and
+continual learning (to mention some). Some of these can be
+addressed through tweaking the basic meta-learning training
+process and through designing hypothesis classes with special
+properties.
+More generally though, memory-based meta-learning illus-
+trates a more powerful claim: a slow learning system, given
+enough data and computation, can not only learn a model over
+its environment, but an entire reasoning procedure . In a sense,
+this suggests that rationality principles are not necessarily pre-
+existent, but rather emerge over time as a consequence of
+the situatedness of the system and its interaction with the
+environment.
+Acknowledgements
+We would like to thank Shakir Mohamed for his very
+thoughtful feedback on the manuscript.
+Changes
+V1.0: (08/05/2019) Original version.
+V1.1: (18/07/2019) Added a new reference; corrected error
+in Figure 3; added acknowledgements.
+REFERENCES
+Felix Abramovich and Ya’acov Ritov. Statistical theory: a
+concise introduction . CRC Press, 2013.
+Marcin Andrychowicz, Misha Denil, Sergio Gomez,
+Matthew W Hoffman, David Pfau, Tom Schaul, Brendan
+Shillingford, and Nando De Freitas. Learning to learn
+by gradient descent by gradient descent. In Advances in
+Neural Information Processing Systems , pages 3981–3989,
+2016.
+Jonathan Baxter. Theoretical models of learning to learn. In
+Learning to learn , pages 71–94. Springer, 1998.
+Jonathan Baxter. A model of inductive bias learning. Journal
+of Artiﬁcial Intelligence Research , 12:149–198, 2000.
+Richard Bellman. The theory of dynamic programming.
+Technical report, RAND Corp Santa Monica CA, 1954.
+Yoshua Bengio, Samy Bengio, Jocelyn Cloutier, and Jan
+Gecsei. Learning a synaptic learning rule. pages II–A969,
+1991.
+
+==== Page 13 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 13
+Dimitri P Bertsekas. Neuro-dynamic programming. In Ency-
+clopedia of optimization , pages 2555–2560. Springer, 2008.
+C.M. Bishop. Pattern Recognition and Machine Learning .
+Information Science and Statistics. Springer New York,
+2016.
+Nicolo Cesa-Bianchi and Gábor Lugosi. Prediction, learning,
+and games . Cambridge University Press, 2006.
+Yutian Chen, Yannis Assael, Brendan Shillingford, David
+Budden, Scott Reed, Heiga Zen, Quan Wang, Luis C Cobo,
+Andrew Trask, Ben Laurie, et al. Sample efﬁcient adaptive
+text-to-speech. arXiv preprint arXiv:1809.10460 , 2018a.
+Yutian Chen, Matthew W Hoffman, Sergio Gomez Col-
+menarejo, Misha Denil, Timothy P Lillicrap, and Nando
+de Freitas. Learning to learn for global optimization of
+black box functions. 2018b.
+Ishita Dasgupta, Jane Wang, Silvia Chiappa, Jovana Mitro-
+vic, Pedro Ortega, David Raposo, Edward Hughes, Pe-
+ter Battaglia, Matthew Botvinick, and Zeb Kurth-Nelson.
+Causal reasoning from meta-reinforcement learning. arXiv
+preprint arXiv:1901.08162 , 2019.
+A Philip Dawid, Vladimir G V ovk, et al. Prequential proba-
+bility: Principles and properties. Bernoulli , 5(1):125–162,
+1999.
+Misha Denil, Pulkit Agrawal, Tejas D Kulkarni, Tom Erez,
+Peter Battaglia, and Nando de Freitas. Learning to perform
+physics experiments via deep reinforcement learning. arXiv
+preprint arXiv:1611.01843 , 2016.
+Persi Diaconis. Sufﬁciency as statistical symmetry. In
+Proceedings of the AMS Centennial Symposium , pages 15–
+26, 1988.
+Yan Duan, John Schulman, Xi Chen, Peter L Bartlett, Ilya
+Sutskever, and Pieter Abbeel. Rl2: Fast reinforcement
+learning via slow reinforcement learning. arXiv preprint
+arXiv:1611.02779 , 2016.
+Jeffrey L Elman. Finding structure in time. Cognitive science ,
+14(2):179–211, 1990.
+Chelsea Finn, Pieter Abbeel, and Sergey Levine. Model-
+agnostic meta-learning for fast adaptation of deep networks.
+arXiv preprint arXiv:1703.03400 , 2017.
+Marta Garnelo, Dan Rosenbaum, Christopher Maddison, Tiago
+Ramalho, David Saxton, Murray Shanahan, Yee Whye Teh,
+Danilo Rezende, and SM Ali Eslami. Conditional neural
+processes. In International Conference on Machine Learn-
+ing, pages 1690–1699, 2018.
+Ian J. Goodfellow, Mehdi Mirza, Xia Da, Aaron C. Courville,
+and Yoshua Bengio. An empirical investigation of catas-
+trophic forgeting in gradient-based neural networks. ICLR ,
+2014.
+Jonathan Gordon, John Bronskill, Matthias Bauer, Sebastian
+Nowozin, and Richard Turner. Meta-learning probabilistic
+inference for prediction. arXiv preprint arXiv:1805.09921 ,
+2018.
+Linda S Gottfredson. Mainstream science on intelligence:
+An editorial with 52 signatories, history, and bibliography,
+1997.
+Erin Grant, Chelsea Finn, Sergey Levine, Trevor Darrell, and
+Thomas Grifﬁths. Recasting gradient-based meta-learning
+as hierarchical bayes. arXiv preprint arXiv:1801.08930 ,2018.
+Alex Graves. Supervised sequence labelling. In Supervised
+sequence labelling with recurrent neural networks , pages
+5–13. Springer, 2012.
+Arthur Guez, David Silver, and Peter Dayan. Efﬁcient bayes-
+adaptive reinforcement learning using sample-based search.
+InAdvances in Neural Information Processing Systems ,
+pages 1025–1033, 2012.
+Lars Peter Hansen and Thomas J Sargent. Robustness . Prince-
+ton university press, 2008.
+Jose Hernandez-Orallo. Beyond the turing test. Journal of
+Logic, Language and Information , 9(4):447–466, 2000.
+Sepp Hochreiter, A Steven Younger, and Peter R Conwell.
+Learning to learn using gradient descent. In International
+Conference on Artiﬁcial Neural Networks , pages 87–94.
+Springer, 2001.
+Marcus Hutter. Universal artiﬁcial intelligence: Sequential de-
+cisions based on algorithmic probability . Springer Science
+& Business Media, 2004.
+Edwin T Jaynes. Probability theory: The logic of science .
+Cambridge university press, 2003.
+Michael I Jordan. Serial order: A parallel distributed pro-
+cessing approach. In Advances in psychology , volume 121,
+pages 471–495. Elsevier, 1997.
+Christos Kaplanis, Murray Shanahan, and Claudia Clopath.
+Continual reinforcement learning with complex synapses.
+InProceedings of the 35th International Conference on Ma-
+chine Learning, ICML 2018, Stockholmsmässan, Stockholm,
+Sweden, July 10-15, 2018 , pages 2502–2511, 2018.
+Diederik P Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. arXiv preprint arXiv:1412.6980 ,
+2014.
+James Kirkpatrick, Razvan Pascanu, Neil Rabinowitz, Joel Ve-
+ness, Guillaume Desjardins, Andrei A. Rusu, Kieran Milan,
+John Quan, Tiago Ramalho, Agnieszka Grabska-Barwinska,
+Demis Hassabis, Claudia Clopath, Dharshan Kumaran, and
+Raia Hadsell. Overcoming catastrophic forgetting in neural
+networks. Proceedings of the National Academy of Sciences ,
+2017.
+Scott Kirkpatrick, C Daniel Gelatt, and Mario P Vecchi.
+Optimization by simulated annealing. science , 220(4598):
+671–680, 1983.
+John F Kolen. Fool’s gold: Extracting ﬁnite state machines
+from recurrent network dynamics. In Advances in neural
+information processing systems , pages 501–508, 1994.
+John F Kolen and Stefan C Kremer. A ﬁeld guide to dynamical
+recurrent networks . John Wiley & Sons, 2001.
+Bernard Osgood Koopman. On distributions admitting a sufﬁ-
+cient statistic. Transactions of the American Mathematical
+society , 39(3):399–409, 1936.
+Kenneth Krohn, John L Rhodes, and Michael A Arbib. Al-
+gebraic theory of machines, languages, and semigroups.
+Technical report, Krohn-Rhodes Research Institute, 1968.
+Shane Legg and Marcus Hutter. Universal intelligence: A
+deﬁnition of machine intelligence. Minds and Machines ,
+17(4):391–444, 2007.
+Ke Li and Jitendra Malik. Learning to optimize. arXiv preprint
+arXiv:1606.01885 , 2016.
+
+==== Page 14 ====
+14 DEEPMIND TECH REPORT, JULY 22, 2019, V1.1
+Michael L Littman. Markov games as a framework for
+multi-agent reinforcement learning. In Machine Learning
+Proceedings 1994 , pages 157–163. Elsevier, 1994.
+Richard D McKelvey and Thomas R Palfrey. Quantal response
+equilibria for normal form games. Games and economic
+behavior , 10(1):6–38, 1995.
+Richard D McKelvey and Thomas R Palfrey. Quantal re-
+sponse equilibria for extensive form games. Experimental
+economics , 1(1):9–41, 1998.
+Nikhil Mishra, Mostafa Rohaninejad, Xi Chen, and Pieter
+Abbeel. A simple neural attentive meta-learner. 2018.
+Debasis Mitra, Fabio Romeo, and Alberto Sangiovanni-
+Vincentelli. Convergence and ﬁnite-time behavior of sim-
+ulated annealing. Advances in applied probability , 18(3):
+747–771, 1986.
+V olodymyr Mnih, Koray Kavukcuoglu, David Silver, Alex
+Graves, Ioannis Antonoglou, Daan Wierstra, and Martin
+Riedmiller. Playing atari with deep reinforcement learning.
+arXiv preprint arXiv:1312.5602 , 2013.
+V olodymyr Mnih, Adria Puigdomenech Badia, Mehdi Mirza,
+Alex Graves, Timothy Lillicrap, Tim Harley, David Silver,
+and Koray Kavukcuoglu. Asynchronous methods for deep
+reinforcement learning. In International conference on
+machine learning , pages 1928–1937, 2016.
+Anusha Nagabandi, Chelsea Finn, and Sergey Levine. Deep
+online learning via meta-learning: Continual adaptation for
+model-based RL. In International Conference on Learning
+Representations , 2019. URL https://openreview.net/forum?
+id=HyxAfnA5tm.
+Alex Nichol and John Schulman. Reptile: a scalable met-
+alearning algorithm. arXiv preprint arXiv:1803.02999 ,
+2018.
+Yaghout Nourani and Bjarne Andresen. A comparison of
+simulated annealing cooling strategies. Journal of Physics
+A: Mathematical and General , 31(41):8373, 1998.
+A Emin Orhan and Wei Ji Ma. Efﬁcient probabilistic inference
+in generic neural networks trained with non-probabilistic
+feedback. Nature communications , 8(1):138, 2017.
+Pedro A Ortega and Daniel A Braun. A minimum relative
+entropy principle for learning and acting. Journal of
+Artiﬁcial Intelligence Research , 38:475–511, 2010.
+Pedro A Ortega and Shane Legg. Modeling friends and foes.
+arXiv preprint arXiv:1807.00196 , 2018.
+Pedro A Ortega, Vishal Maini, and the DeepMind Safety
+Team. Building safe artiﬁcial intelligence: speciﬁcation,
+robustness, and assurance. DeepMind Safety Research Blog,
+Medium , 2018.
+Ian Osband and Benjamin Van Roy. Posterior sampling for
+reinforcement learning without episodes. arXiv preprint
+arXiv:1608.02731 , 2016.
+Yi Ouyang, Mukul Gagrani, Ashutosh Nayyar, and Rahul Jain.
+Learning unknown markov decision processes: A thompson
+sampling approach. In Advances in Neural Information
+Processing Systems , pages 1333–1342, 2017.
+German I. Parisi, Ronald Kemker, Jose L. Part, Christopher
+Kanan, and Stefan Wermter. Continual lifelong learning
+with neural networks: A review, 2018.
+Judea Pearl. Causality . Cambridge university press, 2009.John C Raven. Mental tests used in genetic, the performance
+of related indiviuals on tests mainly educative and mainly
+reproductive. MSC thesisUniv London , 1936.
+Sachin Ravi and Hugo Larochelle. Optimization as a model
+for few-shot learning. 2016.
+Scott Reed and Nando De Freitas. Neural programmer-
+interpreters. arXiv preprint arXiv:1511.06279 , 2015.
+Daniel Ritchie, Paul Horsfall, and Noah D Goodman. Deep
+amortized inference for probabilistic programs. arXiv
+preprint arXiv:1610.05735 , 2016.
+Daniel J Russo, Benjamin Van Roy, Abbas Kazerouni, Ian
+Osband, Zheng Wen, et al. A tutorial on thompson sampling.
+Foundations and Trends Rin Machine Learning , 11(1):1–
+96, 2018.
+Andrei A Rusu, Sergio Gomez Colmenarejo, Caglar Gulcehre,
+Guillaume Desjardins, James Kirkpatrick, Razvan Pascanu,
+V olodymyr Mnih, Koray Kavukcuoglu, and Raia Hadsell.
+Policy distillation. arXiv preprint arXiv:1511.06295 , 2015.
+Adam Santoro, Sergey Bartunov, Matthew Botvinick, Daan
+Wierstra, and Timothy Lillicrap. Meta-learning with
+memory-augmented neural networks. In International con-
+ference on machine learning , pages 1842–1850, 2016.
+Leonard J Savage. The foundations of statistics . Courier
+Corporation, 1972.
+Jürgen Schmidhuber. Making the world differentiable: On
+using self-supervised fully recurrent neural networks for
+dynamic reinforcement learning and planning in non-
+stationary environments. 1990.
+Jurgen Schmidhuber, Jieyu Zhao, and Marco Wiering. Simple
+principles of metalearning. Technical report, SEE, 1996.
+David Silver and Joel Veness. Monte-carlo planning in large
+pomdps. In Advances in neural information processing
+systems , pages 2164–2172, 2010.
+David Silver, Hado van Hasselt, Matteo Hessel, Tom Schaul,
+Arthur Guez, Tim Harley, Gabriel Dulac-Arnold, David
+Reichert, Neil Rabinowitz, Andre Barreto, et al. The predic-
+tron: End-to-end learning and planning. arXiv:1612.08810 ,
+2016.
+Michael Sipser. Introduction to the Theory of Computation ,
+volume 2. Thomson Course Technology Boston, 2006.
+Jake Snell, Kevin Swersky, and Richard Zemel. Prototypical
+networks for few-shot learning. In Advances in Neural
+Information Processing Systems , pages 4077–4087, 2017.
+Ray J Solomonoff. A formal theory of inductive inference.
+part i. Information and control , 7(1):1–22, 1964.
+Charles Spearman. "general intelligence," objectively deter-
+mined and measured. The American Journal of Psychology ,
+15(2):201–292, 1904.
+Richard S Sutton, Andrew G Barto, Francis Bach, et al.
+Reinforcement learning: An introduction . MIT press, 1998.
+Richard S Sutton, Csaba Szepesvári, Alborz Geramifard, and
+Michael P Bowling. Dyna-style planning with linear func-
+tion approximation and prioritized sweeping. arXiv preprint
+arXiv:1206.3285 , 2012.
+William R Thompson. On the likelihood that one unknown
+probability exceeds another in view of the evidence of two
+samples. Biometrika , 25(3/4):285–294, 1933.
+Sebastian Thrun and Lorien Pratt. Learning to learn: Intro-
+
+==== Page 15 ====
+META-LEARNING OF SEQUENTIAL STRATEGIES 15
+duction and overview. In Learning to learn , pages 3–17.
+Springer, 1998.
+Susana Urbina. Tests of intelligence. The Cambridge hand-
+book of intelligence , pages 20–38, 2011.
+Bart van den Broek, Wim Wiegerinck, and Bert Kappen. Risk
+sensitive path integral control. In Proceedings of the Twenty-
+Sixth Conference on Uncertainty in Artiﬁcial Intelligence ,
+pages 615–622. AUAI Press, 2010.
+Oriol Vinyals, Charles Blundell, Tim Lillicrap, Daan Wierstra,
+et al. Matching networks for one shot learning. In Advances
+in Neural Information Processing Systems , pages 3630–
+3638, 2016.
+Paul MB Vitanyi and Ming Li. An introduction to Kolmogorov
+complexity and its applications , volume 34. Springer
+Heidelberg, 1997.
+Jane X Wang, Zeb Kurth-Nelson, Dhruva Tirumala, Hubert
+Soyer, Joel Z Leibo, Remi Munos, Charles Blundell, Dhar-
+shan Kumaran, and Matt Botvinick. Learning to reinforce-
+ment learn. arXiv preprint arXiv:1611.05763 , 2016.
+Ziyu Wang, Josh S Merel, Scott E Reed, Nando de Freitas,
+Gregory Wayne, and Nicolas Heess. Robust imitation of
+diverse behaviors. In Advances in Neural Information
+Processing Systems , pages 5320–5329, 2017.
+Manuel Watter, Jost Springenberg, Joschka Boedecker, and
+Martin Riedmiller. Embed to control: A locally linear latent
+dynamics model for control from raw images. In Advances
+in neural information processing systems , pages 2746–2754,
+2015.
+Olga Wichrowska, Niru Maheswaranathan, Matthew W Hoff-
+man, Sergio Gomez Colmenarejo, Misha Denil, Nando
+de Freitas, and Jascha Sohl-Dickstein. Learned optimizers
+that scale and generalize. arXiv preprint arXiv:1703.04813 ,
+2017.
+Zhongwen Xu, Hado van Hasselt, and David Silver. Meta-
+gradient reinforcement learning. Advances in neural infor-
+mation processing systems , 2018.
+Luisa M Zintgraf, Kyriacos Shiarlis, Vitaly Kurin, Katja Hof-
+mann, and Shimon Whiteson. Caml: Fast context adaptation
+via meta-learning. arXiv preprint arXiv:1810.03642 , 2018.
+

@@ -1,0 +1,936 @@
+==== Page 1 ====
+Cross DQN: Cross Deep Q Network for Ads Allocation in Feed
+Guogang Liao1†, Ze Wang1†, Xiaoxu Wu1, Xiaowen Shi1, Chuheng Zhang2‡, Yongkang Wang1,
+Xingxing Wang1, Dong Wang1
+1Meituan, Beijing, China2IIIS, Tsinghua University, Beijing, China
+{liaoguogang,wangze18,wuxiaoxu04,shixiaowen03}@meituan.com,zhangchuheng123@live.com,
+{wangyongkang03,wangxingxing04,wangdong07}@meituan.com
+ABSTRACT
+E-commerce platforms usually display a mixed list of ads and or-
+ganic items in feed. One key problem is to allocate the limited slots
+in the feed to maximize the overall revenue as well as improve
+user experience, which requires a good model for user preference.
+Instead of modeling the influence of individual items on user be-
+haviors, the arrangement signal models the influence of the ar-
+rangement of items and may lead to a better allocation strategy.
+However, most of previous strategies fail to model such a signal
+and therefore result in suboptimal performance. In addition, the
+percentage of ads exposed (PAE) is an important indicator in ads
+allocation. Excessive PAE hurts user experience while too low PAE
+reduces platform revenue. Therefore, how to constrain the PAE
+within a certain range while keeping personalized recommendation
+under the PAE constraint is a challenge.
+In this paper, we propose Cross Deep Q Network (Cross DQN) to
+extract the crucial arrangement signal by crossing the embeddings
+of different items and modeling the crossed sequence by multi-
+channel attention. Besides, we propose an auxiliary loss for batch-
+level constraint on PAE to tackle the above-mentioned challenge.
+Our model results in higher revenue and better user experience
+than state-of-the-art baselines in offline experiments. Moreover,
+our model demonstrates a significant improvement in the online
+A/B test and has been fully deployed on Meituan feed to serve more
+than 300 millions of customers.
+CCS CONCEPTS
+•Information systems →Computational advertising ;Online ad-
+vertising ;Ads allocation .
+KEYWORDS
+Ads Allocation, Deep Reinforcement Learning, Arrangement Signal,
+Adaptive Ads Exposure
+1 INTRODUCTION
+Feed, mixed with organic items and ads, is a popular product on
+many e-commerce platforms nowadays [ 7]. Platforms serve users
+and gain revenue via feed. In general, there are two ways for plat-
+forms to get revenue. Firstly, once users consume organic items
+or ads, the e-commerce platform will gain the platform service fee
+(hereinafter referred to as fee) according to the orders. Secondly, as
+an ad is clicked by a user, the platform will charge the correspond-
+ing advertiser. For the sake of the platform, displaying more ads is
+beneficial to ads revenue but harmful to fee since ads are less likely
+†Guogang Liao and Ze Wang are the corresponding authors.
+‡This work was done when Chuhang Zhang was an intern in Meituan.engaging than organic items [ 23]. Usually, the number of ads is lim-
+ited in feed to ensure good user experience and engagement. Hence,
+how to allocate limited slots reasonably and effectively to maximize
+overall revenue has become a very meaningful and challenging
+problem [11, 16, 22].
+The structure of an industrial ads allocation system is shown
+in Figure 1. Blending Server takes ads sequence and organic items
+sequence as input and outputs a mixed sequence of the two. For
+Blending Server, there are two common strategies: fixed slots strat-
+egy and dynamic slots strategy. Most platforms simply allocate
+ads to pre-determined slots [ 10,13]. Such strategies may lead to
+suboptimal overall performance. Dynamic slots strategy adjusts
+the number and slots of ads according to the interest of users. For
+instance, if a user has a higher tendency to consume commercial
+ads, the platform will allocate more ads at conspicuous slots to
+maximize possible benefits. Except for personalization, dynamic
+slots strategies have lower ads blindness [ 21] and better adaptabil-
+ity, significantly outperforming fixed slots strategy and gradually
+becoming today’s trend. Early dynamic slots strategies use some
+ads
+organic
+items
+Ad
+Ranking
+Organic
+Ranking
+Blending
+Serverranked ads
+ad1
+ad2
+...
+ranked organic items
+oi 1
+oi 2
+...request result
+oi 1
+ad 1
+ad 2
+...
+Logs
+Learner
+ Modeluser
+Figure 1: Structure of an ads allocation system. The process
+of ads allocation takes place in the Blending Server.
+classic algorithms (e.g., Bellman-Ford, unified rank score) to allo-
+cate ads slots. Since the feed is presented to the user in a sequence,
+recent dynamic ads allocation strategies usually model the problem
+as Markov Decision Process [ 14] and solve it using reinforcement
+learning (RL) [4, 22, 25].
+However, existing RL-based dynamic slots strategies encounter
+several major limitations: i) Most approaches ignore the crucial
+arrangement signal which is the influence of the arrangement of
+displayed items on user behaviors. For example, as illustrated in Fig-
+ure 2, once an ad is inserted into feed, the click-through rate (CTR)
+of surrounding organic items and ads fluctuate. This signal receives
+attention in the scenario of Re-Rank recently [ 2,5,6,19] but is
+largely neglected in ads allocation. ii) Most of existing methods
+lack an efficient balance between the personalization of differentarXiv:2109.04353v4  [cs.LG]  20 May 2022
+
+==== Page 2 ====
+Request
+oi1
+CTR = 0.12 
+ad1
+CTR = 0.06
+oi2
+CTR = 0.07  
+...
+...
+ad
+organic
+item (oi)
+insert ad2Request
+oi1
+CTR = 0.13  
+ad1
+CTR = 0.04
+ad2
+CTR = 0.03
+oi2 
+CTR = 0.10
+...Figure 2: While inserting 𝑎𝑑2into feed, the CTR of organic
+items increases while the CTR of 𝑎𝑑1decreases.
+requests and the constraint on the percentage of ads exposed (PAE)
+in a period. PAE is the most important constraint in ads allocation,
+which balances the user experience and platform revenue. Previous
+methods constrain all the requests or the requests within the same
+hour [ 17] with the same target PAE, resulting in a lack of personal-
+ization and differentiation in the allocation of ads between different
+requests.
+To address the limitations of existing methods, we present a
+novel framework called Cross Deep Q Network (Cross DQN) based on
+deep reinforcement learning. Specifically, we design two novel units
+called State and Action Crossing Unit (SACU) and Multi-Channel
+Attention Unit (MCAU) to explicitly extract the arrangement signal.
+Besides, we propose an auxiliary loss for batch-level constraint to
+balance the personalization of different requests and the constraint
+on PAE in a period.
+The contributions of our work are summarized as follows:
+•A superior ads allocation strategy . In this paper, we propose
+a novel RL-based framework named Cross DQN1to dynamically
+adjust the number and the slots of ads in feed, which can effec-
+tively extract the arrangement signal and reasonably balance
+personalization of different requests and the constraint on PAE.
+•Detailed industrial and practical experience . We success-
+fully deploy Cross DQN on the Meituan feed and obtain signifi-
+cant improvements in both platform revenue and user experience.
+2 RELATED WORKS
+Traditional strategy for ads allocation in feed is to display ads at
+fixed slots. Recently, dynamic ads allocation strategies gains grow-
+ing attention. According to whether RL is used, existing dynamic
+ads allocation strategies can be roughly categorized into two cate-
+gories: non RL-based and RL-based.
+Non RL-based methods usually use classical algorithms to allo-
+cate ads slots. Koutsopoulos [9]define ads allocation as a shortest-
+path problem on a weighted directed acyclic graph where nodes
+represent ads or slots and edges represent expected revenue. The
+shortest path can be found by running Bellman-Ford algorithm. Fur-
+thermore, Yan et al . [21] takes the impact of the interval between
+1The code and data example are publicly accessible at https://github.com/weberrr/
+CrossDQN.ads into consideration and re-ranks ads and organic items jointly
+via a uniform ranking formula.
+RL-based methods model the ads allocation problem as an MDP
+and solved it with different RL techniques. Zhao et al . [25] proposes
+a two-level RL framework to jointly optimize the recommending
+and advertising strategies. Zhao et al . [24] proposes a DQN architec-
+ture to determine the optimal ads and ads position jointly. Xie et al .
+[20] proposes a hierarchical RL-based framework to first decide
+the channel and then determine the specific item for each slot. In
+contrast to the previous work, we incorporate the arrangement
+signal into a RL-based dynamic ads allocation model to improve
+the performance.
+3 PROBLEM FORMULATION
+In our scenario, we present 𝐾slots in one screen and handle the
+allocation for each screen in the feed of a request sequentially.
+The ads allocation problem is formulated as a Constrained Markov
+Decision Process (CMDP) [ 1] (S,A,𝑟,𝑃,𝛾,C), the elements of
+which are defined as follows:
+•State spaceS. A state𝑠∈Sconsists of the information of
+candidate items (i.e., the ads sequence and the organic items
+sequence which are available on current step 𝑡), the user
+(e.g., age, gender and historical behaviors), and the context
+(e.g., order time).
+•Action spaceA. An action𝑎∈A is the decision whether
+to display an ad on each slot on the current screen, which is
+formulated as follows:
+𝑎=(𝑥1,𝑥2,...,𝑥𝐾), (1)
+where𝑥𝑘=(
+1display an ad in the 𝑘-th slot
+0otherwise,∀𝑘∈ [𝐾].
+In our scenario, we do not change the order of ads sequence
+and organic items sequence in Blending Server.
+•Reward𝑟. After the system takes an action in one state,
+a user browses the mixed list and gives a feedback. The
+reward is calculated based on the feedback and consists of
+ads revenue 𝑟ad, fee𝑟feeand user experience 𝑟ex:
+𝑟(𝑠,𝑎)=𝑟ad+𝑟fee+𝜂𝑟ex,
+where𝑟ex= 
+2click and order
+1click and leave
+0no click and leave.(2)
+•Transition probability 𝑃.𝑃(𝑠𝑡+1|𝑠𝑡,𝑎𝑡)is defined as the
+state transition probability from 𝑠𝑡to𝑠𝑡+1after taking the
+action𝑎𝑡, where𝑡is the index for the screen/time step. The
+action taken in the state affects user behaviors. When the
+user pulls down, the state 𝑠𝑡transits to the state of next
+screen𝑠𝑡+1. The items selected to present by 𝑎𝑡will be re-
+moved from the state on the next step 𝑠𝑡+1. If the user no
+longer pulls down, the transition terminates.
+•Discount factor 𝛾. The discount factor 𝛾∈[0,1]balances
+the short-term and long-term rewards.
+•ConstraintC. The platform-level constraint is that the ab-
+solute difference between the total PAE in a period and the
+the target value 𝛿should be less than a threshold 𝜀to ensure
+
+==== Page 3 ====
+stable ads revenue. The PAE is formulated as follows:
+PAE=Í
+1≤𝑖≤𝑁Numad
+𝑖Í
+1≤𝑖≤𝑁(Numad
+𝑖+Numoi
+𝑖), (3)
+where𝑁is the number of requests in a period, Numad
+𝑖and
+Numoi
+𝑖mean the number of ads and organic items in the 𝑖-th
+request. In this work, we choose one week as the period. Con-
+sequently, the platform-level constraint can be formulated
+as follows:
+|PAE−𝛿|<𝜀. (4)
+Given the CMDP formulated as above, the objective is to find
+an ads allocation policy 𝜋:S→A to maximize the total reward
+under the platform-level constraint.
+4 METHODOLOGY
+4.1 Architecture Overview
+The structure of popular RL model, Dueling DQN, [ 18] is shown
+in Figure 3(a), which receives the state only as the input. Such a
+structure fails to extract cross information between the action and
+the state, making it difficult to model the arrangement signal of
+mixed lists. A common solution is to concatenate state and action
+directly, but the model remains hard to extract the information
+between the items in the mixed list designated by the action. To
+this end, we propose a novel structure Cross DQN (cf. Figure 3(b)).
+The State and Action Crossing Unit (SACU) is designed to cross the
+embeddings of the items in a mixed list designated by the action. The
+Multi-Channel Attention Unit (MCAU) is designed to effectively
+extract arrangement signal from different channel combinations.
+Specifically, we show the detailed structure of Cross DQN in
+Figure 4. The model takes a state (including the organic items/ads
+sequence, context information, etc.) and the corresponding candi-
+date actions as the input. Then, Item Representation Module (IRM)
+generates the representations (especially the representations of ads
+and organic items). Next, Sequential Decision Module (SDM) gen-
+erates Q-values of different actions with the help of SACU, MCAU
+and an auxiliary loss for batch-level constraint. In SACU, the state
+embeddings are intersected according to the action to form a unified
+matrix representation. In MCAU, the crossing matrix generated
+from SACU are split into different channels to calculate the multi-
+channel attention weight. Finally, SDM chooses the action with the
+NNs
+state...
+...
+(a) Dueling DQN
+NNs
+state...
+...
+SACU SACU...
+...
+candidate actions... MCAU MCAU (b) Cross DQN
+Figure 3: Architectures of Dueling DQN and Cross DQN.largest Q-value. We will introduce them in detail in the following
+subsections.
+4.2 Item Representation Module
+Item Representation Module (IRM) generates the state embedding
+from the raw state. To efficiently process the information from dif-
+ferent sources, IRM generates two sequences of mixed embeddings:
+one for ads and one for organic items. The embedding for each
+item encodes not only the information of the item itself but also
+the information of the user profile, the context, and the interaction
+with historical user behaviors.
+First, we use embedding layers to extract the embeddings from
+raw inputs. We denote the embeddings for ads, organic items, histor-
+ical behaviors of the user, the user profile, the context as {ead
+𝑖}𝑁ad
+𝑖=1,
+{eoi
+𝑖}𝑁oi
+𝑖=1,{eb
+𝑖}𝑁b
+𝑖=1,eu, and ecrespectively, where the subscript 𝑖de-
+notes the index within the sequence and 𝑁ad,𝑁oi, and𝑁bare the
+number of ads, organic items, and historical behaviors. Then, we
+use a target attention unit [ 15] to encodes the interaction between
+the historical behaviors of the user and the corresponding item,
+which is similar to Zhou et al. [26]:
+ead
+𝑗←Att
+ead
+𝑗,{eb
+𝑖}𝑁b
+𝑖=1
+,∀𝑗∈[𝑁ad];
+eoi
+𝑗←Att
+eoi
+𝑗,{eb
+𝑖}𝑁b
+𝑖=1
+,∀𝑗∈[𝑁oi].(5)
+Afterwards, we append the embeddings of the user profile and
+the context to the embedding of each item:
+ead
+𝑗←MLP
+ead
+𝑗||eu||ec
+,∀𝑗∈[𝑁ad];
+eoi
+𝑗←MLP
+eoi
+𝑗||eu||ec
+,∀𝑗∈[𝑁oi];(6)
+where||denotes concatenation. Notice that there are some strong
+features for ads and organic items in our scenario (e.g., discount,
+delivery fee, delivery time), which are concatenated with the em-
+bedding of each item and input into SDM.
+For ease of notation, we can also write the embeddings for ads
+and organic items in matrix form, each row of which represents
+one item in the sequence, i.e.,
+Ead=h
+ead
+1ead
+2...ead
+𝑁adi𝑇
+,
+Eoi=h
+eoi
+1eoi
+2...eoi
+𝑁oii𝑇
+.(7)
+Involving several attention units, IRM may be time-consuming
+upon deployment. However, IRM is an independent module within
+Cross DQN so that we can invoke IRM in parallel to other modules
+preceding Cross DQN. See more details in Section 4.8.
+4.3 State and Action Crossing Unit
+To evaluate the Q-value of a certain state-action pair, we need an
+efficient representation of the mixed list designated by the corre-
+sponding action. State and Action Crossing Unit (SACU) helps us
+to construct a sequence of embeddings corresponding to the mixed
+list from the state embedding.
+First, given an action, we generate the corresponding action
+offset matrices for ads and organic items: Mad∈{0,1}𝐾×𝑁adand
+Moi∈{0,1}𝐾×𝑁oi, where the(𝑖,𝑗)-th element represents whether
+
+==== Page 4 ====
+Embedding Layer
+... ...
+user behaviors  
+sequenceads sequenceMLP (Parameter Sharing)
+...
+candidate actions set at state context  
+featuresuser profile  
+featuresSACUV network...
+...soft-
+argmaxAuxiliary Loss
+Ads Matrix Organic  Items Matrix
+organic  items sequence... ...Attention  
+UnitAttention  
+UnitAttention  
+UnitAttention  
+Unit... ...
+multi-hot representation of  
+ candidate action  ...
+～ bitwise
+negation  generate Action Of fset Matrix
+e.g.  
+(0,1,0,0,1)e.g.  
+(1,0,1,1,0)0 100 0...
+0 000 0...
+0 000 0...
+0 010 0...0 000 0...
+generate State Cross Matrix... ...Matrix Multiplication Matrix Multiplication0
+00
+00SACUSDM
+IRM 
+embeddings of ads and origanic items  
+generated from IRM  Cross Matrix
+   
+...   
+0 000 0...
+0 010 0...
+0 001 0...
+0 000 0...0 100 0...offset=0
+offset=1
+...         
+    PAE average P AE  
+in a batch 
+         Concat
+SACUChannel  
+Mask   Channel  
+Mask   ...Self- 
+Attention     ...Self- 
+Attention    MCAU
+...A network (Parameter Sharing)
+...Concat
+Channel  
+Mask   Channel  
+Mask   Self- 
+Attention     Self- 
+Attention    MCAU
+...Figure 4: Network architecture of Cross DQN. Item Representation Module (IRM) generates the state embedding based on the
+raw state. Sequential Decision Module (SDM) generates Q-values of different actions with the help of State and Action Crossing
+Unit (SACU), Multi-Channel Attention Unit (MCAU) and auxiliary loss for batch-level constraint.
+the𝑗-th ad/organic item is presented on the 𝑖-th slot. Recall that 𝐾
+is the number of slots in one screen. For example, given the action
+𝑎=(0,1,0,0,1)with𝐾=5, the action offset matrix Madis
+Mad=0 0... 0 0
+1 0... 0 0
+0 0... 0 0
+0 0... 0 0
+0 1... 0 0∈R𝐾×𝑁ad. (8)
+Then, we can calculate the cross matrix Mcross, which is the
+embedding of the mixed list corresponding to the given action,
+using the action offset matrices.
+Mcross=MadEad+MoiEoi. (9)
+With SACU, we generate the embedding for the mixed list which
+enables us to efficiently extract the arrangement signal in the next
+module.
+4.4 Multi-Channel Attention Unit
+The user may focus on one or more aspects (e.g., discount, delivery
+fee, delivery time) of the mixed sequence at the same time. Ac-
+cordingly, we propose MCAU to simultaneously model the user’s
+attention to different aspects of the mixed sequence.
+The cross matrix Mcross∈R𝐾×𝑁egenerated by SACU contains
+𝑁edifferent channels. Each channel represents an information
+dimension in the latent space and can be used to model one aspect
+of the mixed sequence. Meanwhile, the user may pay attention
+to more than one aspect of the mixed sequence at the same time.
+So the sequence information of two or more channels need to be
+combined for modeling. Next we will detail that how the sequence
+information of multiple channels is combined and modeled.For𝑁echannels, we formulate the number of channel combina-
+tions as𝑁c, which is calculated as follows:
+𝑁c=2𝑁e−1. (10)
+We formalize the mask matrix for the 𝑖-th combination as Mmask
+𝑖.
+For example, the mask matrix for combination of the first channel
+and the last channel is
+Mmask
+𝑖=1 0... 0 1
+1 0... 0 1
+1 0... 0 1
+1 0... 0 1
+1 0... 0 1∈R𝐾×𝑁e. (11)
+Nextly, signal matrix calculated by cross matrix and mask matrix
+are input into corresponding self-attention network [ 15] to model
+the attention across the 𝐾items and generate a latent vector, as
+follows:
+Msignal
+𝑖=Mcross⊙Mmask
+𝑖,∀𝑖∈[𝑁c]. (12)
+esignal
+𝑖=flatten
+SelfAtt(𝑖) Msignal
+𝑖
+,∀𝑖∈[𝑁c]. (13)
+Latent vectors output by different self-attention network are con-
+catenated together to represent the arrangement signal extracted
+from different channels, as follows:
+esignal=esignal
+1||esignal
+2||...||esignal
+𝑁c. (14)
+4.5 Sequential Decision Module
+With the help of SACU and MCAU, Sequential Decision Module
+(SDM) takes the embeddings generated by IRM and candidate ac-
+tions as the input, and outputs Q-values corresponding to different
+actions.
+
+==== Page 5 ====
+Given a set of 𝑁acandidate actions{𝑎𝑖}𝑁a
+𝑖=1, SACU generates a
+cross matrix Mcross
+𝑖for each action and MCAU generates corre-
+sponding arrangement signal representation for each action. Subse-
+quently, the outputs of the V network and the A network [ 18] can
+be calculated as follows:
+𝑉(𝑠)=MLP flatten(pool(Ead)||pool(Eoi))). (15)
+𝐴(𝑠,𝑎𝑖)=MLP esignal
+𝑖, (16)
+where pool indicates average pooling over different rows (i.e., dif-
+ferent items in the ads/organic items sequence).
+Finally, SDM outputs the Q-value 𝑄(𝑠,𝑎𝑖)corresponding to the
+𝑖-th candidate action on the current screen as follows:
+𝑄(𝑠,𝑎𝑖)=𝑉(𝑠)+
+𝐴(𝑠,𝑎𝑖)−1
+𝑁a𝑁a∑︁
+𝑗=1𝐴(𝑠,𝑎𝑗)
+. (17)
+4.6 Auxiliary Loss for Batch-level Constraint
+Recall that our objective is to maximize cumulative reward under
+the constraint on the average ads exposure. The key for a successful
+strategy is to satisfy the constraint while maintaining a differenti-
+ated recommendation for different users/scenarios. For example, if
+the user is prone to be annoyed by ads, we should expose less ads to
+the user, and vice versa. Different auxiliary losses to constrain the
+percentage of ads exposure (PAE) can result in different level of dif-
+ferentiation. A common solution is to use a request-level constraint,
+i.e., constraining the PAE of each request to be close to the PAE
+target𝛿. Such a solution may result in poor differentiation since the
+PAE of each request is constrained to the same target 𝛿regardless
+of the context. To allow for differentiation, Wang et al . [17] propose
+to use an hour-level constraint that allows for using different PAE
+targets in different hours. However, the level of differentiation is
+still limited within an hour. To this end, we propose a batch-level
+constraint to constrain the average PAE of the requests in a batch
+instead of constraining the PAE of each request.
+We denote the PAE associated with the action 𝑎asPAE(𝑎). For
+example, the PAE of 𝑎=(0,1,0,0,1)is0.4. Given a batch of transi-
+tions𝐵, our batch-level constraint can be written as:
+𝐿PAE(𝐵)=
+𝛿−1
+|𝐵|∑︁
+𝑠∼𝐵PAE(argmax
+𝑎∈A𝑄(𝑠,𝑎))2
+. (18)
+However, the argmax function is not differentiable. Therefore, we
+use a soft version of argmax instead, i.e., we use
+PAE(argmax
+𝑎∈A𝑄(𝑠,𝑎))≈𝑁a∑︁
+𝑖=11
+𝑍exp
+𝛽𝑄(𝑠,𝑎𝑖)
+PAE(𝑎𝑖),(19)
+where𝑍=Í𝑁a
+𝑗=1exp[𝛽𝑄(𝑠,𝑎𝑗)]is the normalization factor and 𝛽
+is the temperature coefficient.
+Unlike previous request-level or hour-level constraints that limit
+the PAE for each request, we only limit the average PAE estimated
+using randomly sampled batches. Such a weaker form of constraint
+encourages the model to choose the action with a PAE that is
+deviated from 𝛿but may better adapt for the current context.4.7 Offline Training
+We show the process of offline training in Algorithm 1. We train
+Cross DQN based on an offline dataset 𝐷generated by an online
+exploratory policy 𝜋𝑏. For each iteration, we sample a batch of
+transitions𝐵from the offline dataset and update the model using
+gradient back-propagation w.r.t. the loss:
+𝐿(𝐵)=𝐿DQN(𝐵)+𝛼𝐿PAE(𝐵), (20)
+where𝐿DQN is the same loss function as the loss in DQN [ 12],𝐿PAE
+is the auxiliary loss for the constraint, and 𝛼is the coefficient to
+balance the two losses. Specifically,
+𝐿DQN(𝐵)=1
+|𝐵|∑︁
+(𝑠,𝑎,𝑟,𝑠′)∈𝐵
+𝑟+𝛾max
+𝑎′∈A𝑄(𝑠′,𝑎′)−𝑄(𝑠,𝑎)2
+.(21)
+Algorithm 1 Offline Training of Cross DQN
+1:Offline data 𝐷={(𝑠,𝑎,𝑟,𝑠′)}(generated by an online ex-
+ploratory policy 𝜋𝑏)
+2:Initialize a value function 𝑄with random weights
+3:repeat
+4: Sample a batch 𝐵of(𝑠,𝑎,𝑟,𝑠′)from𝐷
+5: Update network parameters by minimizing 𝐿(𝐵)in (20)
+6:until Convergence
+4.8 Online Serving
+We show the process of online serving in Algorithm 2. In the online
+serving system, Cross DQN selects the action with the highest
+reward based on current state and converts the action to ads slots
+set for the output. When the user pulls down, the model receives
+the state for the next screen, and then makes a decision based on
+the information on the next screen.
+Algorithm 2 Online Inference of Cross DQN
+1:Initial state 𝑠0
+2:repeat
+3: Generate𝑎∗
+𝑡=arg max𝑎∈A𝑄(𝑠𝑡,𝑎)
+4: Allocate ads slots following 𝑎∗
+𝑡
+5: User pulls down to the next screen 𝑡+1
+6: Observe the next state 𝑠𝑡+1
+7:until User leaves
+In our scenario, current state will transit to the next state or
+terminate depending on whether the user pulls down. However, the
+next possible state corresponding to a given action is deterministic
+if the interaction does not terminate. Based on this observation,
+we can cache the decisions for multiple screens and transmit to
+the client at once to reduce the time cost for the communication
+between the server and the client.
+Model Decomposition . Cross DQN will be called 𝑇times for
+one cache, which is time consuming for industrial scenarios where
+latency is a major concern. Fortunately, the outputs of IRM can
+be reused across different calls of Cross DQN in one cache, which
+saves up to about 80%computation time. Since the generation of
+item representations does not rely on the previous modules (such
+
+==== Page 6 ====
+ads
+organic
+items
+Ad
+Ranking
+Organic
+Ranking
+SDMranked ads
+ad1
+ad2
+...
+oi1
+oi2
+...ranked organic itemsrequest result
+oi1
+ad1
+ad2
+...
+Logs
+Learner
+ CrossDQN
+ IRMuserFigure 5: Model decomposition for online service.
+as ranking and ads bidding), we calculate the representation of the
+items parallel to the previous modules, which further reduces the
+latency. As shown in Figure 5, the Cross DQN is decomposed into
+IRM and SDM for deployment. The two parts are trained end-to-end
+but deployed on different services for real-time prediction. The IRM
+is calculated parallel to Ad Ranking and Organic Ranking systems.
+Hence, it is latency-free for real-time inference of SDM.
+Parameter Sharing . Both of IRM and SDM use parameter shar-
+ing (cf. Figure 4) across different ads/organic items. As for IRM, we
+can calculate the representations for all recalled items at the same
+time without ranking information through parameter sharing and
+parallel computing. Meanwhile, in SDM, we use parameter sharing
+across different actions to guarantee the consistency of the reward
+evaluation of the actions and ensure that the batch-level constraint
+is effective. In addition, parameter sharing can reduce the scale of
+parameters, accelerate model training and reduce memory usage.
+5 EXPERIMENTS
+We will evaluate Cross DQN model through offline and online
+experiments in this section. In offline experiments, we will compare
+Cross DQN with existing baselines and analyze the role of different
+designs in Cross DQN. In online experiments, we will compare
+Cross DQN with the previous strategy deployed on the Meituan
+platform using an online A/B test.
+5.1 Experimental Settings
+5.1.1 Dataset. We collect the dataset by running an exploratory
+policy on the Meituan platform during March 2021. We present the
+detailed statistics of the dataset in Table 1. Notice that each request
+contains several transitions. The features for the ads/organic items
+include the identity, the category, the comment score, etc. The
+features for the user profile include the identity, the gender, etc.
+5.1.2 Evaluation Metrics. We evaluate the model with revenue in-
+dicators and experience indicators. As for revenue indicators, we
+use ads revenue and service fee in a period to measure platform
+revenue. Specifically, the ads revenue is gained from advertisers
+calculated using Generalized Second Price (GSP) [ 3] and charged
+Table 1: Statistics of the dataset.
+#requests #users #ads #items
+12,729,509 2,000,420 385,383 726,587per click. The total ads revenue is calculated as 𝑅ad=Í𝑟ad. The
+service fee is charged from merchants’ orders according to a certain
+percentage. and the total service fee is calculated as 𝑅fee=Í𝑟fee.
+In our platform, user experience is measured by whether the user
+demand (e.g., finding a satisfying product) can be fulfilled. As for
+experience indicators, we use the average conversion rate and aver-
+age experience score to measure user experience. The conversion
+rate calculated as 𝑟cxr=ÍCTR×CVR is the ratio of the number
+of orders placed by the user to the number of his/her requests.
+The experience score 𝑟exdefined in Section 3 reflects the degree of
+satisfaction of the user demand.
+5.1.3 Hyperparameters. We implement Cross DQN with Tensor-
+Flow and apply a gird search for the hyperparameters. The hidden
+layer sizes of the IRM are (128,64,32,8,2)and the hidden layer sizes
+of the SDM are(16,8,1). The learning rate is 10−3, the optimizer is
+Adam [8] and the batch size is 8,192.
+5.2 Offline Experiment
+In this section, we train Cross DQN with offline data and evalu-
+ate the performance using an offline estimator. Through extended
+engineering, the offline estimator models the user preference and
+aligns well with the online service. We conduct experiments to an-
+swer the following two questions: i) How does Cross DQN perform
+compared with other baselines? ii) How do different designs (e.g.,
+SACU, MCAU) and hyperparameter settings (e.g., 𝛼,𝛽) affect the
+performance of Cross DQN?
+5.2.1 Baselines. We compare Cross DQN with the following five
+representative methods:
+•Fixed . This method displays ads in fixed slots, such as the
+slot indexed by 3,6,9,···.
+•GEA [21]. GEA is a non RL-based dynamic ads slots strategy.
+It takes the impact of ads intervals into consideration and
+ranks the ads and organic items jointly with a rank score
+RS=(CTR×charge+GMV×takerate)exp(𝛽′𝑑), where
+charge is the fee paid by advertisers, takerate is the take rate
+(i.e., the fee charged on each transaction by the platform),
+and𝑑is the interval between two ads.
+•CTLRL [17]. Constrained Two-Level Reinforcement Learn-
+ing (CTLRL) uses a two-level RL structure to allocate ads.
+The upper level RL model decomposes the platform-level
+constraint into hour-level constraints, and the lower level
+RL model sets the hour-level constraint as the request-level
+constraint.
+•HRL-Rec [20]. HRL-Rec is an RL-based dynamic ads slots
+strategy. It divides the integrated recommendation into two
+levels of tasks and solves using hierarchical reinforcement
+learning. Specifically, the model first decides the channel
+(i.e., select an organic item or an ad) and then determine the
+specific item for each slot.
+•DEAR [24]. DEAR is also an RL-based dynamic ads slots
+strategy. It designs a deep Q-network architecture to deter-
+mine three related tasks jointly, i.e., i) whether to insert an
+ad to the recommendation list, and if yes, ii) the optimal ad
+and iii) the optimal location to insert.
+
+==== Page 7 ====
+Table 2: The result of Revenue Indicators and Experience Indicators. Each experiment are presented in the form of mean ±
+standard deviation. The improvement means the improvements of Cross DQN across the best baselines.
+modelRevenue Indicators Experience Indicators
+𝑅ad𝑅fee𝑅cxr𝑅ex
+Fixed 0.2211 (±0.00252) 0.2476 ( ±0.00686) 0.2148 (±0.00342) 0.8823 ( ±0.00730)
+GEA 0.2372 (±0.00035) 0.2564 ( ±0.00096) 0.2457 (±0.00061) 0.9493( ±0.00012)
+CTLRL 0.2286 (±0.00101) 0.2536 ( ±0.00860) 0.2250 (±0.00213) 0.9078 ( ±0.00384)
+HRL-Rec 0.2380 (±0.00287) 0.2660 ( ±0.00132) 0.2530 (±0.00021) 0.9526 ( ±0.00123)
+DEAR 0.2391 (±0.00244) 0.2687 ( ±0.00116) 0.2530 (±0.00044) 0.9552 ( ±0.00407)
+Cross DQN 0.2465 (±0.00058) 0.2742 ( ±0.00135) 0.2551 (±0.00081) 0.9703 ( ±0.00085)
+-aux 0.2446 (±0.00079) 0.2737 ( ±0.00231) 0.2537 (±0.00034) 0.9671 ( ±0.00118)
+-aux-mcau 0.2418 (±0.00120) 0.2728 ( ±0.00102) 0.2534 (±0.00045) 0.9661 ( ±0.00092)
+-aux-mcau-sacu 0.2370 (±0.00217) 0.2722 ( ±0.00286) 0.2508 (±0.00065) 0.9629 ( ±0.00201)
+Improvement 3.09% 2.05% 0.83% 1.58%
+0 0.01 0.03 0.05 0.08 0.1
+0.9660.9680.9700.9720.9740.976Rex
+0.2380.2390.2400.2410.2420.2430.244
+Rad
+Rad
+Rex
+(a) The reward curve of 𝜂.
+0 1 3 5 10
+0.9150.9200.9250.9300.9350.9400.945R
+ (b) The Error bars of 𝛼.
+0.1 1 5 10 50
+0.9050.9100.9150.9200.9250.9300.9350.940R
+ (c) The Error bars of 𝛽.
+Figure 6: The experimental results on the sensitivity of 𝜂,𝛼and𝛽.
+5.2.2 Performance Comparison. We present the experiment re-
+sults under the same PAE level in Table 2 and have the following
+observations: i) Compared with all these baselines, Cross DQN
+achieves strongly competitive performance on both the revenue-
+related metrics and experience-related metrics. Specifically, Cross
+DQN improves over the best baseline w.r.t. 𝑅ad,𝑅fee,𝑅cxrand𝑅ex
+by 3.09%, 2.05%, 0.83% and 1.58% separately. ii) Cross DQN out-
+performs the fixed slots strategy. A reasonable explanation is that
+the ads positions calculated by Cross DQN are more personalized,
+which leads to an increase in revenue as well as an improvement of
+user experience. iii) Cross DQN outperforms GEA, which indicates
+that an RL-based method may perform better than a rule-based
+method. iv) Cross DQN also performs better than CTLRL possible
+due to the fact that the PAE of different requests of Cross DQN
+within the same hour are more personalized. v) Compared with the
+state-of-the-art RL-based methods, i.e., HRL-Rec and DEAR, the
+superior performance of Cross DQN justifies the explicit modeling
+of the arrangement signal.5.2.3 Ablation Study. To verify the impact of different designs
+(SACU, MCAU, batch-level constraint), we study three ablated vari-
+ants of Cross DQN which have different components in SDM.
+•Cross DQN (-aux) does not use the auxiliary loss of Cross
+DQN. Notice that without the help of the auxiliary loss, we
+can adjust the coefficients in the reward function to realize
+the same PAE as the PAE of other baselines.
+•Cross DQN (-aux-mcau) additionally blocks the MCAU and
+uses one self-attention unit instead on top of the previous
+ablated version.
+•Cross DQN (-aux-mcau-sacu) concatenate the embeddings
+of the action and the state directly without SACU.
+The results shown in Table 2 reveal the following findings: i)
+The performance gap between Cross DQN (-aux-mcau-sacu) and
+Cross DQN (-aux-mcau) indicates the effectiveness of SACU. By
+explicitly crossing the embeddings of the states and the actions,
+SACU can effectively generate cross matrix representation for sub-
+sequent extraction of arrangement signal, therefore improving the
+overall metrics. ii) The MCAU is an additional process after the
+crossover to strengthen the mutual interaction. The performance
+
+==== Page 8 ====
+of Cross DQN (-aux) is superior to Cross DQN (-aux-mcau), which
+verifies the effectiveness of extracting arrangement signal of dif-
+ferent channel combinations. iii) Cross DQN outperforms Cross
+DQN (-aux), resulting from the fact that the batch-level constraint
+brings a certain revenue increase and makes the PAE in a period
+more stable.
+5.2.4 Hyperparameter Analysis. We analyze the sensitivity of these
+three hyperparameters: 𝜂,𝛼and𝛽.𝜂is the weight for the user
+experience in the reward function (cf. Eq. (2)). 𝛽is the temperature
+parameter that controls the degree of the approximation in Eq. (19).
+𝛼is the hyperparameter which balances the main loss and auxiliary
+loss (cf. Eq (20)).
+Hyperparameter 𝜂.The experimental results of different values
+of𝜂are presented in Figure 6a. As 𝜂increases,𝑅exincreases but 𝑅ad
+decreases. A reasonable explanation is that the system of dynamic
+ads allocation tends to insert fewer ads when 𝜂becomes larger,
+which has a beneficial impact on user experience and fee.
+Hyperparameter 𝛼.As shown in Figure 6b, we find that the
+auxiliary loss for batch-level constraint has greater influence on re-
+turn. When 𝛼increases, the standard deviation of reward decreases.
+This phenomenon shows that the PAE and revenue are more stable
+under batch-level constraint. It is worth noticing that the mean of
+reward increases when 𝛼changes from 0 to 1. One possible explana-
+tion is that the ads allocation under a certain batch-level constraint
+of PAE will be more reasonable, which ensures the quality of display
+results and improves the revenue and user experience. However, if
+𝛼is too large, it will deviate from the learning goal, resulting in a
+decline in reward.
+Hyperparameter 𝛽.The right curve in Figure 6 reveals that
+the mean of reward increases and the standard deviation of reward
+decreases as 𝛽increases within a certain range. This phenomenon
+demonstrates that accurate calculation of PAE results in stable and
+high reward. On the contrary, the reward may decrease when 𝛽
+exceeds a certain threshold, suggesting the necessity to carefully
+tune this parameter in practice.
+5.3 Online Results
+We compare Cross DQN with fixed ads positions and both strategies
+are deployed on the Meituan platform through online A/B test. We
+keep total PAE the same for all methods for a fair comparison. As a
+result, we find that 𝑅ad,𝑅feeand𝑅exincrease by 12.9%, 10.2% and
+9.1%, which demonstrates that our Cross DQN not only significantly
+increases the platform revenue, but also improves user experience.
+It is worth noting that this increase values are 11.5%, 10.7% and
+10.0% in offline experiments. One possible reason for this difference
+in absolute value is the differences in data distribution.
+6 CONCLUSION AND FUTURE WORK
+In this paper, we propose Cross DQN to optimize ads allocation in
+feed. In Cross DQN, we design State and Action Cross Unit and
+Multi-Channel Attention Unit to explicitly extract the arrangement
+signal that is the influence of the arrangement of items in mixed list
+on user behaviors. In addition, we introduce an auxiliary loss for
+batch-level constraint to achieve the personalization for different
+requests as well as the platform-level constraint. Practically, bothoffline experiments and online A/B test have demonstrated the
+superior performance and efficiency of our solution.
+In our scenario, user experience is also an important objective for
+the long-term growth of the platform since the improvement of user
+experience directly increases the retention rate and enhances the
+reputation of the platform. In the future, it is beneficial to optimize
+for more user experience metrics and pay more attention to the
+modeling of long-term benefits. In addition, it is worth noting that
+our method follows the offline reinforcement learning paradigm.
+Compared with online reinforcement learning, offline reinforce-
+ment learning faces additional challenges (such as the distribution
+shift problem). The impact of these challenges to the ads allocation
+problem is also a potential research direction in the future.
+REFERENCES
+[1] Eitan Altman. 1999. Constrained Markov decision processes . Vol. 7. CRC Press.
+[2]Carlos Carrion, Zenan Wang, Harikesh Nair, Xianghong Luo, Yulin Lei, Xiliang
+Lin, Wenlong Chen, Qiyu Hu, Changping Peng, Yongjun Bao, and Weipeng P.
+Yan. 2021. Blending Advertising with Organic Content in E-Commerce: A Virtual
+Bids Optimization Approach. ArXiv abs/2105.13556 (2021).
+[3]Benjamin Edelman, Michael Ostrovsky, and Michael Schwarz. 2007. Internet
+advertising and the generalized second-price auction: Selling billions of dollars
+worth of keywords. American economic review 97, 1 (2007), 242–259.
+[4]Jun Feng, H. Li, Minlie Huang, Shichen Liu, Wenwu Ou, Zhirong Wang, and
+Xiaoyan Zhu. 2018. Learning to Collaborate: Multi-Scenario Ranking via Multi-
+Agent Reinforcement Learning. Proceedings of the 2018 World Wide Web Confer-
+ence (2018).
+[5]Yufei Feng, Yu Gong, Fei Sun, Qingwen Liu, and Wenwu Ou. 2021. Revisit
+Recommender System in the Permutation Prospective. ArXiv abs/2102.12057
+(2021).
+[6]Yufei Feng, Binbin Hu, Yu Gong, Fei Sun, Qingwen Liu, and Wenwu Ou. 2021.
+GRN: Generative Rerank Network for Context-wise Recommendation. ArXiv
+abs/2104.00860 (2021).
+[7]A. Ghose and Sha Yang. 2009. An Empirical Analysis of Search Engine Advertising:
+Sponsored Search in Electronic Markets. Manag. Sci. 55 (2009), 1605–1622.
+[8]Diederik P Kingma and Jimmy Ba. 2014. Adam: A method for stochastic opti-
+mization. arXiv preprint arXiv:1412.6980 (2014).
+[9]Iordanis Koutsopoulos. 2016. Optimal advertisement allocation in online social
+media feeds. In Proceedings of the 8th ACM International Workshop on Hot Topics
+in Planet-scale mObile computing and online Social neTworking . 43–48.
+[10] Xiang Li, Chao Wang, Bin Tong, Jiwei Tan, Xiaoyi Zeng, and Tao Zhuang. 2020.
+Deep Time-Aware Item Evolution Network for Click-Through Rate Prediction. In
+Proceedings of the 29th ACM International Conference on Information & Knowledge
+Management . 785–794.
+[11] Aranyak Mehta. 2013. Online Matching and Ad Allocation. Found. Trends Theor.
+Comput. Sci. 8 (2013), 265–368.
+[12] Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness,
+Marc G Bellemare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg
+Ostrovski, et al .2015. Human-level control through deep reinforcement learning.
+nature 518, 7540 (2015), 529–533.
+[13] Wentao Ouyang, Xiuwu Zhang, Lei Zhao, Jinmei Luo, Yu Zhang, Heng Zou, Zhao-
+jie Liu, and Yanlong Du. 2020. MiNet: Mixed Interest Network for Cross-Domain
+Click-Through Rate Prediction. In Proceedings of the 29th ACM International
+Conference on Information & Knowledge Management . 2669–2676.
+[14] Richard S Sutton, Andrew G Barto, et al .1998. Introduction to reinforcement
+learning . Vol. 135. MIT press Cambridge.
+[15] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. arXiv preprint arXiv:1706.03762 (2017).
+[16] B. Wang, Zhaonan Li, Jie Tang, Kuo Zhang, Songcan Chen, and Liyun Ru. 2011.
+Learning to Advertise: How Many Ads Are Enough?. In PAKDD .
+[17] Weixun Wang, Junqi Jin, Jianye Hao, Chunjie Chen, Chuan Yu, Weinan Zhang,
+Jun Wang, Xiaotian Hao, Yixi Wang, Han Li, et al .2019. Learning Adaptive
+Display Exposure for Real-Time Advertising. In Proceedings of the 28th ACM
+International Conference on Information and Knowledge Management . 2595–2603.
+[18] Ziyu Wang, Tom Schaul, Matteo Hessel, Hado Hasselt, Marc Lanctot, and Nando
+Freitas. 2016. Dueling network architectures for deep reinforcement learning. In
+International conference on machine learning . PMLR, 1995–2003.
+[19] Jianxiong Wei, Anxiang Zeng, Yueqiu Wu, Pengxin Guo, Q. Hua, and Qingpeng
+Cai. 2020. Generator and Critic: A Deep Reinforcement Learning Approach for
+Slate Re-ranking in E-commerce. ArXiv abs/2005.12206 (2020).
+
+==== Page 9 ====
+[20] Ruobing Xie, Shaoliang Zhang, Rui Wang, Feng Xia, and Leyu Lin. 2021. Hierar-
+chical Reinforcement Learning for Integrated Recommendation. In Proceedings
+of AAAI .
+[21] Jinyun Yan, Zhiyuan Xu, Birjodh Tiwana, and Shaunak Chatterjee. 2020. Ads
+Allocation in Feed via Constrained Optimization. In Proceedings of the 26th ACM
+SIGKDD International Conference on Knowledge Discovery & Data Mining . 3386–
+3394.
+[22] Weiru Zhang, Chao Wei, Xiaonan Meng, Yi Hu, and Hao Wang. 2018. The whole-
+page optimization via dynamic ad allocation. In Companion Proceedings of the
+The Web Conference . 1407–1411.
+[23] Mengchen Zhao, Z. Li, Bo An, Haifeng Lu, Yifan Yang, and Chen Chu. 2018. Im-
+pression Allocation for Combating Fraud in E-commerce Via Deep Reinforcement
+Learning with Action Norm Penalty. In IJCAI .[24] Xiangyu Zhao, Changsheng Gu, Haoshenglun Zhang, Xiwang Yang, Xiaobing
+Liu, Hui Liu, and Jiliang Tang. 2021. DEAR: Deep Reinforcement Learning for
+Online Advertising Impression in Recommender Systems. In Proceedings of the
+AAAI Conference on Artificial Intelligence , Vol. 35. 750–758.
+[25] Xiangyu Zhao, Xudong Zheng, Xiwang Yang, Xiaobing Liu, and Jiliang Tang.
+2020. Jointly learning to recommend and advertise. In Proceedings of the 26th
+ACM SIGKDD International Conference on Knowledge Discovery & Data Mining .
+3319–3327.
+[26] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD International Conference
+on Knowledge Discovery & Data Mining . 1059–1068.
+,
+

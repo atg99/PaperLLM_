@@ -1,0 +1,776 @@
+==== Page 1 ====
+Pretraining Representations for Data-Efﬁcient
+Reinforcement Learning
+Max Schwarzer 1;2, Nitarshan Rajkumar1;2, Michael Noukhovitch1;2, Ankesh Anand1;2
+Laurent Charlin1;3;5, Devon Hjelm1;4, Philip Bachman4, Aaron Courville1;2;5
+1Mila,2Université de Montréal,3HEC Montréal,4Microsoft Research,5CIFAR
+Abstract
+Data efﬁciency is a key challenge for deep reinforcement learning. We address this
+problem by using unlabeled data to pretrain an encoder which is then ﬁnetuned on
+a small amount of task-speciﬁc data. To encourage learning representations which
+capture diverse aspects of the underlying MDP, we employ a combination of latent
+dynamics modelling and unsupervised goal-conditioned RL. When limited to 100k
+steps of interaction on Atari games (equivalent to two hours of human experience),
+our approach signiﬁcantly surpasses prior work combining ofﬂine representation
+pretraining with task-speciﬁc ﬁnetuning, and compares favourably with other
+pretraining methods that require orders of magnitude more data. Our approach
+shows particular promise when combined with larger models as well as more
+diverse, task-aligned observational data – approaching human-level performance
+and data-efﬁciency on Atari in our best setting. We provide code associated with
+this work at https://github.com/mila-iqia/SGI .
+1 Introduction
+Deep reinforcement learning (RL) methods often focus on training networks tabula rasa from random
+initializations without using any prior knowledge about the environment. In contrast, humans rely
+a great deal on visual and dynamics priors about the world to perform decision making efﬁciently
+(Dubey et al., 2018; Lake et al., 2017). Thus, it is not surprising that RL algorithms which learn
+tabula rasa suffer from severe overﬁtting (Zhang et al., 2018) and poor sample efﬁciency compared
+to humans (Tsividis et al., 2017).
+Self-supervised learning (SSL) provides a promising approach to learning useful priors from past
+data or experiences. SSL methods leverage unlabelled data to learn strong representations, which
+can be used to bootstrap learning on downstream tasks. Pretraining with self-supervised learning has
+been shown to be quite successful in vision (Hénaff et al., 2019; Grill et al., 2020; Chen et al., 2020a)
+and language (Devlin et al., 2019; Brown et al., 2020) settings.
+Pretraining can also be used in an RL context to learn priors over representations or dynamics. One
+approach to pretraining for RL is to train agents to explore their environment in an unsupervised
+fashion, forcing them to learn useful skills and representations (Hansen et al., 2020; Liu & Abbeel,
+2021; Campos et al., 2021). Unfortunately, current unsupervised exploration methods require months
+or years of real-time experience, which may be impractical for real-world systems with limits and
+costs to interaction — agents cannot be run faster than real-time, may require signiﬁcant human
+oversight for safety, and can be expensive to run in parallel. It is thus important to develop pretraining
+methods that work with practical quantities of data, and ideally that can be applied ofﬂine to ﬁxed
+datasets collected from prior experiments or expert demonstrations (as in Stooke et al., 2021).
+{max.schwarzer, nitarshan}@mila.quebec
+35th Conference on Neural Information Processing Systems (NeurIPS 2021).
+
+==== Page 2 ====
+Unsupervised Pre-Training
+Task-Specific RL
+   
+    online
+   encoder
+    target
+   encoderexponential
+moving avg.conv. transition
+       model        Cosine 
+Similarity Loss
+     target
+  projection   prediction     online
+  projection   
+Inverse Model
+       Loss
+     target
+  projection   prediction     online
+  projection   sampled goal
+compute distance
+       to goal
+compute distance
+       to goal
+Q-Learning Loss q-learning
+    headShared Feature Extractor1. Self-Predictive Representations 
+2. Inverse Modelling 3. Goal-conditioned RL
+Q-Learning Loss 
+SPR Loss+ aug.
++ aug.Figure 1: A schematic diagram showing our two stage pretrain-then-ﬁnetune method. All unsuper-
+vised training losses and task-speciﬁc RL use the shared torso on the left.
+To this end, we propose to use a combination of self-supervised objectives for representation learning
+on ofﬂine data, requiring orders of magnitude less pretraining data than existing methods, while
+approaching human-level data-efﬁciency when ﬁnetuned on downstream tasks. We summarize our
+work below:
+RL-aligned representation learning objectives: We propose to pretrain representations using a
+combination of latent dynamics modeling, unsupervised goal-conditioned reinforcement learning,
+and inverse dynamics modeling – with the intuition that a collection of such objectives can capture
+more information about the dynamical and temporal aspects of the environment of interest than any
+single objective. We refer to our method as SGI (SPR,Goal-conditioned RL and Inverse modeling).
+Signiﬁcant advances for data-efﬁciency on Atari: SGI’s combination of objectives performs
+better than any in isolation and signiﬁcantly improves performance over previous representation
+pretraining baselines such as ATC (Stooke et al., 2021). Our results are competitive with exploration-
+based approaches such as APT or VISR (Liu & Abbeel, 2021; Hansen et al., 2020), which require two
+to three orders of magnitude more pretraining data and the ability to interact with the environment
+during training, while SGI can learn with a small ofﬂine dataset of exploration data.
+Scaling with data quality and model size: SGI’s performance also scales with data quality and
+quantity, increasing as data comes from better-performing or more-exploratory policies. Additionally,
+we ﬁnd that SGI’s performance scales robustly with model size; while larger models are unstable
+or bring limited beneﬁts in standard RL, SGI pretraining allows their ﬁnetuning performance to
+signiﬁcantly exceed that of smaller networks.
+We assume familiarity with RL in the following sections (with a brief overview in Appendix A).
+2 Representation Learning Objectives
+A wide range of SSL objectives have been proposed for RL which leverage various aspects of the
+structure available in agent interactions. For example, the temporal dynamics of an environment can
+be exploited to create a forward prediction task (e.g., Gelada et al., 2019; Guo et al., 2018; Stooke
+et al., 2021; Schwarzer et al., 2021) in which an agent is trained to predict its immediate future
+observations, perhaps conditioned on a sequence of actions to perform.
+Structure in RL goes far beyond forward dynamics, however. We propose to combine multiple
+representation learning objectives, covering different agent-centric and temporal aspects of the MDP.
+Based on the intuition that knowledge of an environment is best represented in multiple ways (Hessel
+et al., 2021; Degris & Modayil, 2012), we expect this to outperform monolithic representation
+learning methods such as temporal contrastive learning (e.g., Stooke et al., 2021). In deciding which
+2
+
+==== Page 3 ====
+tasks to use, we consider questions an adequate representation should be able to answer about its
+environment, including:
+• If I take action ain states, what states0am I likely to see next?
+• If I transitioned from state sto states0, what action adid I take?
+• What action awould I take in state sso that I reach another state s0as soon as possible
+Note that none of these questions are tied to task reward, allowing them to be answered in a fully-
+unsupervised fashion. Additionally, these are questions about the environment, and not any speciﬁc
+policy, allowing them to be used in ofﬂine pretraining with arbitrary behavioral policies.
+In general, the ﬁrst question may be answered by forward dynamics modeling, which as mentioned
+above is well-established in RL. The second question corresponds to inverse dynamics modeling,
+which has also been commonly used in the past (Lesort et al., 2018). The third question corresponds to
+self-supervised goal-conditioned reinforcement learning which has the advantage of being structurally
+similar to the downstream target task, as both require learning to control the environment.
+To facilitate their joint use, we formulate these objectives so that they operate in the latent representa-
+tion space provided by a shared encoder. We provide an overview of these components in Figure 1
+and describe them in greater detail below; we also provide detailed pseudocode in Appendix D.
+2.1 Self-Predictive Representations
+SPR (Schwarzer et al., 2021) is a representation learning algorithm developed for data-efﬁcient
+reinforcement learning. SPR learns a latent-space transition model, directly predicting representations
+of future states without reconstruction or negative samples. As in its base algorithm, Rainbow (Hessel
+et al., 2018), SPR learns a convolutional encoder, denoted as fo, which produces representations of
+states aszt=fo(st). SPR then uses a dynamics model hto recursively estimate the representations
+of future states, as ^zt+k+1=h(^zt+k;at+k), beginning from ^zt,zt. These representations are
+projected to a lower-dimensional space by a projection function poto produce ^yt+k,po(^zt+k).
+Simultaneously, SPR uses a target encoder fmto produce target representations ~zt+k,fm(st+k),
+which are further projected by a target projection function pmto produce ~yt+k,pm(~zt+k). SPR
+then maximizes the cosine similarity between these predictions and targets, using a learned linear
+prediction function qto translate from ^yto~y:
+LSPR
+(st:t+K;at:t+K) = KX
+k=1q(^yt+k)~yt+k
+jjq(^yt+k)jj2jj~yt+kjj2: (1)
+The parameters of these target modules mare deﬁned as an exponential moving average of the
+parametersooffoandpo:m=m+ (1 )o.
+2.2 Goal-Conditioned Reinforcement Learning
+Inspired by works such as Dabney et al. (2021) that show that modeling many different value functions
+is a useful representation learning objective, we propose to augment SPR with an unsupervised goal-
+conditioned reinforcement learning objective. We deﬁne goals gto be normalized vectors of the same
+size as the output of the agent’s convolutional encoder (3,136- or 4,704-dimensional vectors, for the
+architectures we consider). We use these goals to annotate transitions with synthetic rewards, and
+train a modiﬁed version of Rainbow (Hessel et al., 2018) to estimate Q(st;a;g), the expected return
+from taking action ain statestto reach goal gif optimal actions are taken in subsequent states.
+We select goals using a scheme inspired by hindsight experience replay (Andrychowicz et al., 2017),
+seeking to generate goal vectors that are both semantically meaningful and highly diverse. As in
+hindsight experience replay, we begin by sampling a state from another trajectory or the future of the
+current trajectory. However, we take the additional step of applying stochastic noise to encourage
+goals to lie somewhat off of the current representation manifold. We provide details in Appendix C.2.
+2.3 Inverse Dynamics Modeling
+We propose to use an inverse dynamics modeling task (Lesort et al., 2018), in which the model is
+trained to predict atfromstandst+1. Because this is a classiﬁcation task (in discrete control) or
+3
+
+==== Page 4 ====
+regression task (continuous control), it is naturally not prone to representational collapse, which may
+complement and stabilize our other objectives. We directly integrate inverse modeling into the rollout
+structure of SPR, modeling p(at+kj^yt+k;~yt+k+1)for eachk2(0;:::;K 1), using a two-layer
+MLP trained by cross-entropy.
+3 Related Work
+Data-Efﬁciency In order to address data efﬁciency in RL, Kaiser et al. (2019) introduced the
+Atari 100k benchmark, in which agents are limited to 100,000 steps of environment interaction, and
+proposed SimPLe, a model-based algorithm that substantially outperformed previous model-free
+methods. However, van Hasselt et al. (2019) and Kielak (2020) found that simply modifying the
+hyperparameters of existing model-free algorithms allowed them to exceed SimPLe’s performance.
+Later, DrQ (Kostrikov et al., 2021) found that adding mild image augmentation to model-free methods
+dramatically enhanced their sample efﬁciency, while SPR (Schwarzer et al., 2021) combined data
+augmentation with an auxiliary self-supervised learning objective. SGI employs SPR as one of its
+objectives in ofﬂine pretraining, leading to signiﬁcant improvements in data-efﬁciency.
+Exploratory pretraining A number of recent works have sought to improve reinforcement learning
+via the addition of an unsupervised pretraining stage prior to ﬁnetuning on the target task. One
+common approach has been to allow the agent a period of fully-unsupervised interaction with the
+environment, during which the agent is trained to maximize a surrogate exploration-based task such
+as the diversity of the states it encounters, as in APT (Liu & Abbeel, 2021) or ProtoRL (Yarats
+et al., 2021), or to learn a set of skills associated with different paths through the environment, as
+in DIAYN (Eysenbach et al., 2018), VISR (Hansen et al., 2020), and DADS (Sharma et al., 2019).
+Others have proposed to use self-supervised objectives to generate intrinsic rewards encouraging
+agents to visit new states; e.g. Pathak et al. (2017) and Burda et al. (2018) use the loss of an inverse
+dynamics model like that used in SGI, while Sekar et al. (2020) uses the disagreement between an
+ensemble of latent-space dynamics models. Finally, Campos et al. (2021) report strong results based
+on massive-scale unsupervised pretraining.
+Many of these methods are used to pretrain agents that are later adapted to speciﬁc reinforcement
+learning tasks. However, SGI differs in that it can be used ofﬂine and is agnostic to how data is
+collected. As such, if no pre-existing ofﬂine data is available, one of the methods above can be used
+to generate a dataset for SGI; we use Burda et al. (2018) for this in Section 4.2.
+Visual Representation Learning Computer vision has seen a series of dramatic advances in self-
+supervised representation learning, including contrastive methods (Oord et al., 2018; Hjelm et al.,
+2019; Bachman et al., 2019; He et al., 2020; Chen et al., 2020a) as well as purely predictive ones (Grill
+et al., 2020). Variants of these approaches have also been shown to improve performance when
+coupled with a small quantity of labeled data, in a semi-supervised setting (Chen et al., 2020b; Hénaff
+et al., 2019), and several self-supervised methods have been designed speciﬁcally for this case (for
+example, Sohn et al., 2020; Tarvainen & Valpola, 2017).
+These advances have spurred similar growth in methods aimed speciﬁcally at improving performance
+in RL. We refer the reader to Lesort et al. (2018) for a review of earlier methods, including inverse
+dynamics modeling which is used in SGI. Recent research has focused on leveraging latent-space
+dynamics modeling as an auxiliary task. Gelada et al. (2019) propose a simple next-step prediction
+task, coupled with reward prediction, but found it is prone to latent space collapse and requires an
+auxiliary reconstruction loss for experiments on Atari. Guo et al. (2020) use a pair of networks for
+both forward and backward prediction, and show improved performance in extremely large-data
+multi-task settings. Mazoure et al. (2020) use a temporal contrastive objective for representation
+learning, and show improvement in continual RL settings. Concurrently, SPR (Schwarzer et al., 2021)
+proposed a multi-step latent prediction task with similarities to BYOL (Grill et al., 2020).
+Two works similar to ours, Anand et al. (2019) and Stooke et al. (2021), propose reward-free temporal-
+contrastive methods to pretrain representations. Anand et al. (2019) show that representations from
+encoders trained with ST-DIM contain a great deal of information about environment states, but
+they do not examine whether or not representations learned via their method are, in fact, useful for
+reinforcement learning. However, Stooke et al. (2021) employ a similar algorithm and ﬁnd only
+relatively minor improvements in performance compared to standard baselines in the large-data
+4
+
+==== Page 5 ====
+regime; our controlled comparisons show that SGI’s representations are far better for data-efﬁciency.
+Concurrent to our work, FERM (Zhan et al., 2020) propose contrastive pretraining from human
+demonstrations in a robotics setting. As FERM is quite similar to ATC, we are optimistic that our
+improvements over ATC in Atari 100k would translate to FERM’s setting. Finally, Yang & Nachum
+(2021) propose a family of algorithms for learning representations for DRL from state observations;
+we believe that these might be promising in DRL from pixels, but they have not yet been adapted to
+that setting.
+4 Experimental Details
+In our experiments, We seek to address two main challenges for the deployment of RL agents in the
+real world (Dulac-Arnold et al., 2020): (1) training the RL agent with a limited budget of interactions
+in the real environment, and (2) leveraging existing interaction data of arbitrary quality .
+4.1 Environment and Evaluation
+To address the ﬁrst challenge, we focus our experimentation on the Atari 100k benchmark introduced
+by Kaiser et al. (2019), in which agents are allowed only 100k steps of interaction with their
+environment.2This is roughly equivalent to the two hours human testers were given to learn these
+games by Mnih et al. (2015), providing a baseline of human sample-efﬁciency.
+Atari is also an ideal setting due to its complex observational spaces and diverse tasks, with 26
+different games included in the Atari 100k benchmark. These factors have led to Atari’s extensive
+use for representation learning and exploratory pretraining (Anand et al., 2019; Stooke et al., 2021;
+Campos et al., 2021), and speciﬁcally Atari 100k for data-efﬁcient RL (e.g., Kaiser et al., 2019;
+Kostrikov et al., 2021; Schwarzer et al., 2021), including ﬁnetuning after exploratory pretraining (e.g.,
+Hansen et al., 2020; Liu & Abbeel, 2021), providing strong baselines to compare to.
+Our evaluation metric for an agent on a game is human-normalized score (HNS), deﬁned as
+agent _score random _score
+human _score random _score. We calculate this per game by averaging scores over 100 evaluation
+trajectories at the end of training, and across 10 random seeds for training. We report both mean (Mn)
+and median (Mdn) HNS over the 26 Atari-100K games, as well as on how many games a method
+achieves super-human performance ( >H) and greater than random performance ( >0). Following
+the guidelines of Agarwal et al. (2021) we also report interquartile mean HNS (IQM) and quantify
+uncertainty via bootstrapping in Appendix B.
+4.2 Pretraining Data
+The second challenge pertains to pretraining data. Although some prior work on ofﬂine represen-
+tational pretraining has focused on expert-quality data (Stooke et al., 2021), we expect real-world
+pretraining data to be of greatly varying quality. We thus construct four different pretraining datasets
+to approximate different data quality scenarios.
+•(R)andom To assess performance near the lower limit of data quality, we use a random policy
+to gather a dataset of 6M transitions for each game. To encourage the agent to venture further
+from the starting state, we execute each action for a random number of steps sampled from a
+Geometric (1
+3)distribution.
+•(E)xploratory To emulate slightly better data that covers a larger range of the state space, we
+use an exploratory policy. Speciﬁcally, we employ the IDF (inverse dynamics) variant of the
+algorithm proposed by Burda et al. (2018). We log the ﬁrst 6M steps from an agent trained in each
+game. This algorithm achieves better-than-random performance on only 70% of tasks, setting it
+far below the performance of more modern unsupervised exploration methods.
+To create higher-quality datasets, we follow Stooke et al. (2021) and use experience gathered during
+the training of standard DQN agents (Mnih et al., 2015). We opt to use the publicly-available DQN
+Replay dataset (Agarwal et al., 2020), which contains data from training for 50M steps (across all
+57 games, with ﬁve different random seeds). Although we might prefer to use data from recent
+2Note that sticky actions are disabled under this benchmark.
+5
+
+==== Page 6 ====
+unsupervised exploration methods such as APT (Liu & Abbeel, 2021), VISR (Hansen et al., 2020),
+or CPT (Campos et al., 2021), none of these works provide code or datasets, making this impractical.
+We address using data collected from on-task agents with a behavioural cloning baseline in Section 5,
+with surprising ﬁndings relative to prior work.
+•(W)eak We ﬁrst generate a weak dataset by selecting the ﬁrst 1M steps for each of the 5 available
+runs in the DQN Replay dataset. This data is generated with an -greedy policy with high,
+gradually decaying , leading to substantial action diversity and many suboptimal exploratory
+actions. Although the behavioral policies used to generate this agent are not especially competent
+(see Table 1), they have above-random performance on almost all games, suggesting that that this
+dataset includes more task-relevant transitions.
+•(M)ixed Finally, for a realistic best-case scenario, we create a dataset of both medium and low-
+quality data. To simulate a real-world collection of data from different policies, we concatenate
+multiple checkpoints evenly spread throughout training of a DQN. We believe this is also a
+reasonable approximation for data from a modern unsupervised exploration method such as CPT
+(Campos et al., 2021); as shown in Table 1, the agent for this dataset has performance in between
+CPT and VISR, with median closer to CPT and mean closer to VISR. This data is also lower
+quality than the expert data originally used in the method most similar to ours, ATC (Stooke et al.,
+2021).3We create a dataset of 3M steps and a larger dataset of 6M steps; all Mexperiments use
+the 3M step dataset unless otherwise noted.
+Table 1: Performance of agents used in pretraining data
+collection compared to external baselines on 26 Atari
+games (Kaiser et al., 2019)
+Method Mdn Mean >H>0 Data
+Exploratory Pretraining Baselines
+VISR@0 0.056 0.817 5 19 250M
+APT@010.038 0.476 2 18 250M
+CPT@0 0.809 4.945 12 25 4B
+Ofﬂine Datasets
+Exploratory 0.039 0.042 0 18 6M
+Weak20.028 0.056 0 23 5M
+Mixed20.618 1.266 10 26 3M
+1Calculated from ICLR 2021 OpenReview submis-
+sion; unreported in arXiv version.
+2Upper-bound estimate from averaging evaluation
+performance of corresponding agents in Dopamine.We compare the agents used for our
+datasets to those for unsupervised explo-
+ration pretraining baselines in Table 1.
+We estimate the performance of the Weak
+and Mixed agents as the average of the
+corresponding logged evaluations in the
+Dopamine (Castro et al., 2018) baselines.
+Even our largest dataset is quite small
+compared to the amounts of data gath-
+ered by unsupervised exploration methods
+(see the “Data” column in Table 1); this
+is intentional, as we believe that unsuper-
+vised interactional data may be expensive
+in real world applications. We show the
+performance of the non-random data col-
+lection policies in Table 2 (note that a fully-
+random policy has a score of 0by deﬁni-
+tion).
+4.3 Training Details
+We optimize our three representation learning objectives jointly during unsupervised pretraining,
+summing their losses. During ﬁnetuning, we optimize only the reinforcement learning and forward
+dynamics losses, following Schwarzer et al. (2021) (see Section 5.5), and lower the learning rates for
+the pretrained encoder and dynamics model by two orders of magnitude (see Section 5.4).
+We consider the standard three-layer convolutional encoder introduced by Mnih et al. (2015), a
+ResNet inspired by Espeholt et al. (2018), as well as an enlarged ResNet of the same design. In other
+respects, our implementation matches that of SPR and is based on its publicly-released code. Full
+implementation and hyperparameter details are provided in Appendix C. We refer to agents by the
+model architecture and pretraining dataset type used: SGI-R is pretrained on Random, SGI-E on
+Exploratory, SGI-W on Weak, and SGI-M on Mixed. To investigate scaling, we vary the size of the
+encoder used in SGI-M : the standard Mnih et al. (2015) encoder is SGI-M/S (for small), our standard
+ResNet is simply SGI-M and using a larger ResNet is SGI-M/L (for large)4. For SGI-M/L we also
+use the 6M step dataset described earlier. All ablations are conducted in comparison to SGI-M unless
+3Our data-collection agents are weaker than those used by ATC on seven of the eight games they consider.
+4See Appendix C for details on these networks
+6
+
+==== Page 7 ====
+otherwise noted. Finally, agents without pretraining are denoted SGI-None ; SGI-None/S would be
+roughly equivalent to SPR (Schwarzer et al., 2021).
+For baselines, we compare to no-pretraining Atari 100k methods (Kaiser et al., 2019; van Hasselt
+et al., 2019; Kostrikov et al., 2021; Schwarzer et al., 2021). For our models trained on Random and
+Exploratory data we compare against previous pretraining-via-exploration approaches applied to
+Atari 100k (Liu & Abbeel, 2021; Hansen et al., 2020; Campos et al., 2021). In the higher quality data
+regime, we compare to recent work on data-agnostic unsupervised pretraining, ATC (Stooke et al.,
+2021), as well as behavioural cloning (BC).
+5 Results and DiscussionTable 2: HNS on Atari100k for SGI and baselines.
+Method Mdn Mn >H>0 Data
+No Pretraining (Finetuning Only)
+SimPLe 0.144 0.443 2 26 0
+DER 0.161 0.285 2 26 0
+DrQ 0.268 0.357 2 24 0
+SPR 0.415 0.704 7 26 0
+SGI-None 0.343 0.565 3 26 0
+Exploratory Pretraining + Finetuning
+Method Mdn Mn >H>0 Data
+VISR 0.095 1.281 7 21 250M
+APT 0.475 0.66617 26 250M
+CPT@020.809 4.945 12 25 4000M
+ATC-R30.191 0.472 4 26 6M
+ATC-E30.237 0.462 3 26 6M
+SGI-R 0.326 0.888 5 26 6M
+SGI-E 0.456 0.838 6 26 6M
+Ofﬂine-data Pretraining + Finetuning
+Method Mdn Mn >H>0 Data
+ATC-W30.219 0.587 4 26 3M
+ATC-M30.204 0.780 5 26 3M
+BC-M@0 0.139 0.227 0 23 3M
+BC-M 0.548 0.858 8 26 3M
+SGI-W 0.589 1.144 8 26 5M
+SGI-M/S 0.423 0.914 8 26 3M
+SGI-M 0.679 1.149 9 26 3M
+SGI-M/L 0.753 1.598 9 26 6M
+1APT claims 0.6955, but we calculate 0.666 from
+their reported per-game scores.
+2CPT@0 does not do any ﬁnetuning.
+3Our implementation (see Appendix C.6)We ﬁnd that SGI performs competitively on the
+Atari-100K benchmark; presenting aggregate
+results in Table 2, and full per-game data in Ap-
+pendix E. Our best setting, SGI-M/L , achieves
+a median HNS of 0.753, approaching human-
+level sample-efﬁciency and outperforming all
+comparable methods except the recently pro-
+posed CPT (Campos et al., 2021). With less data
+and a smaller model, SGI-M achieves a median
+HNS of 0.679, signiﬁcantly outperforming the
+prior method ATC on the same data ( ATC-M ).
+Meanwhile, SGI-E achieves a median HNS of
+0.456, matching or exceeding other exploratory
+methods such as APT (Liu & Abbeel, 2021) and
+VISR (Hansen et al., 2020), as well as ATC-E.
+Pretraining data efﬁciency SGI achieves
+strong performance with only limited pretrain-
+ing data; our largest dataset contains 6M transi-
+tions, or roughly 4.5 days of experience. This
+compares favourably to recent works on unsu-
+pervised exploration such as APT or CPT, which
+require far larger amounts of data and environ-
+ment interaction (250M steps or 193 days for
+APT, 4B steps or 8.45 years for CPT). We expect
+SGI would perform even better if used in these
+large-data settingss, as we ﬁnd that it scales ro-
+bustly with data (see Section 5.2).
+1.5
+ 1.0
+ 0.5
+ 0.0 0.5 1.0 1.5
+Data Score (Whitened)2.0
+1.5
+1.0
+0.5
+0.00.51.01.52.0Fine-tuning score (Whitened)SGI Trend
+Random
+Exploratory
+Weak
+Mixed
+Figure 2: SGI ﬁnetuning performance vs. pretrain-
+ing data score for all combinations of game and
+dataset. Data score is estimated as clipped return
+per episode, trend calculated via kernel regression.
+Values whitened per-game for clarity.Behavioural cloning is a strong baseline Al-
+though ATC pretrains with expert data, they did
+not investigate behavioral cloning as a base-
+line pretraining objective. We do so on our
+Mixed dataset, the only one to be generated by
+policies with signiﬁcantly above-random perfor-
+mance. Behavioral cloning without ﬁnetuning
+(BC-M@0 ) performs poorly, perhaps due to the
+varying behavioural quality in the dataset. But
+when ﬁnetuned, BC-M yields very respectable
+performance, surpassing ATC-M but not SGI-
+M. All ﬁne-tuning settings for BC-M match SGI-
+M.
+5.1 Data quality matters
+In principle, SGI can be used with any ofﬂine
+dataset but we demonstrate that it scales with
+7
+
+==== Page 8 ====
+0 3 6
+Pretraining Data (M steps)0.10.20.30.40.50.60.70.8IQM HNSLarge ResNet
+Medium ResNet
+Mnih et al (2015) CNNFigure 3: Finetuning performance of SGI for
+different CNN sizes and amounts of pretrained
+data from the Mixed dataset. We plot IQM HNS
+with conﬁdence intervals (see Appendix B).
+0 25000 50000 75000 100000 125000 150000 175000 200000
+Training step0.00.20.40.60.81.0Average cosine similarityS
+G
+I
+S+G
+S+I
+G+I
+SGI
+ATCFigure 4: Average cosine similarity between rep-
+resentations over pretraining, averaged across the
+26 Atari 100k games. 1 indicates representations
+are identical, 0 perfect dissimilarity.
+the quality of its data. Near the lower bound of
+data quality where all actions are selected randomly, SGI-R still provides some beneﬁt over an
+otherwise-identical randomly-initialized agent ( SGI-None ) on 16 out of 26 games, with a similar
+median but 57% higher mean HNS. With better data from an exploratory policy, SGI-E improves on
+16/26 games, gets 33% higher median HNS, and surpasses APT (Liu & Abbeel, 2021) which used 40
+times more pretraining data. With similarly weak data but possibly more task-speciﬁc transitions,
+SGI-W gets 72% higher median HNS compared to SGI-None and with realistic data from a mixture
+of policies, SGI-M improves to 98%.
+Importantly, the pattern we observe is very different from what would be expected for imitation
+learning. In particular, SGI-W’s strong performance shows that expert data is not required. To
+characterize this, we plot the average clipped reward5experienced per episode for each of our
+pretraining datasets in Figure 2. Normalizing across tasks, we ﬁnd a strong positive correlation
+between task reward engagement ( p < 0:0001 ) and ﬁnetuning performance. Moreover, we ﬁnd
+diminishing returns to further task engagement.
+5.2 Pretraining unlocks the value of larger networks
+The three-layer network introduced by Mnih et al. (2015) has become a ﬁxture of deep reinforcement
+learning, and has been employed by previous works examining pretraining in this ﬁeld (e.g. Liu
+& Abbeel, 2021; Stooke et al., 2021). However, we ﬁnd that representational pretraining with this
+network ( SGI-M/S ) provides only minor beneﬁts compared to training from scratch. In contrast,
+larger networks struggle without pretraining but shine when pretrained as shown in Figure 3.
+This ﬁnding is consistent with recent work in unsupervised representation learning for classiﬁ-
+cation, which has observed that unsupervised pretraining beneﬁts disproportionately from larger
+networks (Chen et al., 2020a). In particular, our results suggest that model size should increase in par-
+allel with amount of pretraining data, matching recent work on scaling in language modeling (Kaplan
+et al., 2020; Hernandez et al., 2021). SGI thus provides a simple way to use unlabeled data to extend
+the beneﬁts of large networks, already well-known in the large-data regime (e.g., Schrittwieser et al.,
+2021; Espeholt et al., 2018), to data-efﬁcient RL.
+5.3 Combining SGI’s objectives improves performance
+We test all possible combinations of our three SSL objectives, denoted by combinations of the letters
+S, G and I to indicate which objectives they employ. Results in Table 3 show that performance
+monotonically increases as more objectives are used, with inverse dynamics modeling combined with
+either of the other objectives performing respectably well. This illustrates the importance of using
+multiple objectives to obtain representational coverage of the MDP.
+5Unclipped rewards are not available for the ofﬂine DQN dataset.
+8
+
+==== Page 9 ====
+Table 3: HNS on Atari 100K for pre-
+training ablations of SGI.
+Pretraining Mdn Mean >H
+None 0.343 0.565 3
+S 0.009 -0.054 0
+G 0.060 0.181 1
+I 0.411 0.943 7
+S+G 0.029 0.098 0
+G+I 0.512 1.004 9
+S+I 0.629 0.978 8
+SGI-M 0.679 1.149 9We note that including inverse modeling appears to be
+critical, and hypothesize that this is related to represen-
+tational collapse. To measure this, we plot the average
+cosine similarity between representations ytof differ-
+ent states for several pretraining methods in Figure 4,
+using our ResNet encoder on the Mixed dataset. We
+observe that S,GandS+G all show some degree repre-
+sentational collapse, while conﬁgurations that include
+inverse dynamics modeling avoid representational col-
+lapse, as does ATC, whose contrastive loss implicitly
+optimizes for representational diversity (Wang & Isola,
+2020). Intriguingly, we observe that increased represen-
+tational diversity does not necessarily improve perfor-
+mance. For example, SGI outperforms ATC ,G+I and
+Iin ﬁnetuning but has less diverse pretraining representations. We also observe that adding SPR ( S)
+consistently pulls representations towards collapse (compare S+IandI,S+G andG, and SGI and
+G+I); how this relates to performance is a question for future work.
+5.4 Naively ﬁnetuning ruins pretrained representations
+Table 4: HNS on Atari 100K for ﬁne-
+tuning schemes for SGI.
+Method Mdn Mean >H
+No pretrain 0.343 0.565 3
+Naive 0.429 0.845 8
+Frozen 0.499 0.971 8
+Reduced LRs 0.679 1.149 9We ﬁnd that properly ﬁnetuning pretrained representa-
+tions is critical, as results in Table 4 show. Although
+allowing pretrained weights to change freely during ﬁne-
+tuning is better than initializing from scratch ( Naive vs
+No Pretrain ), freezing the pretrained encoder ( Frozen )
+leads to better performance than either. SGI’s approach
+of reducing ﬁnetuning learning rates for pretrained pa-
+rameters leads to superior performance ( Reduced LRs ,
+equivalent to SGI-M ).
+We thus hypothesize that representations learned by SGI are being disrupted by gradients early
+in ﬁnetuning, in a phenomenon analogous to catastrophic forgetting (Zenke et al., 2017; Hadsell
+et al., 2020). As representations may not generalize between different value functions across
+training (Dabney et al., 2021), allowing the encoder to strongly adapt early in training could make it
+worse at modeling later value functions, compared to the neutral initialization from SGI. We also note
+that there is a long history in computer vision of employing specialized ﬁnetuning hyperparameters (Li
+et al., 2020; Chu et al., 2016) when transferring tasks.
+5.5 Not all SSL objectives are beneﬁcial during ﬁnetuning
+Table 5: HNS on Atari 100K for ﬁnetun-
+ing ablations of SGI.
+Finetune SSL Mdn Mean >H
+Without SGI pretraining
+None 0.161 0.315 2
+S Only 0.343 0.565 3
+With SGI pretraining
+None 0.452 1.114 8
+SGI 0.397 1.011 8
+S Only 0.679 1.149 9Although SGI uses Sduring ﬁnetuning, we experiment
+with a variant that optimizes only the standard DQN
+objective, roughly equivalent to using DrQ (Kostrikov
+et al., 2021) with DQN hyperparameters set to match SGI.
+We ﬁnd that ﬁnetuning with Shas a large impact with or
+without pretraining (compare None andS Only entries in
+Table 5.). Although, SGI without Smanages to achieve
+roughly the same mean human-normalized score as SGI
+with S, removing Sharms performance on performance
+on 19 out of 26 games and reduces median normalized
+score by roughly 33%. We also ﬁnd no beneﬁt to using
+all of SGI’s constituent objectives during ﬁnetuning ( All
+Losses in Table 5) compared to using Salone, although
+the gap between them is not statistically signiﬁcant for
+metrics other than median (see Figure 5d).
+9
+
+==== Page 10 ====
+6 Conclusion
+We present SGI, a fully self-supervised (reward-free) approach to representation learning for re-
+inforcement learning, which uses a combination of pretraining objectives to encourage the agent
+to learn multiple aspects of environment dynamics. We demonstrate that SGI enables signiﬁcant
+improvements on the Atari 100k data-efﬁciency benchmark, especially in comparison to unsupervised
+exploration approaches which require orders of magnitude more pretraining data. Investigating the
+various components of SGI, we ﬁnd that it scales robustly with higher-quality pretraining data and
+larger models, that all three of the self-supervised objectives contribute to the success of this approach,
+and that careful reduction of ﬁne-tuning learning rates is critical to optimal performance.
+7 Acknowledgements
+We would like to thank Mila and Compute Canada for computational resources. We would like to
+thank Rishabh Agarwal for useful discussions. Aaron Courville would like to acknowledge ﬁnancial
+support from Microsoft Research and Hitachi. We would also like to thank Wancong (Kevin) Zhang
+for his helpful comments to the codebase on GitHub.
+References
+Agarwal, R., Schuurmans, D., and Norouzi, M. An optimistic perspective on ofﬂine reinforcement
+learning. In ICML , 2020. 5
+Agarwal, R., Schwarzer, M., Castro, P. S., Courville, A., and Bellemare, M. G. Deep reinforcement
+learning at the edge of the statistical precipice. NeurIPS , 2021. 5, 15, 19
+Anand, A., Racah, E., Ozair, S., Bengio, Y ., Côté, M.-A., and Hjelm, R. D. Unsupervised state
+representation learning in atari. In NeurIPS , 2019. 4, 5
+Andrychowicz, M., Wolski, F., Ray, A., Schneider, J., Fong, R., Welinder, P., McGrew, B., Tobin, J.,
+Abbeel, O. P., and Zaremba, W. Hindsight experience replay. In Advances in neural information
+processing systems , pp. 5048–5058, 2017. 3
+Ba, J. L., Kiros, J. R., and Hinton, G. E. Layer normalization. arXiv preprint arXiv:1607.06450 ,
+2016. 18
+Bachman, P., Hjelm, R. D., and Buchwalter, W. Learning representations by maximizing mutual
+information across views. In NeurIPS , 2019. 4
+Bellemare, M. G., Dabney, W., and Munos, R. A distributional perspective on reinforcement learning.
+ICML , 2017. 15
+Brown, T. B., Mann, B., Ryder, N., Subbiah, M., Kaplan, J., Dhariwal, P., Neelakantan, A.,
+Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. arXiv preprint
+arXiv:2005.14165 , 2020. 1
+Burda, Y ., Edwards, H., Pathak, D., Storkey, A., Darrell, T., and Efros, A. A. Large-scale study of
+curiosity-driven learning, 2018. 4, 5
+Campos, V ., Sprechmann, P., Hansen, S. S., Barreto, A., Blundell, C., Vitvitskyi, A., Kapturowski, S.,
+and Badia, A. P. Coverage as a principle for discovering transferable behavior in reinforcement
+learning, 2021. URL https://openreview.net/forum?id=INhwJdJtxn6 . 1, 4, 5, 6, 7
+Castro, P. S., Moitra, S., Gelada, C., Kumar, S., and Bellemare, M. G. Dopamine: A Research
+Framework for Deep Reinforcement Learning. 2018. URL http://arxiv.org/abs/1812.061
+10. 6
+Chen, T., Kornblith, S., Norouzi, M., and Hinton, G. A simple framework for contrastive learning of
+visual representations. ICML , 2020a. 1, 4, 8
+Chen, T., Kornblith, S., Swersky, K., Norouzi, M., and Hinton, G. Big self-supervised models are
+strong semi-supervised learners. In NeurIPS , 2020b. 4
+10
+
+==== Page 11 ====
+Chu, B., Madhavan, V ., Beijbom, O., Hoffman, J., and Darrell, T. Best Practices for Fine-Tuning
+Visual Classiﬁers to New Domains , pp. 435–442. 11 2016. ISBN 978-3-319-49408-1. doi:
+10.1007/978-3-319-49409-8_34. 9
+Dabney, W., Barreto, A., Rowland, M., Dadashi, R., Quan, J., Bellemare, M. G., and Silver, D. The
+value-improvement path: Towards better representations for reinforcement learning. 2021. 3, 9
+Degris, T. and Modayil, J. Scaling-up knowledge for a cognizant robot. In AAAI Spring Symposium
+on Designing Intelligent Robots: Reintegrating AI. , 2012. 2
+Devlin, J., Chang, M.-W., Lee, K., and Toutanova, K. Bert: Pre-training of deep bidirectional
+transformers for language understanding. In ACL, 2019. 1
+Dubey, R., Agrawal, P., Pathak, D., Grifﬁths, T., and Efros, A. Investigating human priors for playing
+video games. In International Conference on Machine Learning , 2018. 1
+Dulac-Arnold, G., Levine, N., Mankowitz, D. J., Li, J., Paduraru, C., Gowal, S., and Hester, T. An
+empirical investigation of the challenges of real-world reinforcement learning. 2020. 5
+Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V ., Ward, T., Doron, Y ., Firoiu, V .,
+Harley, T., Dunning, I., Legg, S., and Kavukcuoglu, K. IMPALA: scalable distributed deep-
+rl with importance weighted actor-learner architectures. CoRR , abs/1802.01561, 2018. URL
+http://arxiv.org/abs/1802.01561 . 6, 8, 18
+Eysenbach, B., Gupta, A., Ibarz, J., and Levine, S. Diversity is all you need: Learning skills without
+a reward function. In International Conference on Learning Representations , 2018. 4
+Gelada, C., Kumar, S., Buckman, J., Nachum, O., and Bellemare, M. G. Deepmdp: Learning
+continuous latent space models for representation learning. ICML , 2019. 2, 4
+Grill, J.-B., Strub, F., Altché, F., Tallec, C., Richemond, P. H., Buchatskaya, E., Doersch, C., Pires,
+B. A., Guo, Z. D., Azar, M. G., et al. Bootstrap your own latent: A new approach to self-supervised
+learning. In NeurIPS , 2020. 1, 4
+Guo, D., Pires, B. A., Piot, B., Grill, J.-b., Altché, F., Munos, R., and Azar, M. G. Bootstrap
+latent-predictive representations for multitask reinforcement learning. In ICML , 2020. 4
+Guo, Z. D., Azar, M. G., Piot, B., Pires, B. A., and Munos, R. Neural predictive belief representations.
+ICML , 2018. 2
+Hadsell, R., Rao, D., Rusu, A. A., and Pascanu, R. Embracing change: Continual learning in deep
+neural networks. Trends in Cognitive Sciences , 2020. doi: https://doi.org/10.1016/j.tics.2020.09.0
+04. URL http://www.sciencedirect.com/science/article/pii/S1364661320302199 .
+9
+Hansen, S., Dabney, W., Barreto, A., Warde-Farley, D., de Wiele, T. V ., and Mnih, V . Fast task
+inference with variational intrinsic successor features. In ICLR , 2020. 1, 2, 4, 5, 6, 7
+Harris, C. R., Millman, K. J., van der Walt, S. J., Gommers, R., Virtanen, P., Cournapeau, D., Wieser,
+E., Taylor, J., Berg, S., Smith, N. J., Kern, R., Picus, M., Hoyer, S., van Kerkwijk, M. H., Brett,
+M., Haldane, A., del R’ıo, J. F., Wiebe, M., Peterson, P., G’erard-Marchant, P., Sheppard, K.,
+Reddy, T., Weckesser, W., Abbasi, H., Gohlke, C., and Oliphant, T. E. Array programming with
+NumPy. Nature , 585(7825):357–362, September 2020. doi: 10.1038/s41586-020-2649-2. URL
+https://doi.org/10.1038/s41586-020-2649-2 . 15
+He, K., Zhang, X., Ren, S., and Sun, J. Deep residual learning for image recognition. In CVPR , 2016.
+18
+He, K., Fan, H., Wu, Y ., Xie, S., and Girshick, R. Momentum contrast for unsupervised visual
+representation learning. In CVPR , 2020. 4
+Hénaff, O. J., Srinivas, A., De Fauw, J., Razavi, A., Doersch, C., Eslami, S., and Oord, A. v. d. Data-
+efﬁcient image recognition with contrastive predictive coding. arXiv preprint arXiv:1905.09272 ,
+2019. 1, 4
+11
+
+==== Page 12 ====
+Hernandez, D., Kaplan, J., Henighan, T., and McCandlish, S. Scaling laws for transfer, 2021. 8
+Hessel, M., Modayil, J., van Hasselt, H., Schaul, T., Ostrovski, G., Dabney, W., Horgan, D., Piot, B.,
+Azar, M. G., and Silver, D. Rainbow: Combining improvements in deep reinforcement learning.
+InAAAI , 2018. 3, 15
+Hessel, M., Danihelka, I., Viola, F., Guez, A., Schmitt, S., Sifre, L., Weber, T., Silver, D., and van Has-
+selt, H. Muesli: Combining improvements in policy optimization. arXiv preprint arXiv:2104.06159 ,
+2021. 2
+Hjelm, R. D., Fedorov, A., Lavoie-Marchildon, S., Grewal, K., Bachman, P., Trischler, A., and
+Bengio, Y . Learning deep representations by mutual information estimation and maximization.
+ICLR , 2019. 4
+Ioffe, S. and Szegedy, C. Batch normalization: Accelerating deep network training by reducing
+internal covariate shift. In ICML , 2015. 18
+Kaiser, Ł., Babaeizadeh, M., Miłos, P., Osi ´nski, B., Campbell, R. H., Czechowski, K., Erhan, D.,
+Finn, C., Kozakowski, P., Levine, S., et al. Model based reinforcement learning for atari. In ICLR ,
+2019. 4, 5, 6, 7, 21, 22, 23, 24
+Kaplan, J., McCandlish, S., Henighan, T., Brown, T. B., Chess, B., Child, R., Gray, S., Radford, A.,
+Wu, J., and Amodei, D. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 ,
+2020. 8
+Kielak, K. P. Do recent advancements in model-based deep reinforcement learning really improve
+data efﬁciency?, 2020. URL https://openreview.net/forum?id=Bke9u1HFwB . 4
+Kostrikov, I., Yarats, D., and Fergus, R. Image augmentation is all you need: Regularizing deep
+reinforcement learning from pixels. In ICLR , 2021. 4, 5, 7, 9, 18
+Lake, B. M., Ullman, T. D., Tenenbaum, J. B., and Gershman, S. J. Building machines that learn and
+think like people. Behavioral and brain sciences , 40, 2017. 1
+Lesort, T., Díaz-Rodríguez, N., Goudou, J.-F., and Filliat, D. State representation learning for control:
+An overview. Neural Networks , 108, 2018. 3, 4
+Li, H., Chaudhari, P., Yang, H., Lam, M., Ravichandran, A., Bhotika, R., and Soatto, S. Rethinking
+the hyperparameters for ﬁne-tuning. In International Conference on Learning Representations ,
+2020. URL https://openreview.net/forum?id=B1g8VkHFPH . 9
+Liu, H. and Abbeel, P. Unsupervised active pre-training for reinforcement learning, 2021. URL
+https://openreview.net/forum?id=cvNYovr16SB . 1, 2, 4, 5, 6, 7, 8, 21
+Mazoure, B., Combes, R. T. d., Doan, T., Bachman, P., and Hjelm, R. D. Deep reinforcement and
+infomax learning. In NeurIPS , 2020. 4
+Mnih, V ., Kavukcuoglu, K., Silver, D., Rusu, A. A., Veness, J., Bellemare, M. G., Graves, A., Ried-
+miller, M., Fidjeland, A. K., Ostrovski, G., et al. Human-level control through deep reinforcement
+learning. Nature , 518(7540), 2015. 5, 6, 8, 15, 18
+Ng, A. Y ., Harada, D., and Russell, S. J. Policy invariance under reward transformations: Theory and
+application to reward shaping. In ICML , 1999. 18
+Oord, A. v. d., Li, Y ., and Vinyals, O. Representation learning with contrastive predictive coding.
+arXiv preprint arXiv:1807.03748 , 2018. 4
+Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J., Chanan, G., Killeen, T., Lin, Z., Gimelshein,
+N., Antiga, L., et al. Pytorch: An imperative style, high-performance deep learning library. In
+NeurIPS , 2019. 15
+Pathak, D., Agrawal, P., Efros, A. A., and Darrell, T. Curiosity-driven exploration by self-supervised
+prediction. In ICML . PMLR, 2017. 4
+12
+
+==== Page 13 ====
+Perez, E., Strub, F., de Vries, H., Dumoulin, V ., and Courville, A. C. Film: Visual reasoning with a
+general conditioning layer. In AAAI , 2018. 18
+Sandler, M., Howard, A., Zhu, M., Zhmoginov, A., and Chen, L.-C. Mobilenetv2: Inverted residuals
+and linear bottlenecks. In Proceedings of the IEEE conference on computer vision and pattern
+recognition , pp. 4510–4520, 2018. 18
+Schrittwieser, J., Antonoglou, I., Hubert, T., Simonyan, K., Sifre, L., Schmitt, S., Guez, A., Lockhart,
+E., Hassabis, D., Graepel, T., et al. Mastering atari, go, chess and shogi by planning with a learned
+model. Nature , 2021. 8
+Schwarzer, M., Anand, A., Goel, R., Hjelm, R. D., Courville, A., and Bachman, P. Data-efﬁcient
+reinforcement learning with self-predictive representations. In ICLR , 2021. 2, 3, 4, 5, 6, 7, 15, 18,
+21, 22
+Sekar, R., Rybkin, O., Daniilidis, K., Abbeel, P., Hafner, D., and Pathak, D. Planning to explore via
+self-supervised world models. In ICML , 2020. 4
+Sharma, A., Gu, S., Levine, S., Kumar, V ., and Hausman, K. Dynamics-aware unsupervised discovery
+of skills. In International Conference on Learning Representations , 2019. 4
+Sohn, K., Berthelot, D., Li, C.-L., Zhang, Z., Carlini, N., Cubuk, E. D., Kurakin, A., Zhang, H., and
+Raffel, C. Fixmatch: Simplifying semi-supervised learning with consistency and conﬁdence. arXiv
+preprint arXiv:2001.07685 , 2020. 4
+Stooke, A. and Abbeel, P. rlpyt: A research code base for deep reinforcement learning in pytorch.
+arXiv preprint arXiv:1909.01500 , 2019. 15
+Stooke, A., Lee, K., Abbeel, P., and Laskin, M. Decoupling representation learning from reinforce-
+ment learning, 2021. 1, 2, 4, 5, 6, 7, 8, 19, 24
+Sutton, R. S. and Barto, A. G. Reinforcement Learning: An Introduction . The MIT Press, second
+edition, 2018. URL http://incompleteideas.net/book/the-book-2nd.html . 15
+Tan, M. and Le, Q. Efﬁcientnet: Rethinking model scaling for convolutional neural networks. In
+International Conference on Machine Learning , pp. 6105–6114, 2019. 18
+Tarvainen, A. and Valpola, H. Mean teachers are better role models: Weight-averaged consistency
+targets improve semi-supervised deep learning results. In NeurIPS , 2017. 4
+Tsividis, P., Pouncy, T., Xu, J. L., Tenenbaum, J. B., and Gershman, S. J. Human learning in atari. In
+AAAI Spring Symposia , 2017. 1
+Van Hasselt, H., Guez, A., and Silver, D. Deep reinforcement learning with double q-learning. In
+AAAI , 2016. 15
+van Hasselt, H. P., Hessel, M., and Aslanides, J. When to use parametric models in reinforcement
+learning? In NeurIPS , 2019. 4, 7
+Wang, T. and Isola, P. Understanding contrastive representation learning through alignment and
+uniformity on the hypersphere, 2020. 9
+Wang, Z., Schaul, T., Hessel, M., Hasselt, H., Lanctot, M., and Freitas, N. Dueling network
+architectures for deep reinforcement learning. In ICML , 2016. 15
+Yang, M. and Nachum, O. Representation matters: Ofﬂine pretraining for sequential decision making.
+arXiv preprint arXiv:2102.05815 , 2021. 5
+Yarats, D., Fergus, R., Lazaric, A., and Pinto, L. Reinforcement learning with prototypical represen-
+tations. arXiv preprint arXiv:2102.11271 , 2021. 4
+Zenke, F., Poole, B., and Ganguli, S. Continual learning through synaptic intelligence. In ICML ,
+2017. 9
+13
+
+==== Page 14 ====
+Zhan, A., Zhao, P., Pinto, L., Abbeel, P., and Laskin, M. A framework for efﬁcient robotic manipula-
+tion, 2020. 5
+Zhang, C., Vinyals, O., Munos, R., and Bengio, S. A study on overﬁtting in deep reinforcement
+learning. arXiv preprint arXiv:1804.06893 , 2018. 1
+14
+

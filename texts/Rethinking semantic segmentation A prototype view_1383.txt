@@ -1,0 +1,1303 @@
+==== Page 1 ====
+Rethinking Semantic Segmentation: A Prototype View
+Tianfei Zhou1, Wenguan Wang2;1*, Ender Konukoglu1, Luc Van Gool1
+1Computer Vision Lab, ETH Zurich2ReLER, AAII, University of Technology Sydney
+https://github.com/tfzhou/ProtoSeg
+Abstract
+Prevalent semantic segmentation solutions, despite their
+different network designs (FCN based or attention based)
+and mask decoding strategies (parametric softmax based or
+pixel-query based), can be placed in one category, by con-
+sidering the softmax weights or query vectors as learnable
+class prototypes. In light of this prototype view, this study un-
+covers several limitations of such parametric segmentation
+regime, and proposes a nonparametric alternative based on
+non-learnable prototypes. Instead of prior methods learning
+a single weight/query vector for each class in a fully para-
+metric manner, our model represents each class as a set of
+non-learnable prototypes, relying solely on the mean fea-
+tures of several training pixels within that class. The dense
+prediction is thus achieved by nonparametric nearest proto-
+type retrieving. This allows our model to directly shape the
+pixel embedding space, by optimizing the arrangement be-
+tween embedded pixels and anchored prototypes. It is able to
+handle arbitrary number of classes with a constant amount
+of learnable parameters.We empirically show that, with FCN
+based and attention based segmentation models ( i.e., HR-
+Net, Swin, SegFormer) and backbones ( i.e., ResNet, HRNet,
+Swin, MiT), our nonparametric framework yields compel-
+ling results over several datasets ( i.e., ADE20K, Cityscapes,
+COCO-Stuff), and performs well in the large-vocabulary
+situation. We expect this work will provoke a rethink of the
+current de facto semantic segmentation model design.
+1. Introduction
+With the renaissance of connectionism, rapid progress
+has been made in semantic segmentation. Till now, most of
+state-of-the-art segmentation models [15, 34, 49, 135] were
+built upon Fully Convolutional Networks (FCNs) [79]. De-
+spite their diversiﬁed model designs and impressive results,
+existing FCN based methods commonly apply parametric
+softmax (
+ ) over pixel-wise features for dense pre-
+diction (Fig. 1(a)). Very recently, the vast success of Trans-
+former [105] stimulates the emergence of attention based
+*Corresponding author: Wenguan Wang .
+Figure 1. Different sematic segmentation paradigms: (a-b) para-
+metric vs(c)nonparametric . Modern segmentation solutions, no
+matter using (a) parametric softmax or (b) query vectors for mask
+decoding, can be viewed as learnable prototype based methods that
+learn class-wise prototypes in a fully parametric manner. We in-
+stead propose a nonparametric scheme (c) that directly selects sub-
+cluster centers of embedded pixels as prototypes, and achieves per-
+pixel prediction via nonparametric nearest prototype retrieving.
+segmentation solutions. Many of these ‘non-FCN’ models,
+like [118, 139], directly follow the standard mask decoding
+regime, i.e., estimate softmax distributions over dense visual
+embeddings (extracted from patch token sequences). Inter-
+estingly, the others [20, 100] follow the good practice of
+Transformer in other ﬁelds [11, 82, 113] and adopt a pixel-
+query strategy (Fig. 1(b)): utilize a set of learnable vectors
+(
+ ) to query the dense embeddings for mask prediction.
+They speculate the learned query vectors can capture class-
+wise properties, however, lacking in-depth analysis.
+Noticing there exist two different mask decoding strate-
+gies, the following questions naturally arise: ¶What are the
+relation and difference between them? and·If the learn-
+able query vectors indeed implicitly capture some intrinsic
+properties of data, is there any better way to achieve this?
+Tackling these two issues can provide insights into mod-
+ern segmentation model design, and motivate us to rethink
+the task from a prototype view . The idea of prototype based
+classiﬁcation [31] is classical and intuitive (which can date
+back to the nearest neighbors algorithm [23] and ﬁnd evi-
+2582
+
+
+==== Page 2 ====
+dence in cognitive science [60, 91]): data samples are classi-
+ﬁed based on their proximity to representative prototypes of
+classes. With this perspective, in §2, we ﬁrst answer ques-
+tion¶by pointing out most modern segmentation methods,
+from softmax based to pixel-query based, from FCN based
+to attention based, fall into one grand category: parametric
+models based on learnable prototypes . Consider a segmenta-
+tion task with Csemantic classes. Most existing efforts seek
+to directly learnCclass-wise prototypes – softmax weights
+or query vectors – for parametric, pixel-wise classiﬁcation.
+Hence question ·becomes more fundamental: ¸What are
+the limitations of this learnable prototype based parametric
+paradigm? and¹How to address these limitations?
+Driven by question ¸, we ﬁnd there are three critical limi-
+tations: First , usually only one single prototype is learned per
+class, insufﬁcient to describe rich intra-class variance. The
+prototypes are simply learned in a fully parametric manner,
+without considering their representative ability. Second , to
+map aHWDimage feature tensor into a HWCseman-
+tic mask, at least DCparameters are needed for prototype
+learning. This hurts generalizability [115], especially in the
+large-vocabulary case; for instance, if there are 800classes
+andD=512 , we need 0.4M learnable prototype parameters
+alone .Third , with the cross-entropy loss, only the relative
+relations between intra-class and inter-class distances are op-
+timized [89, 111, 134]; the actual distances between pixels
+and prototypes, i.e., intra-class compactness, are ignored.
+As a response to question ¹, in §3, we develop a nonpa-
+rametric segmentation framework, based on non-learnable
+prototypes .Speciﬁcally, building upon the ideas of prototype
+learning [116, 133] and metric learning [40, 64], it is fully
+aware of the limitations of its parametric counterpart. Inde-
+pendent of speciﬁc backbone architectures (FCN based or
+attention based), our method is general and brings insights
+into segmentation model design and training. For model
+design, our method explicitly sets sub-class centers , in the
+pixel embedding space, as the prototypes. Each pixel data
+is predicted to be in the same class as the nearest prototype,
+without relying on extra learnable parameters. For training,
+as the prototypes are representative of the dataset, we can
+directly pose known inductive biases ( e.g., intra-class com-
+pactness, inter-class separation) as extra optimization crite-
+ria and efﬁciently shape the whole embedding space, instead
+of optimizing the prediction accuracy only. Our model has
+three appealing advantages: First , each class is abstracted by
+a set of prototypes, well capturing class-wise characteristics
+and intra-class variance. With the clear meaning of the pro-
+totypes, the interpretability is also enhanced – the prediction
+of each pixel can be intuitively understood as the reference
+of its closest class center in the embedding space [3, 7].
+Second , due to the nonparametric nature, the generalizabil-
+ity is improved. Large-vocabulary semantic segmentation
+can also be handled efﬁciently, as the amount of learnableprototype parameters is no longer constrained to the number
+of classes ( i.e., 0vsDC).Third , via prototype-anchored
+metric learning, the pixel embedding space is shaped as well-
+structured, beneﬁting segmentation prediction eventually.
+By answering questions ¶-¹, we formalize prior methods
+within a learnable prototype based, parametric framework,
+and link this ﬁeld to prototype learning and metric learning.
+We provide literature review and related discussions in §4.
+In §5.2, we show our method achieves impressive results
+over famous datasets ( i.e., ADE20K [140], Cityscapes [22],
+COCO-Stuff [10]) with top-leading FCN based and attention
+based segmentation models ( i.e., HRNet [108], Swin [78],
+SegFormer [118]) and backbones ( i.e., ResNet [45], HRNet
+[108], Swin [78], MiT [118]). Compared with the paramet-
+ric counterparts, our method does not cause any extra com-
+putational overhead during testing while reduces the amount
+of learnable parameters. In §5.3, we demonstrate our method
+consistently performs well when increasing the number of
+semantic classes from 150 to 847. Accompanied with a set
+of ablative studies in §5.4, our extensive experiments verify
+the power of our idea and the efﬁcacy of our algorithm.
+Finally, we draw conclusions in §6. This work is expec-
+ted to open a new venue for future research in this ﬁeld.
+2. Existing Semantic Segmentation Models as
+Parametric Prototype Learning
+Next we ﬁrst formalize the existing two mask decod-
+ing strategies mentioned in §1, and then answer question ¶
+from a uniﬁed view of parametric prototype learning.
+Parametric Softmax Projection . Almost all FCN-like and
+many attention-based segmentation models adopt this strat-
+egy. Their models comprise two learnable parts: i) an en-
+coderfor dense visual feature extraction, and ii) a classi-
+ﬁer(i.e., projection head) that projects pixel features into
+the semantic label space. For each pixel example i, its em-
+bedding i2RD, extracted from , is fed into forC-way
+classiﬁcation:
+p(cji) =exp(w>
+ci)PC
+c0=1exp(w>
+c0i); (1)
+wherep(cji)2[0;1]is the probability that ibeing assigned
+to classc.is a pixel-wise linear layer, parameterized by
+W= [w1;;wC]2RCD;wc2RDis a learnable projec-
+tion vector for c-th class; the bias term is omitted for brevity.
+Parametric Pixel-Query . A few attention-based segmen-
+tation networks [118, 139] work in a more ‘Transformer-
+like’ manner: given the pixel embedding i2RD, a set ofC
+query vectors, i.e.,E= [e1;;eC]2RCD, are learned to
+generate a probability distribution over the Cclasses:
+p(cji) =exp(eci)PC
+c0=1exp(ec0i); (2)
+where ‘’ is inner product between `2-normalized inputs.
+2583
+
+
+==== Page 3 ====
+LCE(Eq. 7)
+LPPC(Eq. 11)
+LPPD(Eq. 12)
+
+Figure 2. Architecture illustration of our non-learnable prototype based nonparametric segmentation model during the training phase.
+Prototype-based Classiﬁcation . Prototype-based classiﬁ-
+cation [31, 33] has been studied for a long time, dating back
+to the nearest neighbors algorithm [23] in machine learn-
+ing and prototype theory [60, 91] in cognitive science. Its
+prevalence stems from its intuitive idea: represent classes
+by prototypes, and refer to prototypes for classiﬁcation. Let
+fpmgM
+m=1be a set of prototypes that are representative of
+their corresponding classes fcpm2f1;;Cggm. For a data
+samplei, prediction is made by comparing iwithfpmgm,
+and taking the class of the winning prototype as response:
+^ci=cpm;withm= arg min
+mfhi;pmigM
+m=1; (3)
+where iandfpmgmare embeddings of the data sample and
+prototypes in a feature space, and h;istands for the dis-
+tance measure, which is typically set as `2distance ( i.e.,
+jji pmjj) [123], yet other proximities can be applied.
+Further, Eqs. 1-2 can be formulated in a uniﬁed form:
+p(cji) =exp( hi;gci)PC
+c0=1exp( hi;gc0i); (4)
+where gc2RDcan be either wcin Eq. 1 or ecin Eq. 2.
+With Eqs. 3-4, we are ready to answer questions ¶·. Both
+the two types of methods are based on learnable prototypes;
+they are parametric models in the sense that they learn one
+prototype gc,i.e., linear weight wcor query vector ec, for
+each classc(i.e.,M=C). Thus one can consider softmax pro-
+jection based methods ‘secretly’ learn the query vectors. As
+for the difference, in addition to different distance measures
+(i.e., inner product vscosine similarity), pixel-query based
+methods [118, 139] can feed the queries into cross-attention
+decoder layers for cross-class context exchanging, rather
+than softmax projection based counterparts only leveraging
+the learned class weights within the softmax layer.
+With the uniﬁed view of parametric prototype learning,
+a few intrinsic yet long ignored issues in this ﬁeld unfold:
+First, prototype selection [36] is a vital aspect in the de-
+sign of a prototype based learner – prototypes should be typ-
+icalfor their classes. Nevertheless, existing semantic seg-
+mentation algorithms often describe each class by only one
+prototype, bearing no intra-class variation. Moreover, the
+prototypes are directly learned in a fully parametric man-
+ner, without accounting for their representative ability.Second, the amount of the learnable prototype parameters,
+i.e.,fgc2RDgC
+c=1, grows with the number of classes. This
+may hinder the scalability, especially when a large number
+of classes are present. For example, if there are 800 classes
+and the pixel feature dimensionality is 512, at least 0.4M
+parameters are needed for prototype learning alone , making
+large-vocabulary segmentation a hard task. Moreover, if we
+want to represent each class by ten prototypes, instead of
+only one, we need to learn 4M prototype parameters.
+Third, Eq. 3 intuitively shows that prototype based learn-
+ers make metric comparisons of data [8]. However, existing
+algorithms often supervise dense segmentation representa-
+tion by directly optimizing the accuracy of pixel-wise pre-
+diction ( e.g., cross-entropy loss), ignoring known inductive
+biases [83, 84], e.g., intra-class compactness, about the fea-
+ture distribution. This will hinder the discrimination poten-
+tial of the learned segmentation features, as suggested by
+many literature in representation learning [76, 95, 114].
+After tackling question ¸, in the next section we will detail
+our non-learnable prototype based nonparametric segmenta-
+tion method, which serves as a solid response to question ¹.
+3. Non-Learnable Prototype based Nonpara-
+metric Semantic Segmentation
+We build a nonparametric segmentation framework that
+conducts dense prediction by a set of non-learnable class pro-
+totypes, and directly supervises the pixel embedding space
+via a prototype-anchored metric learning scheme (Fig. 2).
+Non-Learnable Prototype based Pixel Classiﬁcation. As
+normal, an encoder network (FCN based or attention based),
+i.e.,, is ﬁrst adopted to map the input image I2Rhw3,
+to a 3D feature tensor I2RHWD. For pixel-wise C-way
+classiﬁcation, rather than prior semantic segmentation mod-
+els that automatically learn Cclass weightsfwc2RDgC
+c=1
+(cf. Eq. 1) orCqueries vectorsfec2RDgC
+c=1(cf. Eq. 2),
+we refer to a group of CK non-learnable prototypes, i.e.,
+fpc;k2RDgC;K
+c;k=1, which are based solely on class data sub-
+centers. More speciﬁcally, each class c2f1;;Cgis rep-
+resented by a total of Kprototypesfpc;kgK
+k=1, and proto-
+typepc;kis determined as the center of k-th sub-cluster of
+training pixel samples belonging to class c, in the embed-
+ding space. In this way, the prototypes can comprehen-
+2584
+
+
+==== Page 4 ====
+sively capture characteristic properties of the corresponding
+classes, without introducing extra learnable parameters out-
+side. Analogous to Eq. 3, the category prediction of each
+pixeli2Iis achieved by a winner-take-all classiﬁcation:
+^ci=c;with (c;k) = arg min
+(c;k)fhi;pc;kigC;K
+c;k=1;(5)
+where i2RDstands for the `2-normalized embedding of
+pixeli,i.e.,i2I, and the distance measure h;iis deﬁned
+as the negative cosine similarity, i.e.,hi;pi= i>p.
+With this exemplar-based reasoning mode, we ﬁrst de-
+ﬁne the probability distribution of pixel iover theCclasses:
+p(cji)=exp( si;c)PC
+c0=1exp( si;c0);withsi;c=minfhi;pc;kigK
+k=1;(6)
+where the pixel-class distance si;c2[ 1;1]is computed as
+the distance to the closest prototype of class c. Given the
+groundtruth class of each pixel i,i.e.,ci2f1;;Cg, the
+cross-entropy loss can be therefore used for training:
+LCE= logp(ciji)
+= logexp( si;ci)
+exp( si;ci)+P
+c06=ciexp( si;c0):(7)
+In our case, Eq. 7 can be viewed as pushing pixel icloser to
+the nearest prototype of its corresponding class, i.e.,ci, and
+further from other close prototypes of irrelevant classes, i.e.,
+c06=ci. However, only adopting such training objective is
+not enough, due to two reasons. First, Eq. 7 only considers
+pixel-class distances, e.g.,si;c, without addressing within-
+class pixel-prototype relations, e.g.,hi;pci;ki. For example,
+for discriminative representation learning, pixel iis expec-
+ted to be pushed further close to a certain prototype ( i.e., a
+particularly suitable pattern) of class ci, and, distant from
+other prototypes ( i.e., other irrelevant but within-class pat-
+terns) of class ci. Eq. 7 cannot capture this nature. Second,
+as the pixel-class distances are normalized across all classes
+(cf. Eq. 6), Eq. 7 only optimizes the relative relations between
+intra-class ( i.e.,si;ci) and inter-class ( i.e.,fsi;c0gc06=ci) dis-
+tances, instead of directly regularizing the cosine distances
+between pixels and classes. For example, when the intra-
+class distance si;ciof pixeliis relatively smaller than other
+inter-class distances fsi;c0gc06=ci, the penalty from Eq. 7 will
+be small, but the intra-class distance si;cimight still be large
+[89, 134]. Next we ﬁrst elaborate on our within-class online
+clustering strategy and then detail our two extra training ob-
+jectives which rely on prototype assignments ( i.e., cluster-
+ing results) and address the above two issues respectively.
+Within-Class Online Clustering. We approach online clu-
+stering for prototype selection and assignment: pixel sam-
+ples within the same class are assigned to the prototypes
+belonging to that class, and the prototypes are then updated
+according to the assignments. Clustering imposes a natural
+bottleneck [55] that forces the model to discover intra-class
+discriminative patterns yet discard instance-speciﬁc details.Thus the prototypes, selected as the sub-cluster centers, are
+typical of the corresponding classes. Conducting clustering
+online makes our method scalable to large amounts of data,
+instead of ofﬂine clustering requiring multiple passes over
+the entire dataset for feature computation [13].
+Formally, given pixels Ic=fingN
+n=1in a training batch
+that belong to class c(i.e.,cin=c), our goal is to map the
+pixelsIcto theKprototypesfpc;kgK
+k=1of classc. We
+denote this pixel-to-prototype mapping as Lc= [lin]N
+n=12
+f0;1gKN, where lin= [lin;k]K
+k=12f0;1gKis the one-hot
+assignment vector of pixel inover theKprototypes. The
+optimization of Lcis achieved by maximizing the similarity
+between pixel embeddings, i.e.,Xc=[in]N
+n=12RDN, and
+the prototypes, i.e.,Pc=[pc;k]K
+k=12RDK:
+max
+LcTr(Lc>Pc>Xc);
+s.t.Lc2f0;1gKN;Lc>1K=1N;Lc1N=N
+K1K;(8)
+where 1Kdenotes the vector of all ones of Kdimensions.
+The unique assignment constraint, i.e.,Lc>1K=1N, en-
+sures that each pixel is assigned to one and only one pro-
+totype. The equipartition constraint, i.e.,Lc1N=N
+K1K,
+enforces that on average each prototype is selected at least
+N
+Ktimes in the batch [13]. This prevents the trivial solu-
+tion: all pixel samples are assigned to a single prototype,
+and eventually beneﬁts the representative ability of the pro-
+totypes. To solve Eq. 8, one can relax Lcto be an element
+of the transportation polytope [2, 24]:
+max
+LcTr(Lc>Pc>Xc) +h(Lc);
+s.t.Lc2RKN
++;Lc>1K=1N;Lc1N=N
+K1K;(9)
+whereh(Lc)=P
+n;k lin;kloglin;kis an entropy, and >0
+is a parameter that controls the smoothness of distribution.
+With the soft assignment relaxation and the extra regular-
+ization term h(Lc), the solver of Eq. 9 can be given as [24]:
+Lc=diag (u) exp Pc>Xc
+
+diag (v); (10)
+where u2RKandv2RNare renormalization vectors,
+computed by few steps of Sinkhorn-Knopp iteration [24].
+Our online clustering is highly efﬁcient on GPU, as it only
+involves a couple of matrix multiplications; in practice,
+clustering 10K pixels into 10prototypes takes only 2:5ms.
+Pixel-Prototype Contrastive Learning. With the assign-
+ment probability matrix Lc= [lin]N
+n=12[0;1]KN, we on-
+line group the training pixels Ic=fingN
+n=1intoKproto-
+typesfpc;kgK
+k=1within class c. After all the samples in cur-
+rent batch are processed, each pixel iis assigned to ki-th
+prototype of class ci, whereki= arg max kfli;kgK
+k=1and
+li;k2li. It is natural to derive a training objective for pro-
+totype assignment prediction, i.e., maximize the prototype
+assignment posterior probability. This can be viewed as a
+pixel-prototype contrastive learning strategy, and addresses
+2585
+
+
+==== Page 5 ====
+the ﬁrst limitation of Eq. 7:
+LPPC= logexp(i>pci;ki=)
+exp(i>pci;ki=)+P
+p 2P exp(i>p =);(11)
+whereP =fpc;kgC;K
+c;k=1
+pci;ki, and the temperature con-
+trols the concentration level of representations. Intuitively,
+Eq. 11 enforces each pixel embedding ito be similar with
+its assigned (‘positive’) prototype pci;ki, and dissimilar with
+otherCK 1irrelevant (‘negative’) prototypes P . Com-
+pared with prior pixel-wise metric learning based segmenta-
+tion models [111], which consume numerous negative pixel
+samples, our method only needs CK prototypes for pixel-
+prototype contrast computation, neither causing large mem-
+ory cost norrequiring heavy pixel pair-wise comparison.
+Pixel-Prototype Distance Optimization. Building upon the
+relative comparison over pixel-class/-prototype distances,
+Eq. 7 and Eq. 11 inspire inter-class/-cluster discrinimitive-
+ness, but less consider reducing the intra-cluster variation,
+i.e., making pixel features of the same prototype compact.
+Thus a compactness-aware loss is used for further regulari-
+zing representations by directly minimizing the distance be-
+tween each embedded pixel and its assigned prototype:
+LPPD=(1 i>pci;ki)2: (12)
+Note that both iandpci;kiare`2-normalized. This training
+objective minimizes intra-cluster variations while maintain-
+ing separation between features with different prototype as-
+signments, making our model more robust against outliers.
+Network Learning and Prototype Update. Our model is
+a nonparametric approach that learns semantic segmenta-
+tion by directly optimizing the pixel embedding space .
+It is called nonparametric because it constructs prototype
+hypotheses directly from the training pixel samples them-
+selves. Thus the parameters of the feature extractor are
+learned through stochastic gradient descent, by minimizing
+the combinatorial loss over all the training pixel samples:
+LSEG=LCE+1LPPC+2LPPD: (13)
+Meanwhile, the non-learnable prototypes fpc;kgC;K
+c;k=1are
+notlearned by stochastic gradient descent, but are computed
+as the centers of the corresponding embedded pixel sam-
+ples. To do so, we let the prototypes evolve continuously
+by accounting for the online clustering results. Particularly,
+after each training iteration, each prototype is updated as:
+pc;k pc;k+ (1 )ic;k; (14)
+where2[0;1]is a momentum coefﬁcient, and ic;kin-
+dicates the`2-normalized, mean vector of the embedded
+training pixels, which are assigned to prototype pc;kby on-
+line clustering. With the clear meaning of the prototypes,
+our segmentation procedure can be intuitively understood
+as retrieving the most similar prototypes (sub-class centers).
+Fig. 3 provides prototype retrieval results for person andcar
+withK=3prototypes for each. The prototypes are associ-
+Figure 3. Visualization of pixel-prototype similarity forperson
+(top) and car(bottom) classes. Please refer to §3 for details.
+ated with different colors ( i.e., red, green, and blue). For
+each pixel, its distance to the closest prototype is visualized
+using the corresponding prototype color. As can be seen, the
+prototypes well correspond to meaningful patterns within
+classes, validating their representativeness.
+4. Related Work
+In this section, we review representative work in seman-
+tic segmentation, prototype learning and metric learning.
+Semantic Segmentation. Recent years have witnessed re-
+markable progress in semantic segmentation, due to the fast
+evolution of backbone architectures–fromCNN-based( e.g.,
+VGG [97], ResNet [45]) to Transformer-like [105] ( e.g., ViT
+[30], Swin[78]), andsegmentationmodels–from FCNs [79]
+to attention networks ( e.g., SegFormer [118]). Speciﬁcally,
+FCN[79]isamilestone;it learns dense prediction efﬁciently.
+Since it was proposed, numerous efforts have been devoted
+to improving FCN, by, for example, enlarging the receptive
+ﬁeld [15, 16, 25, 124, 128, 135]; strengthening context cues
+[4, 43, 47, 48, 56, 57, 70, 75, 77, 81, 90, 126, 128,
+129, 132, 138, 141]; leveraging boundary information [6,
+14, 27, 66, 127, 131, 137]; incorporating neural attention
+[34, 41, 42, 49, 50, 63, 68, 101, 110, 112, 136]; or automat-
+ing network engineering [18, 69, 72, 85]. Lately, Transfor-
+mer based solutions [20, 100, 118, 139] attained growing at-
+tention; enjoying the ﬂexibility in long-range dependency
+modeling, fully attentive solutions yield impressive results.
+Different from current approaches that are typically built
+upon learnable prototypes, in pre-deep era, many segmenta-
+tion systems are nonparametric [32, 73, 74, 80, 102, 103].
+By absorbing their case-based reasoning ideas, we build a
+nonparametric segmentation network, which explicitly de-
+rives prototypes from sample clusters and hence directly
+optimizes the embedding space with distance metric con-
+straints. In [62, 111], while cluster-/pixel-level metric loss
+is adopted to regularize representation, the pixel class is still
+inferred via parametric softmax. [53] purely relies on class
+embeddings, which, however, are fully trainable. Thus [53,
+62, 111] are all parametric methods. As far as we know, [52]
+is the only non-learnable prototype, deep learning based se-
+mantic segmentation model. But [52] treats image regions
+as prototypes, incurring huge memory and computational
+demand. Besides, [52] only considers the relative differ-
+ence between inter-and intra-class sample-prototype dis-
+tances like the parametric counterparts. Our method is more
+principled with fewer heuristic designs. Unlike [52], we rep-
+2586
+
+
+==== Page 6 ====
+resent prototypes as sub-cluster centers and obtain online
+assignments, allowing our method to scale gracefully to any
+dataset size. We encourage a sparse distance distribution
+with compactness-awareness, reinforcing the embedding
+discrimination. With a broader view, a few embedding based
+instance segmentation approaches [26, 86] can be viewed as
+nonparametric, i.e., treat instance centroids as prototypes.
+Prototype Learning. Cognitive psychological studies evi-
+dence that people use past cases as models when learning to
+solve problems [1, 87, 125]. Among various machine learn-
+ing algorithms, ranging from classical statistics based meth-
+ods to Support Vector Machine to Multilayer Perceptrons[9,
+31, 33, 96], prototype based classiﬁcation gains particu-
+lar interest, due to its exemplar-driven nature and intuitive
+interpretation: observations are directly compared with re-
+presentative examples. Based on the nearest neighbors rule
+– the earliest prototype learning method [23], many famous,
+nonparametric classiﬁers are proposed [36], such as Learn-
+ing Vector Quantization (LVQ) [61], generalized LVQ [94],
+and Neighborhood Component Analysis [37, 93]. There has
+been a recent surge of interest to integrate deep learning into
+prototype learning, showing good potential in few-shot [98],
+zero-shot [54], and unsupervised learning [116, 120], as
+well as supervised classiﬁcation [38, 83, 115, 123] and
+interpretable networks [65]. Remarkably, as many few-shot
+segmentation models can be viewed as prototype-based net-
+works [29, 106, 109], our work sheds light on the possibility
+of closer collaboration between the two segmentation ﬁelds.
+Metric Learning. The selection of proper distance measure
+impacts the success of prototype based learners [8]; metric
+learning and prototype learning are naturally related. As the
+literature on metric learning is vast [58], only the most rel-
+evant ones are discussed. The goal of metric learning is to
+learn a distance metric/embedding such that similar samples
+are pulled together and dissimilar samples are pushed away.
+It has shown a signiﬁcant beneﬁt by learning deep represen-
+tation using metric loss functions ( e.g., contrastive loss [40],
+triplet loss [95], n-pair loss [99]) for applications ( e.g., im-
+age retrieval [107], face recognition [95]). Recently, metric
+learning showed good potential in unsupervised representa-
+tion learning. Speciﬁcally, many instance-based approaches
+use the contrastive loss [39, 88] to explicitly compare pairs
+of image representations, so as to push away features from
+different images while pulling together those from trans-
+formations of the same image [17, 19, 44, 46, 88]. Since
+computing all the pairwise comparisons on a large dataset
+is challenging, some clustering-based methods turn to dis-
+criminate between groups of images with similar features
+instead of individual images [2, 5, 12, 13, 64, 104, 119,
+121, 122]. Our prototype-anchored metric learning strat-
+egy shares a similar spirit of posing metric constraints over
+prototype (cluster) assignments, but it is to reshape the pixel
+segmentation embedding space with explicit supervision.5. Experiment
+5.1. Experimental Setup
+Datasets. Our experiments are conducted on three datasets:
+•ADE20K [140] is a large-scale scene parsing benchmark
+that covers 150stuff/object categories. The dataset is di-
+vided into 20k/2k/3k images for train /val/test .
+•Cityscapes [22] has 5k ﬁnely annotated urban scene im-
+ages, with 2;975=500=1;524fortrain /val/test . The
+segmentation performance is evaluated over 19challeng-
+ing categories, such as rider, bicycle, and trafﬁc light.
+•COCO-Stuff [10] has 10k images gathered from COCO
+[71], with 9k and 1k for train andtest , respectively.
+There are 172 semantic categories in total, including 80
+objects, 91 stuffs and 1 unlabeled.
+Training. Our method is implemented on MMSegmenta-
+tion [21], following default training settings. In particular,
+all backbones are initialized using corresponding weights
+pre-trained on ImageNet-1K [92], while remaining layers
+are randomly initialized. We use standard data augmen-
+tation techniques, including random scale jittering with a
+factor in [0:5;2], random horizontal ﬂipping, random crop-
+ping as well as random color jittering. We train models
+using SGD/AdamW for FCN-/attention-based models, re-
+spectively. The learning rate is scheduled following the
+polynomial annealing policy. In addition, for Cityscapes,
+we use a batch size of 8, and a training crop size of 768768.
+For ADE20K and COCO-Stuff, we use a crop size of
+512512 and train the models with batch size 16. The
+models are trained for 160k,160k, and 80k iterations on
+Cityscapes, ADE20K and COCO-Stuff, respectively. Ex-
+ceptionally, for ablation study, we train models for 40K
+iterations. The hyper-parameters are empirically set to:
+K=10 ,m=0:999,=0:1,=0:05,1=0:01,2=0:01.
+Testing. For ADE20K and COCO-Stuff, we rescale the
+short scale of the image to training crop size, with the as-
+pect ratio kept unchanged. For Cityscapes, we adopt sliding
+window inference with the window size 768768. For sim-
+plicity, we do not apply anytest-time data augmentation.
+Our model is implemented in PyTorch and trained on eight
+Tesla V100 GPUs with a 32GB memory per-card. Testing
+is conducted on the same machine.
+Baselines. We mainly compare with four widely recognized
+segmentation models, i.e., two FCN based ( i.e., FCN [79],
+HRNet [108]) and two attention based ( i.e., Swin [78] and
+SegFormer [118]). For fair comparison, all the models are
+based on our reproduction, following the hyper-parameter
+and augmentation recipes used in MMSegmentation [21].
+Evaluation Metric. Following conventions [15, 79], mean
+intersection-over-union (mIoU) is adopted for evaluation.
+5.2. Comparison to State-of-the-Arts
+ADE20K [140] val.Table 1 reports comparisons with rep-
+resentative models on ADE20K val. Our nonparametric
+2587
+
+
+==== Page 7 ====
+Figure 4. Qualitative results of Segformer [118] and our approach (from left to right: ADE20K [140], Cityscapes [22], COCO-Stuff [10]).
+Method Backbone# Param
+(M)mIoU
+(%)
+DeepLabV3+ [ECCV18] [16] ResNet-101 [45] 62.7 44.1
+OCR [ECCV20] [129] HRNetV2-W48 [108] 70.3 45.6
+MaskFormer [NeurIPS21] [20] ResNet-101 [45] 60.0 46.0
+UperNet [ECCV20] [117] Swin-Base [78] 121.0 48.4
+OCR [ECCV20] [129] HRFormer-B [130] 70.3 48.7
+SETR [CVPR21] [139] ViT-Large [30] 318.3 50.2
+Segmenter [ICCV21] [100] ViT-Large [30] 334.0 51.8
+yMaskFormer [NeurIPS21] [20] Swin-Base [78] 102.0 52.7
+FCN [CVPR15] [79] 68.6 39.9
+OursResNet-101 [45]68.5 41.1"1.2
+HRNet [PAMI20] [108] 65.9 42.0
+OursHRNetV2-W48 [108]65.8 43.0"1.0
+Swin [CVPR21] [78] 90.6 48.0
+OursSwin-Base [78]90.5 48.6"0.6
+SegFormer [NeurIPS21] [118] 64.1 50.9
+OursMiT-B4 [118]64.0 51.7"0.8
+y: backbone is pre-trained on ImageNet-22K.
+Table 1. Quantitative results (§5.2) on ADE20K [140] val.
+Method Backbone# Param
+(M)mIoU
+(%)
+PSPNet [CVPR17] [135] ResNet-101 [45] 65.9 78.4
+PSANet [ECCV18] [136] ResNet-101 [45] - 78.6
+AAF [ECCV18] [59] ResNet-101 [45] - 79.1
+Segmenter [ICCV21] [100] ViT-Large [30] 322.0 79.1
+ContrastiveSeg [ICCV21] [111] ResNet-101 [45] 58.0 79.2
+MaskFormer [NeurIPS21] [20] ResNet-101 [45] 60.0 80.3
+DeepLabV3+ [ECCV18] [16] ResNet-101 [45] 62.7 80.9
+OCR [ECCV20] [129] HRNetV2-W48 [108] 70.3 81.1
+FCN [CVPR15] [79] 68.6 78.1
+OursResNet-101 [45]68.5 79.1"1.0
+HRNet [PAMI20] [108] 65.9 80.4
+OursHRNetV2-W48 [108]65.8 81.1"0.7
+Swin [CVPR21] [78] 90.6 79.8
+OursSwin-Base [78]90.5 80.6"0.8
+SegFormer [NeurIPS21] [118] 64.1 80.7
+OursMiT-B4 [118]64.0 81.3"0.6
+Table 2. Quantitative results (§5.2) on Cityscapes [22] val.
+scheme obtains consistent improvements over the baselines,
+with fewer learnable parameters. In particular, it yields
+1.2% and1.0% mIoU improvements over the FCN-based
+counterparts, i.e., FCN [79] and HRNet [108]. Similar
+performance gains ( 0.6% and0.8% ) are obtained over re-
+cent attention-based models, i.e., Swin [78] and SegFormer
+[118], manifesting the high versatility of our approach.
+Cityscapes [22] val.Table 2 shows again our compelling
+performance on Cityscapes val. Speciﬁcally, our approach
+surpasses all the competitors, i.e.,1.0% over FCN, 0.7%
+over HRNet, 0.8% over Swin, and 0.6% over Segformer.
+COCO-Stuff [10] test .As listed in Table 3, our approach
+also demonstrates promising performance on COCO-StuffMethod Backbone# Param
+(M)mIoU
+(%)
+SVCNet [CVPR19] [28] ResNet-101 [45] - 39.6
+DANet [CVPR19] [34] ResNet-101 [45] 69.1 39.7
+SpyGR [CVPR20] [67] ResNet-101 [45] - 39.9
+MaskFormer [NeurIPS21] [20] ResNet-101 [45] 60.0 39.8
+ACNet [ICCV19] [35] ResNet-101 [45] - 40.1
+OCR [ECCV20] [129] HRNetV2-W48 [108] 70.3 40.5
+FCN [CVPR15] [79] 68.6 32.5
+OursResNet-101 [45]68.5 34.0"1.5
+HRNet [PAMI21] [108] 65.9 38.7
+OursHRNetV2-W48 [108]65.8 39.9"1.2
+Swin [CVPR21] [78] 90.6 41.5
+OursSwin-Base [78]90.5 42.4"0.9
+SegFormer [NeurIPS21] [118] 64.1 42.5
+OursMiT-B4 [118]64.0 43.3"0.8
+Table 3. Quantitative results (§5.2) on COCO-Stuff [10] test .
+test . It outperforms all the baselines. Notably, with MiT-
+B4 [118] as the network backbone, our approach earns an
+mIoU score of 43.3% , establishing a new state-of-the-art.
+Qualitative Results. Fig. 4 provides qualitative compari-
+son of Ours against Segformer [118] on representative ex-
+amples in the three datasets. We observe that our approach
+is able to handle diverse challenging scenarios and produce
+more accurate results (as highlighted in red dashed boxes).
+5.3. Scalability to Large-Vocabulary Semantic Seg-
+mentation
+Today, rigorous evaluation of semantic segmentation
+models is mostly performed in a few category regime ( e.g.,
+19/150/172 classes for Cityscapes/ADE20K/COCO-Stuff),
+while the generalization to more natural large-vocabulary
+setting is ignored. In this section, we demonstrate the re-
+markable superiority of our method in large-vocabulary set-
+ting. We start with the default setting in ADE20K [140]
+which includes 150 semantic concepts. Then, we gradually
+increase the number of concepts based on their visibility
+frequency, and train/test models on the selected number of
+classes. In this experiment, we use MiT-V2 [118] as the
+backbone and train models for 40k iterations.
+The results are summarized in Table 4, from which we
+ﬁnd that: i)For the parametric scheme, the amount of proto-
+type parameters increases with vocabulary size. For the ex-
+treme case of 10prototypes and 847classes, the number of
+prototype parameters is 6:5M, accounting for20% of to-
+tal parameters ( i.e.,33:96M). In sharp contrast, our scheme
+requires no any learnable prototype parameters. ii)Our
+2588
+
+
+==== Page 8 ====
+150 classes 300 classes 500 classes 700 classes 847 classesMethod # ProtomIoU (%) # Param (M) mIoU (%) # Param (M) mIoU (%) # Param (M) mIoU (%) # Param (M) mIoU (%) # Param (M)
+parametric 1 45.1 27.48 (0.12) 36.5 27.62 (0.23) 25.7 27.80 (0.39) 19.8 27.98 (0.54) 16.5 28.11 (0.65)
+nonparametric
+(Ours )1 45.5"0.4 27.37 (0) 37.2"0.7 27.37 (0) 26.8"1.1 27.37 (0) 21.2"1.4 27.37 (0) 18.1"1.6 27.37 (0)
+parametric 10 45.7 28.56 (1.2) 37.0 29.66 (2.3) 26.6 31.26 (3.9) 20.8 32.86 (5.4) 17.7 33.96 (6.5)
+nonparametric
+(Ours )10 46.4"0.7 27.37 (0) 37.8"0.8 27.37 (0) 27.9"1.3 27.37 (0) 22.1"1.3 27.37 (0) 19.4"1.7 27.37 (0)
+Table 4. Scalability study (§5.3) of our nonparametric model against the parametric baseline ( i.e., SegFormer [118]) on ADE20K [140].
+For each model variant, we report its segmentation mIoU, parameter numbers of the entire model as well as the prototypes (in the bracket).
+LCE LPPC LPPD mIoU
+(Eq. 7) (Eq. 11) (Eq. 12) (%)
+3 45.0
+3 3 45.9
+3 3 45.4
+3 3 3 46.4
+(a) Training Objective L# Prototype mIoU (%)
+K= 1 45.5
+K= 5 46.0
+K= 10 46.4
+K= 20 46.5
+K= 50 46.4
+(b) Prototype Number KCoefﬁcient mIoU (%)
+= 0 44.9
+= 0:9 45.9
+= 0:99 46.0
+= 0:999 46.4
+= 0:9999 46.3
+(c) Momentum Coefﬁcient Distance Measure mIoU (%)
+Standard 45.7
+Huberized 45.2
+Cosine 46.4
+(d) Distance Measure
+Table 5. A set of ablative studies (§5.4) on ADE20K [140] val. All model variants use MiT-B2 [118] as the backbone.
+method achieves consistent performance elevations against
+the parametric counterpart under all settings. These results
+well demonstrate the utility of our nonparametric scheme
+for unrestricted open-vocabulary semantic segmentation.
+5.4. Diagnostic Experiment
+To investigate the effect of our core designs, we conduct
+ablative studies on ADE20K [140] val. We use MiT-B2
+[118] as the backbone and train models for 40K iterations.
+Training Objective. We ﬁrst investigate our overall train-
+ing objective ( cf. Eq. 13). As shown in Table 5a, the model
+withLCEalone achieves an mIoU score of 45:0%. Adding
+LPPCorLPPDindividually brings gains ( i.e.,0.9% /0.4% ),
+revealing the value to explicitly learn pixel-prototype rela-
+tions. Combing all the losses together leads to the best per-
+formance, yielding an mIoU score of 46.4%.
+Prototype Number Per Class K.Table 5b reports the per-
+formance of our approach with regard to the number of pro-
+totype per class. For K= 1, we directly represent each
+class as the mean embedding of its pixel samples. The pixel
+assignment is based simply on ground-truth labels, with-
+out using online clustering (Eqs. 8-9). This baseline ob-
+tains a score of 45:5%. Further, when using more proto-
+types ( i.e.,K= 3), we see a clear performance boost ( i.e.,
+45:5%!46:0%). The score further improves when allow-
+ing5or10prototypes; however, increasing Kbeyond 10
+gives marginal returns in performance. As a result, we set
+K= 10 for a better trade-off between accuracy and com-
+putation cost. This study conﬁrms our motivation to use
+multiple prototypes for capturing intra-class variations.
+Coefﬁcient .Table 5c quantiﬁes the effect of momentum
+coefﬁcient (in Eq. 14) which controls the speed of proto-
+type updating. The model performs reasonably well using a
+relatively large coefﬁcient ( i.e.,2[0:999;0:9999] ), show-
+ing that a slow updating is beneﬁcial. When is0:9or
+0:99, the performance decreases, and drops considerably atthe extreme case of =0.
+Distance Measure. By default, we use cosine distance (re-
+fer to as ‘Cosine’) to measure pixel-prototype similarity as
+denoted in Eq. 6, Eq. 11 and Eq. 12. However, other choices
+are also applicable. Here we study two alternatives. The
+ﬁrst is the standard Euclidean distance ( i.e., ‘Standard’),
+i.e.,hx;yi=kx yk2. In contrast to ‘Cosine’, here x
+andyare un-normalized real-valued vectors. To handle
+the non-differentiability in ‘Standard’, we further study an
+approximated Huber-like function [51] (‘Huberized’), i.e.,
+hx;yi=(p
+kx yk2=2+ 1 1). The hyper-parameter 
+is empirically set to 0:1. As we ﬁnd from Table 5d that ‘Co-
+sine’ performs much better than other un-normalized Eu-
+clidean measurements. The Huberized norm does not show
+any advantage over ‘Standard’.
+6. Conclusion and Discussion
+The vast majority of recent effort in this ﬁeld seek to learn
+parametric class representations for pixel-wise recognition.
+In contrast, this paper explores an exemplar-based regime.
+This leads to a nonparametric segmentation framework,
+where several typical points in the embedding space are se-
+lected as class prototypical representation, and distance to
+the prototypes determines how a pixel sample is classiﬁed.
+It enjoys several advantages: i)explicit prototypical repre-
+sentation for class-level statistics modeling; ii) better gener-
+alization with nonparametric pixel-category prediction; and
+iii)direct optimization of the feature embedding space. Our
+framework is elegant, general, and yields outstanding per-
+formance. It also comes with some intriguing questions.
+For example, to pursue better interpretability, one can op-
+timize the prototypes to directly resemble pixel- or region-
+level observations [52, 65]. Overall, we feel the results in
+this paper warrant further exploration in this direction.
+Acknowledgements This work was supported by CCF-Baidu
+Open Fund and ARC DECRA DE220101390 .
+2589
+
+
+==== Page 9 ====
+References
+[1] Agnar Aamodt and Enric Plaza. Case-based reasoning:
+Foundational issues, methodological variations, and system
+approaches. AI Communications , 7(1):39–59, 1994. 6
+[2] Yuki Markus Asano, Christian Rupprecht, and Andrea
+Vedaldi. Self-labelling via simultaneous clustering and rep-
+resentation learning. In ICLR , 2020. 4, 6
+[3] Andreas Backhaus and Udo Seiffert. Classiﬁcation in high-
+dimensional spectral data: Accuracy vs. interpretability vs.
+model size. Neurocomputing , 131:15–22, 2014. 2
+[4] Vijay Badrinarayanan, Alex Kendall, and Roberto Cipolla.
+Segnet: A deep convolutional encoder-decoder architecture
+for image segmentation. IEEE TPAMI , 39(12):2481–2495,
+2017. 5
+[5] Miguel A Bautista, Artsiom Sanakoyeu, Ekaterina
+Tikhoncheva, and Bj ¨orn Ommer. Cliquecnn: Deep unsu-
+pervised exemplar learning. In NeurIPS , 2016. 6
+[6] Gedas Bertasius, Jianbo Shi, and Lorenzo Torresani. Se-
+mantic segmentation with boundary neural ﬁelds. In CVPR ,
+2016. 5
+[7] Michael Biehl, Barbara Hammer, Petra Schneider, and
+Thomas Villmann. Metric learning for prototype-based
+classiﬁcation. In Innovations in Neural Information
+Paradigms and Applications , pages 183–199. 2009. 2
+[8] Michael Biehl, Barbara Hammer, and Thomas Villmann.
+Distance measures for prototype based classiﬁcation. In In-
+ternational Workshop on Brain-Inspired Computing , 2013.
+3, 6
+[9] Christopher M Bishop. Pattern recognition. Machine learn-
+ing, 128(9), 2006. 6
+[10] Holger Caesar, Jasper Uijlings, and Vittorio Ferrari. Coco-
+stuff: Thing and stuff classes in context. In CVPR , 2018. 2,
+6, 7
+[11] Nicolas Carion, Francisco Massa, Gabriel Synnaeve, Nico-
+las Usunier, Alexander Kirillov, and Sergey Zagoruyko.
+End-to-end object detection with transformers. In ECCV ,
+2020. 1
+[12] Mathilde Caron, Piotr Bojanowski, Armand Joulin, and
+Matthijs Douze. Deep clustering for unsupervised learning
+of visual features. In ECCV , 2018. 6
+[13] Mathilde Caron, Ishan Misra, Julien Mairal, Priya Goyal,
+Piotr Bojanowski, and Armand Joulin. Unsupervised learn-
+ing of visual features by contrasting cluster assignments. In
+NeurIPS , 2020. 4, 6
+[14] Liang-Chieh Chen, Jonathan T Barron, George Papan-
+dreou, Kevin Murphy, and Alan L Yuille. Semantic image
+segmentation with task-speciﬁc edge detection using cnns
+and a discriminatively trained domain transform. In CVPR ,
+2016. 5
+[15] Liang-Chieh Chen, George Papandreou, Iasonas Kokki-
+nos, Kevin Murphy, and Alan L Yuille. Deeplab: Se-
+mantic image segmentation with deep convolutional nets,
+atrous convolution, and fully connected crfs. IEEE TPAMI ,
+40(4):834–848, 2017. 1, 5, 6
+[16] Liang-Chieh Chen, Yukun Zhu, George Papandreou, Flo-
+rian Schroff, and Hartwig Adam. Encoder-decoder with
+atrous separable convolution for semantic image segmenta-
+tion. In ECCV , 2018. 5, 7
+[17] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Ge-offrey Hinton. A simple framework for contrastive learning
+of visual representations. In ICML , 2020. 6
+[18] Wuyang Chen, Xinyu Gong, Xianming Liu, Qian Zhang,
+Yuan Li, and Zhangyang Wang. Fasterseg: Searching for
+faster real-time semantic segmentation. In ICLR , 2019. 5
+[19] Xinlei Chen, Haoqi Fan, Ross Girshick, and Kaiming He.
+Improved baselines with momentum contrastive learning.
+arXiv preprint arXiv:2003.04297 , 2020. 6
+[20] Bowen Cheng, Alexander G. Schwing, and Alexander Kir-
+illov. Per-pixel classiﬁcation is not all you need for seman-
+tic segmentation. In NeurIPS , 2021. 1, 5, 7
+[21] MMSegmentation Contributors. MMSegmentation:
+Openmmlab semantic segmentation toolbox and
+benchmark. https : / / github . com / open -
+mmlab/mmsegmentation , 2020. 6
+[22] Marius Cordts, Mohamed Omran, Sebastian Ramos, Timo
+Rehfeld, Markus Enzweiler, Rodrigo Benenson, Uwe
+Franke, Stefan Roth, and Bernt Schiele. The cityscapes
+dataset for semantic urban scene understanding. In CVPR ,
+2016. 2, 6, 7
+[23] Thomas Cover and Peter Hart. Nearest neighbor pattern
+classiﬁcation. IEEE TIT , 13(1):21–27, 1967. 1, 3, 6
+[24] Marco Cuturi. Sinkhorn distances: Lightspeed computation
+of optimal transport. In NeurIPS , 2013. 4
+[25] Jifeng Dai, Haozhi Qi, Yuwen Xiong, Yi Li, Guodong
+Zhang, Han Hu, and Yichen Wei. Deformable convolu-
+tional networks. In CVPR , 2017. 5
+[26] Bert De Brabandere, Davy Neven, and Luc Van Gool. Se-
+mantic instance segmentation for autonomous driving. In
+CVPR Workshop , 2017. 6
+[27] Henghui Ding, Xudong Jiang, Ai Qun Liu, Nadia Magne-
+nat Thalmann, and Gang Wang. Boundary-aware feature
+propagation for scene segmentation. In CVPR , 2019. 5
+[28] Henghui Ding, Xudong Jiang, Bing Shuai, Ai Qun Liu, and
+Gang Wang. Semantic correlation promoted shape-variant
+context for segmentation. In CVPR , 2019. 7
+[29] Nanqing Dong and Eric P Xing. Few-shot semantic seg-
+mentation with prototype learning. In BMVC , 2018. 6
+[30] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold,
+Sylvain Gelly, et al. An image is worth 16x16 words: Trans-
+formers for image recognition at scale. In ICLR , 2020. 5,
+7
+[31] Richard O Duda, Peter E Hart, et al. Pattern classiﬁcation
+and scene analysis , volume 3. Wiley New York, 1973. 1,
+3, 6
+[32] David Eigen and Rob Fergus. Nonparametric image parsing
+using adaptive neighbor sets. In CVPR , 2012. 5
+[33] Jerome H Friedman. The elements of statistical learning:
+Data mining, inference, and prediction . Springer, 2009. 3,
+6
+[34] Jun Fu, Jing Liu, Haijie Tian, Yong Li, Yongjun Bao, Zhi-
+wei Fang, and Hanqing Lu. Dual attention network for
+scene segmentation. In CVPR , 2019. 1, 5, 7
+[35] Jun Fu, Jing Liu, Yuhang Wang, Yong Li, Yongjun Bao,
+Jinhui Tang, and Hanqing Lu. Adaptive context network
+for scene parsing. In ICCV , 2019. 7
+[36] Salvador Garcia, Joaquin Derrac, Jose Cano, and Francisco
+Herrera. Prototype selection for nearest neighbor classi-
+2590
+
+
+==== Page 10 ====
+ﬁcation: Taxonomy and empirical study. IEEE TPAMI ,
+34(3):417–435, 2012. 3, 6
+[37] Jacob Goldberger, Geoffrey E Hinton, Sam Roweis, and
+Russ R Salakhutdinov. Neighbourhood components anal-
+ysis. In NeurIPS , 2004. 6
+[38] Samantha Guerriero, Barbara Caputo, and Thomas
+Mensink. Deepncm: Deep nearest class mean classiﬁers.
+InICLR workshop , 2018. 6
+[39] Michael Gutmann and Aapo Hyv ¨arinen. Noise-contrastive
+estimation: A new estimation principle for unnormalized
+statistical models. In AISTATS , 2010. 6
+[40] Raia Hadsell, Sumit Chopra, and Yann LeCun. Dimension-
+ality reduction by learning an invariant mapping. In CVPR ,
+2006. 2, 6
+[41] Adam W Harley, Konstantinos G Derpanis, and Iasonas
+Kokkinos. Segmentation-aware convolutional networks us-
+ing local attention masks. In ICCV , 2017. 5
+[42] Junjun He, Zhongying Deng, and Yu Qiao. Dynamic multi-
+scale ﬁlters for semantic segmentation. In ICCV , 2019. 5
+[43] Junjun He, Zhongying Deng, Lei Zhou, Yali Wang, and Yu
+Qiao. Adaptive pyramid context network for semantic seg-
+mentation. In CVPR , 2019. 5
+[44] Kaiming He, Haoqi Fan, Yuxin Wu, Saining Xie, and Ross
+Girshick. Momentum contrast for unsupervised visual rep-
+resentation learning. In CVPR , 2020. 6
+[45] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In CVPR ,
+2016. 2, 5, 7
+[46] R Devon Hjelm, Alex Fedorov, Samuel Lavoie-Marchildon,
+Karan Grewal, Phil Bachman, Adam Trischler, and Yoshua
+Bengio. Learning deep representations by mutual informa-
+tion estimation and maximization. In ICLR , 2019. 6
+[47] Chi-Wei Hsiao, Cheng Sun, Hwann-Tzong Chen, and Min
+Sun. Specialize and fuse: Pyramidal output representation
+for semantic segmentation. In ICCV , 2021. 5
+[48] Hanzhe Hu, Deyi Ji, Weihao Gan, Shuai Bai, Wei Wu, and
+Junjie Yan. Class-wise dynamic graph convolution for se-
+mantic segmentation. In ECCV , 2020. 5
+[49] Jie Hu, Li Shen, and Gang Sun. Squeeze-and-excitation
+networks. In CVPR , 2018. 1, 5
+[50] Zilong Huang, Xinggang Wang, Lichao Huang, Chang
+Huang, Yunchao Wei, and Wenyu Liu. Ccnet: Criss-cross
+attention for semantic segmentation. In ICCV , 2019. 5
+[51] Peter J Huber. Robust regression: asymptotics, conjectures
+and monte carlo. The annals of statistics , pages 799–821,
+1973. 8
+[52] Jyh-Jing Hwang, Stella X Yu, Jianbo Shi, Maxwell D
+Collins, Tien-Ju Yang, Xiao Zhang, and Liang-Chieh Chen.
+Segsort: Segmentation by discriminative sorting of seg-
+ments. In ICCV , 2019. 5, 8
+[53] Shipra Jain, Danda Pani Paudel, Martin Danelljan, and
+Luc Van Gool. Scaling semantic segmentation beyond 1k
+classes on a single gpu. In ICCV , 2021. 5
+[54] Saumya Jetley, Bernardino Romera-Paredes, Sadeep Jaya-
+sumana, and Philip Torr. Prototypical priors: From im-
+proving classiﬁcation to zero-shot learning. arXiv preprint
+arXiv:1512.01192 , 2015. 6
+[55] Xu Ji, Joao F Henriques, and Andrea Vedaldi. Invariant in-
+formation clustering for unsupervised image classiﬁcation
+and segmentation. In ICCV , 2019. 4[56] Zhenchao Jin, Tao Gong, Dongdong Yu, Qi Chu, Jian
+Wang, Changhu Wang, and Jie Shao. Mining contextual
+information beyond image for semantic segmentation. In
+ICCV , 2021. 5
+[57] Zhenchao Jin, Bin Liu, Qi Chu, and Nenghai Yu. Isnet: In-
+tegrate image-level and semantic-level context for semantic
+segmentation. In ICCV , 2021. 5
+[58] Mahmut Kaya and Hasan S ¸akir Bilge. Deep metric learn-
+ing: A survey. Symmetry , 11(9):1066, 2019. 6
+[59] Tsung-Wei Ke, Jyh-Jing Hwang, Ziwei Liu, and Stella X
+Yu. Adaptive afﬁnity ﬁelds for semantic segmentation. In
+ECCV , 2018. 7
+[60] Barbara J Knowlton and Larry R Squire. The learning of
+categories: Parallel brain systems for item memory and cat-
+egory knowledge. Science , 262(5140):1747–1749, 1993. 2,
+3
+[61] Teuvo Kohonen. The self-organizing map. Neurocomput-
+ing, 21(1-3):1–6, 1998. 6
+[62] Shu Kong and Charless C Fowlkes. Recurrent pixel embed-
+ding for instance grouping. In CVPR , 2018. 5
+[63] Hanchao Li, Pengfei Xiong, Jie An, and Lingxue Wang.
+Pyramid attention network for semantic segmentation.
+arXiv preprint arXiv:1805.10180 , 2018. 5
+[64] Junnan Li, Pan Zhou, Caiming Xiong, and Steven CH Hoi.
+Prototypical contrastive learning of unsupervised represen-
+tations. In ICLR , 2020. 2, 6
+[65] Oscar Li, Hao Liu, Chaofan Chen, and Cynthia Rudin.
+Deep learning for case-based reasoning through prototypes:
+A neural network that explains its predictions. In AAAI ,
+2018. 6, 8
+[66] Xiangtai Li, Xia Li, Li Zhang, Guangliang Cheng, Jian-
+ping Shi, Zhouchen Lin, Shaohua Tan, and Yunhai Tong.
+Improving semantic segmentation via decoupled body and
+edge supervision. In ECCV , 2020. 5
+[67] Xia Li, Yibo Yang, Qijie Zhao, Tiancheng Shen, Zhouchen
+Lin, and Hong Liu. Spatial pyramid based graph reasoning
+for semantic segmentation. In CVPR , 2020. 7
+[68] Xia Li, Zhisheng Zhong, Jianlong Wu, Yibo Yang,
+Zhouchen Lin, and Hong Liu. Expectation-maximization
+attention networks for semantic segmentation. In ICCV ,
+2019. 5
+[69] Yanwei Li, Lin Song, Yukang Chen, Zeming Li, Xiangyu
+Zhang, Xingang Wang, and Jian Sun. Learning dynamic
+routing for semantic segmentation. In CVPR , 2020. 5
+[70] Guosheng Lin, Anton Milan, Chunhua Shen, and Ian
+Reid. Reﬁnenet: Multi-path reﬁnement networks for high-
+resolution semantic segmentation. In CVPR , 2017. 5
+[71] Tsung-Yi Lin, Michael Maire, Serge Belongie, James
+Hays, Pietro Perona, Deva Ramanan, Piotr Doll ´ar, and
+C Lawrence Zitnick. Microsoft coco: Common objects in
+context. In ECCV , 2014. 6
+[72] Chenxi Liu, Liang-Chieh Chen, Florian Schroff, Hartwig
+Adam, Wei Hua, Alan L Yuille, and Li Fei-Fei. Auto-
+deeplab: Hierarchical neural architecture search for seman-
+tic image segmentation. In CVPR , 2019. 5
+[73] Ce Liu, Jenny Yuen, and Antonio Torralba. Sift ﬂow: Dense
+correspondence across scenes and its applications. IEEE
+TPAMI , 33(5):978–994, 2010. 5
+[74] Ce Liu, Jenny Yuen, and Antonio Torralba. Nonpara-
+metric scene parsing via label transfer. IEEE TPAMI ,
+2591
+
+
+==== Page 11 ====
+33(12):2368–2382, 2011. 5
+[75] Mingyuan Liu, Dan Schonfeld, and Wei Tang. Exploit vi-
+sual dependency relations for semantic segmentation. In
+CVPR , 2021. 5
+[76] Weiyang Liu, Yandong Wen, Zhiding Yu, and Meng Yang.
+Large-margin softmax loss for convolutional neural net-
+works. In ICML , 2016. 3
+[77] Ziwei Liu, Xiaoxiao Li, Ping Luo, Chen Change Loy, and
+Xiaoou Tang. Deep learning markov random ﬁeld for
+semantic segmentation. IEEE TPAMI , 40(8):1814–1828,
+2017. 5
+[78] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng
+Zhang, Stephen Lin, and Baining Guo. Swin transformer:
+Hierarchical vision transformer using shifted windows. In
+ICCV , 2021. 2, 5, 6, 7
+[79] Jonathan Long, Evan Shelhamer, and Trevor Darrell. Fully
+convolutional networks for semantic segmentation. In
+CVPR , 2015. 1, 5, 6, 7
+[80] Tomasz Malisiewicz and Alexei A Efros. Recognition by
+association via learning per-exemplar distances. In CVPR ,
+2008. 5
+[81] Sachin Mehta, Mohammad Rastegari, Anat Caspi, Linda
+Shapiro, and Hannaneh Hajishirzi. Espnet: Efﬁcient spatial
+pyramid of dilated convolutions for semantic segmentation.
+InECCV , 2018. 5
+[82] Tim Meinhardt, Alexander Kirillov, Laura Leal-Taixe, and
+Christoph Feichtenhofer. Trackformer: Multi-object track-
+ing with transformers. arXiv preprint arXiv:2101.02702 ,
+2021. 1
+[83] Pascal Mettes, Elise van der Pol, and Cees Snoek. Hyper-
+spherical prototype networks. In NeurIPS , 2019. 3, 6
+[84] Tom M Mitchell. The need for biases in learning general-
+izations . Department of Computer Science, Laboratory for
+Computer Science Research, 1980. 3
+[85] Vladimir Nekrasov, Hao Chen, Chunhua Shen, and Ian
+Reid. Fast neural architecture search of compact semantic
+segmentation models via auxiliary cells. In CVPR , 2019. 5
+[86] Davy Neven, Bert De Brabandere, Marc Proesmans, and
+Luc Van Gool. Instance segmentation by jointly optimizing
+spatial embeddings and clustering bandwidth. In CVPR ,
+2019. 6
+[87] Allen Newell, Herbert Alexander Simon, et al. Human
+problem solving , volume 104. 1972. 6
+[88] Aaron van den Oord, Yazhe Li, and Oriol Vinyals. Repre-
+sentation learning with contrastive predictive coding. arXiv
+preprint arXiv:1807.03748 , 2018. 6
+[89] Tianyu Pang, Kun Xu, Yinpeng Dong, Chao Du, Ning
+Chen, and Jun Zhu. Rethinking softmax cross-entropy loss
+for adversarial robustness. In ICLR , 2020. 2, 4
+[90] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-
+net: Convolutional networks for biomedical image segmen-
+tation. In MICCAI , 2015. 5
+[91] Eleanor H Rosch. Natural categories. Cognitive psychol-
+ogy, 4(3):328–350, 1973. 2, 3
+[92] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause,
+Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej
+Karpathy, Aditya Khosla, Michael S. Bernstein, Alexan-
+der C. Berg, and Fei-Fei Li. Imagenet large scale visual
+recognition challenge. IJCV , 115(3):211–252, 2015. 6
+[93] Ruslan Salakhutdinov and Geoff Hinton. Learning a non-linear embedding by preserving class neighbourhood struc-
+ture. In Artiﬁcial Intelligence and Statistics , pages 412–
+419, 2007. 6
+[94] Atsushi Sato and Keiji Yamada. Generalized learning vec-
+tor quantization. In NeurIPS , 1995. 6
+[95] Florian Schroff, Dmitry Kalenichenko, and James Philbin.
+Facenet: A uniﬁed embedding for face recognition and
+clustering. In CVPR , 2015. 3, 6
+[96] John Shawe-Taylor, Nello Cristianini, et al. Kernel methods
+for pattern analysis . Cambridge university press, 2004. 6
+[97] Karen Simonyan and Andrew Zisserman. Very deep con-
+volutional networks for large-scale image recognition. In
+ICLR , 2015. 5
+[98] Jake Snell, Kevin Swersky, and Richard S Zemel. Proto-
+typical networks for few-shot learning. In NeurIPS , 2017.
+6
+[99] Kihyuk Sohn. Improved deep metric learning with multi-
+class n-pair loss objective. In NeurIPS , 2016. 6
+[100] Robin Strudel, Ricardo Garcia, Ivan Laptev, and Cordelia
+Schmid. Segmenter: Transformer for semantic segmenta-
+tion. In ICCV , 2021. 1, 5, 7
+[101] Guolei Sun, Wenguan Wang, Jifeng Dai, and Luc Van Gool.
+Mining cross-image semantics for weakly supervised se-
+mantic segmentation. In ECCV , 2020. 5
+[102] Joseph Tighe and Svetlana Lazebnik. Superparsing: scal-
+able nonparametric image parsing with superpixels. In
+ECCV , 2010. 5
+[103] Antonio Torralba, Rob Fergus, and William T Freeman.
+80 million tiny images: A large data set for nonparametric
+object and scene recognition. IEEE TPAMI , 30(11):1958–
+1970, 2008. 5
+[104] Wouter Van Gansbeke, Simon Vandenhende, Stamatios
+Georgoulis, Marc Proesmans, and Luc Van Gool. Scan:
+Learning to classify images without labels. In ECCV , 2020.
+6
+[105] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser,
+and Illia Polosukhin. Attention is all you need. In NeurIPS ,
+2017. 1, 5
+[106] Oriol Vinyals, Charles Blundell, Timothy Lillicrap, Daan
+Wierstra, et al. Matching networks for one shot learning. In
+NeurIPS , 2016. 6
+[107] Jiang Wang, Yang Song, Thomas Leung, Chuck Rosen-
+berg, Jingbin Wang, James Philbin, Bo Chen, and Ying Wu.
+Learning ﬁne-grained image similarity with deep ranking.
+InCVPR , 2014. 6
+[108] Jingdong Wang, Ke Sun, Tianheng Cheng, Borui Jiang,
+Chaorui Deng, Yang Zhao, Dong Liu, Yadong Mu, Mingkui
+Tan, Xinggang Wang, et al. Deep high-resolution represen-
+tation learning for visual recognition. IEEE TPAMI , 2020.
+2, 6, 7
+[109] Kaixin Wang, Jun Hao Liew, Yingtian Zou, Daquan Zhou,
+and Jiashi Feng. Panet: Few-shot image semantic segmen-
+tation with prototype alignment. In ICCV , 2019. 6
+[110] Wenguan Wang, Tianfei Zhou, Siyuan Qi, Jianbing Shen,
+and Song-Chun Zhu. Hierarchical human semantic parsing
+with comprehensive part-relation modeling. IEEE TPAMI ,
+2021. 5
+[111] Wenguan Wang, Tianfei Zhou, Fisher Yu, Jifeng Dai, En-
+der Konukoglu, and Luc Van Gool. Exploring cross-image
+2592
+
+
+==== Page 12 ====
+pixel contrast for semantic segmentation. In ICCV , 2021.
+2, 5, 7
+[112] Xiaolong Wang, Ross Girshick, Abhinav Gupta, and Kaim-
+ing He. Non-local neural networks. In CVPR , 2018. 5
+[113] Yuqing Wang, Zhaoliang Xu, Xinlong Wang, Chunhua
+Shen, Baoshan Cheng, Hao Shen, and Huaxia Xia. End-
+to-end video instance segmentation with transformers. In
+CVPR , 2021. 1
+[114] Yandong Wen, Kaipeng Zhang, Zhifeng Li, and Yu Qiao.
+A discriminative feature learning approach for deep face
+recognition. In ECCV , 2016. 3
+[115] Zhirong Wu, Alexei A Efros, and Stella X Yu. Improving
+generalization via scalable neighborhood component anal-
+ysis. In ECCV , 2018. 2, 6
+[116] Zhirong Wu, Yuanjun Xiong, Stella X Yu, and Dahua Lin.
+Unsupervised feature learning via non-parametric instance
+discrimination. In CVPR , 2018. 2, 6
+[117] Tete Xiao, Yingcheng Liu, Bolei Zhou, Yuning Jiang, and
+Jian Sun. Uniﬁed perceptual parsing for scene understand-
+ing. In ECCV , 2018. 7
+[118] Enze Xie, Wenhai Wang, Zhiding Yu, Anima Anandkumar,
+Jose M Alvarez, and Ping Luo. Segformer: Simple and ef-
+ﬁcient design for semantic segmentation with transformers.
+InNeurIPS , 2021. 1, 2, 3, 5, 6, 7, 8
+[119] Junyuan Xie, Ross Girshick, and Ali Farhadi. Unsupervised
+deep embedding for clustering analysis. In ICML , 2016. 6
+[120] Wenjia Xu, Yongqin Xian, Jiuniu Wang, Bernt Schiele, and
+Zeynep Akata. Attribute prototype network for zero-shot
+learning. In NeurIPS , 2020. 6
+[121] Kouta Nakata Yaling Tao, Kentaro Takagi. Clustering-
+friendly representation learning via instance discrimination
+and feature decorrelation. In ICLR , 2021. 6
+[122] Xueting Yan, Ishan Misra, Abhinav Gupta, Deepti Ghadi-
+yaram, and Dhruv Mahajan. Clusterﬁt: Improving general-
+ization of visual representations. In CVPR , 2020. 6
+[123] Hong-Ming Yang, Xu-Yao Zhang, Fei Yin, and Cheng-
+Lin Liu. Robust classiﬁcation with convolutional prototype
+learning. In CVPR , 2018. 3, 6
+[124] Maoke Yang, Kun Yu, Chi Zhang, Zhiwei Li, and Kuiyuan
+Yang. Denseaspp for semantic segmentation in street
+scenes. In CVPR , 2018. 5
+[125] Yi Yang, Yueting Zhuang, and Yunhe Pan. Multiple
+knowledge representation for big data artiﬁcial intelli-
+gence: framework, applications, and case studies. Fron-
+tiers of Information Technology & Electronic Engineering ,
+22(12):1551–1558, 2021. 6
+[126] Changqian Yu, Jingbo Wang, Changxin Gao, Gang Yu,
+Chunhua Shen, and Nong Sang. Context prior for scene
+segmentation. In CVPR , 2020. 5
+[127] Changqian Yu, Jingbo Wang, Chao Peng, Changxin Gao,
+Gang Yu, and Nong Sang. Learning a discriminative feature
+network for semantic segmentation. In CVPR , 2018. 5
+[128] Fisher Yu and Vladlen Koltun. Multi-scale context aggre-
+gation by dilated convolutions. In ICLR , 2016. 5
+[129] Yuhui Yuan, Xilin Chen, and Jingdong Wang. Object-
+contextual representations for semantic segmentation. In
+ECCV , 2020. 5, 7
+[130] Yuhui Yuan, Rao Fu, Lang Huang, Weihong Lin, Chao
+Zhang, Xilin Chen, and Jingdong Wang. Hrformer: High-
+resolution transformer for dense prediction. In NeurIPS ,2021. 7
+[131] Yuhui Yuan, Jingyi Xie, Xilin Chen, and Jingdong Wang.
+Segﬁx: Model-agnostic boundary reﬁnement for segmenta-
+tion. In ECCV , 2020. 5
+[132] Hang Zhang, Kristin Dana, Jianping Shi, Zhongyue Zhang,
+Xiaogang Wang, Ambrish Tyagi, and Amit Agrawal. Con-
+text encoding for semantic segmentation. In CVPR , 2018.
+5
+[133] Kai Zhang, James T Kwok, and Bahram Parvin. Prototype
+vector machine for large scale semi-supervised learning. In
+ICML , 2009. 2
+[134] Xiao Zhang, Rui Zhao, Yu Qiao, and Hongsheng Li. Rbf-
+softmax: Learning deep representative prototypes with ra-
+dial basis function softmax. In ECCV , 2020. 2, 4
+[135] Hengshuang Zhao, Jianping Shi, Xiaojuan Qi, Xiaogang
+Wang, and Jiaya Jia. Pyramid scene parsing network. In
+CVPR , 2017. 1, 5, 7
+[136] Hengshuang Zhao, Yi Zhang, Shu Liu, Jianping Shi, Chen
+Change Loy, Dahua Lin, and Jiaya Jia. Psanet: Point-wise
+spatial attention network for scene parsing. In ECCV , 2018.
+5, 7
+[137] Mingmin Zhen, Jinglu Wang, Lei Zhou, Shiwei Li, Tianwei
+Shen, Jiaxiang Shang, Tian Fang, and Long Quan. Joint se-
+mantic segmentation and boundary detection using iterative
+pyramid contexts. In CVPR , 2020. 5
+[138] Shuai Zheng, Sadeep Jayasumana, Bernardino Romera-
+Paredes, Vibhav Vineet, Zhizhong Su, Dalong Du, Chang
+Huang, and Philip HS Torr. Conditional random ﬁelds as
+recurrent neural networks. In ICCV , 2015. 5
+[139] Sixiao Zheng, Jiachen Lu, Hengshuang Zhao, Xiatian Zhu,
+Zekun Luo, Yabiao Wang, Yanwei Fu, Jianfeng Feng, Tao
+Xiang, Philip HS Torr, et al. Rethinking semantic segmen-
+tation from a sequence-to-sequence perspective with trans-
+formers. In CVPR , 2021. 1, 2, 3, 5, 7
+[140] Bolei Zhou, Hang Zhao, Xavier Puig, Sanja Fidler, Adela
+Barriuso, and Antonio Torralba. Scene parsing through
+ade20k dataset. In CVPR , 2017. 2, 6, 7, 8
+[141] Tianfei Zhou, Liulei Li, Xueyi Li, Chun-Mei Feng, Jianwu
+Li, and Ling Shao. Group-wise learning for weakly super-
+vised semantic segmentation. IEEE TIP , 31:799–811, 2021.
+5
+2593
+
+

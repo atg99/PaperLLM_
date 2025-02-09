@@ -1,0 +1,1490 @@
+==== Page 1 ====
+AWB-GCN: A Graph Convolutional Network
+Accelerator with Runtime Workload Rebalancing
+Tong Geng1;2, Ang Li2, Runbin Shi4, Chunshu Wu1, Tianqi Wang1, Yanfei Li5,
+Pouya Haghi1, Antonino Tumeo2, Shuai Che3, Steve Reinhardt3, Martin C. Herbordt1
+1Boston University
+2Paciﬁc Northwest National Laboratory
+3Microsoft
+4The University of Hong Kong
+5Zhejiang University
+Abstract —Deep learning systems have been successfully ap-
+plied to Euclidean data such as images, video, and audio. In
+many applications, however, information and their relationships
+are better expressed with graphs. Graph Convolutional Networks
+(GCNs) appear to be a promising approach to efﬁciently learn
+from graph data structures, having shown advantages in many
+critical applications. As with other deep learning modalities,
+hardware acceleration is critical. The challenge is that real-world
+graphs are often extremely large and unbalanced; this poses
+signiﬁcant performance demands and design challenges.
+In this paper, we propose Autotuning-Workload-Balancing
+GCN (A WB-GCN) to accelerate GCN inference. To address the is-
+sue of workload imbalance in processing real-world graphs, three
+hardware-based autotuning techniques are proposed: dynamic
+distribution smoothing, remote switching, and row remapping. In
+particular, A WB-GCN continuously monitors the sparse graph
+pattern, dynamically adjusts the workload distribution among
+a large number of processing elements (up to 4K PEs), and,
+after converging, reuses the ideal conﬁguration. Evaluation is
+performed using an Intel D5005 FPGA with ﬁve commonly-used
+datasets. Results show that 4K-PE A WB-GCN can signiﬁcantly
+elevate PE utilization by 7.7 on average and demonstrate
+considerable performance speedups over CPUs (3255 ), GPUs
+(80.3), and a prior GCN accelerator (5.1 ).
+Index Terms —Graph Neural Network, Graph Convolutional
+Network, Sparse Matrix Multiplication, Computer Architecture,
+Machine Learning Accelerator, Dynamic Scheduling
+I. I NTRODUCTION
+Deep learning paradigms such as Convolutional Neural
+Networks (CNNs) [1] and Recurrent Neural Networks (RNNs)
+[2] have been applied to a wide range of applications including
+image classiﬁcation, video processing, speech recognition, and
+natural language processing [3]–[7]. These paradigms, how-
+ever, are only able to extract and analyze latent information
+from euclidean data such as images, video, audio, and text [8]–
+[10]. As a result, the adoption of neural networks is greatly
+limited in ﬁelds with complex relationships among objects.
+A large (and increasing) number of applications use non-
+Euclidean data structures that are modeled as graphs. Nodes
+and edges represent objects and relationships between those
+objects, respectively, as appropriate for the application. Mostof these graphs have a tremendously large numbers of nodes;
+moreover, the node degree generally varies dramatically, often
+following a power law distribution [11]–[17].
+The irregularity of the graph data makes most of the
+existing Neural Network (NN) algorithms ill-suited; critical
+feature extraction operations, such as convolutions, are no
+longer applicable. To tackle this issue, Graph Neural Networks
+(GNNs) have been proposed, in various forms, to extend
+deep learning approaches to graph data [8], [18]–[25]. Among
+various GNNs, the Graph Convolutional Network (GCN), an
+approach that marries some ideas of CNNs to the distinct
+needs of graph data processing, has demonstrated signiﬁcant
+potential and become one of the most important topics in NN-
+based graph research [26]–[30].
+With the rapid development of GCNs, designing dedicated
+hardware accelerators has become an urgent issue [31]. GCNs
+have already been investigated in a large number of real-
+world applications [8], including electric grid cascading failure
+analysis [32], prediction of chemical reactivity [33], prediction
+of synthesized material properties [34], polypharmacy side-
+effect modeling [35], accurate advertisement in E-commerce
+[36], and cybersecurity [37]. Many of these applications pose
+stringent constraints on latency and throughput.
+Accelerators developed for other domains, such as the
+sparse-CNN-accelerator (SCNN) [38]–[40], are not likely to
+be optimal as GCN accelerators. There are several reasons.
+(i)GCN applications have highly unbalanced non-zero data
+distributions: non-zeros can be clustered or appear in only
+a few rows. This leads to computing challenges [11]–[13]
+due to workload imbalance [14]. Figure 1 compares the
+distribution of non-zeros between a typical adjacency matrix
+in a GCN and a typical sparse-weight matrix in a CNN: the
+distribution of non-zeros is much more balanced in the SCNN.
+(ii)Extremely high sparsity . The sparsity of a graph adjacency
+matrix often exceeds 99 :9%, while the sparsity of SCNNs
+generally ranges from 10% to 50%. Therefore, in GCNs the
+indices of consecutive non-zero elements are often highly
+scattered; this makes it a major challenge to identify and accessarXiv:1908.10834v10  [cs.DC]  11 Sep 2020
+
+==== Page 2 ====
+05010015020025030035001k2k3k4k5k
+657552
+Row ID37
+050100150200250300350010203040506070Non-zero ElementsNon-zero Elements
+Row IDOrdered NNZ Elements per Row
+GCN SCNN
+4550Fig. 1. Histograms show ordered non-zero per-row density. Left: Adjacency
+matrix of the NELL graph (avg. density: 0.0073%) has most of non-zeros
+clustered in 70/66k rows. Right: Unstructured compressed AlexNet weight
+matrix (avg. density: 27%) has workload roughly balanced across 384 rows.
+65754 x 65754Evil Rows
+Regionally 
+Clustered
+    Least 
+Clustered
+Fig. 2. Adjacency matrix of NELL following power-law distribution: elements
+are clustered regionally and in a few rows/cols. The matrix density is 0.0073%.
+For better visualization, non-zero dots are enlarged.
+sufﬁcient valid non-zero pairs to feed a massive number of PEs
+per cycle at an acceptable hardware cost (see Section 6). (iii)
+Large matrix size. Real-world graphs are usually very large.
+For example, the Reddit graph has 233K nodes and 115M
+edges. Its 23K23K adjacency matrix requires 1.7Tb storage
+in dense format or 11.0Gb in sparse format, which usually
+cannot ﬁt into on-chip memory. Although neural networks also
+have large models, the matrix of a particular layer is often
+much smaller, e.g., 1k 1k, so the working set often can ﬁt
+easily into on-chip memory.
+For these reasons, novel and efﬁcient accelerator designs are
+urgently required to accelerate GCN workloads. We therefore
+propose AWB-GCN, a hardware accelerator for GCN infer-
+ence with workload auto-tuning. It monitors the workload dis-
+tribution at three levels at runtime and, accordingly, rebalances
+the distribution per round1.
+Three techniques are proposed: distribution smoothing ,re-
+mote switching , and evil row remapping . Distribution smooth-
+ing balances the workload among neighbors. In matrices
+1The calculation of one output matrix column is a round
+Fig. 3. AWB-GCN utilization improvement per round.
+following the power-law distribution, non-zero elements are
+usually clustered, and, in some cases, appear in just a few
+rows/columns (Figure 2). Given only distribution smoothing,
+it would be slow and difﬁcult for an autotuner to converge
+and achieve good load balance. We solve this problem with
+remote switching andevil row remapping . Remote switching
+shufﬂes workloads of regions with the most and least clustered
+non-zero elements, making efﬁcient distribution smoothing
+possible. If a row is observed to still contain too many
+elements to be smoothed or balanced by remote switching,
+it is designated as an evil row. AWB-GCN partitions that row
+and remaps its non-zero elements to multiple regions (with
+least clustered elements). Figure 3 shows the resulting per-
+round improvement in hardware utilization as these methods
+are applied (Nell GCN).
+This paper makes the following contributions:
+We propose a novel and efﬁcient architecture for accel-
+erating GCNs and Sparse Matrix Multiplication (SpMM)
+kernels for matrices with a power-law distribution.
+To handle the extreme workload imbalance, we propose a
+hardware-based workload distribution autotuning frame-
+work, which includes an efﬁcient online workload proﬁler
+and three workload rebalancing techniques.
+We evaluate AWB-GCN using an Intel D5005 FPGA
+Acceleration Card with ﬁve of the most widely used GCN
+datasets. Results show that 4K-PE AWB-GCN improves
+the PE utilization on average by 7.7 as compared with
+the baseline without workload rebalancing. Compared
+with CPUs (Intel Xeon E5-2680v3 + PyTorch Geometric
+(PyG)), GPUs (NVIDIA Quadro RTX 8000 + PyG),
+and prior art, AWB-GCN achieves average speedups of
+3255, 80.3, and 5.1, respectively.
+II. M OTIVATION
+In this section we brieﬂy introduce the GCN algorithm and
+discuss data characteristics of power-law graphs.
+A. Graph Convolutional Network Structure
+Equation 1 shows the layer-wise forward propagation of a
+multi-layer spectral GCN [8], [29]:
+X(l+1)=s(AX(l)W(l)) (1)
+2
+
+==== Page 3 ====
+Fig. 4. Illustration of a GCONV layer in GCNs.
+Ais the graph adjacency matrix with each row delineating
+the connection of a vertex with all the other vertices in the
+graph. X(l)is the matrix of input features in layer- l; each
+column of Xrepresents a feature while each row denotes a
+node. Wlis the weight matrix of layer- l.s(:)denotes the non-
+linear activation function, e.g., ReLU [1]. In general Aneeds
+to be normalized: ˜A=D 1
+2(A+I)D 1
+2where Iis the
+identity matrix, and Dii=åAi j. The reason is that, without
+normalization, multiplying the feature vector X(l)byAwill
+change its scale: those nodes with more neighbors tend to
+have larger values under feature extraction. Note that during
+both training and inference of GCN, ˜Aremains constant. Since
+˜Acan be computed ofﬂine from A, in the remainder of this
+paper we use Ato denote the normalized ˜A. In general A
+is multiplied only once per layer. However, when multi-hop
+neighbor information is to be collected, Acan be multiplied
+twice or more (i.e., A2,A3, etc.) per layer.
+Equation 1 is derived from graph signal processing theory:
+convolutions on a graph can be converted to a multiplication of
+signal x2RN(i.e., a scalar for each node) and a ﬁlter g2RN
+in the frequency domain via the Fourier transform:
+CONV (g;x) =F 1(F(x)F(w)) = U(UTxUTg)(2)
+wheredenotes the Hadamard product. Uis a collection
+of eigenvectors for the normalized graph Laplacian L=
+IN D 1
+2AD 1
+2=ULU. The diagonal matrix Lcomprises
+the eigenvalues. If a frequency domain ﬁlter gW=diag(W)
+is deﬁned, then Equation 2 can be simpliﬁed [27] as:
+CONV (gW;x) =UgWUTx (3)
+Equation 3 can be further simpliﬁed by deﬁning the ﬁlter as
+the Chebyshev polynomials of the diagonal matrix L[28], [29]
+to obtain Equation 1.
+Figure 4 illustrates the structure of a Graph Convolutional
+layer (GCONV). Each GCONV layer encapsulates the hidden
+features of nodes by aggregating information from neighbors
+of nodes. By multiplying AandX(l), information from 1-hop
+connected neighboring nodes are aggregated. By multiplying
+AX(l)with W(l), and going through the non-linear activation
+function s(), we obtain the output of this layer, which is also
+the feature matrix for the next layer X(l+1). The matrix A will
+normally be the same in different layers. After multiple layers,
+the GCN is able to extract very high-level abstracted features
+for various learning purposes.TABLE I
+MATRIX DENSITY AND DIMENSIONS OF 5WIDELY -USED GCN DATASETS .
+CORA CITESEER PUBMED NELL REDDIT
+DensityA 0.18% 0.11% 0.028% 0.0073% 0.21%
+W 100% 100% 100% 100% 100%
+X1 1.27% 0.85% 10.0% 0.011% 100%
+X2 78.0% 89.1% 77.6% 86.4% 63.9%
+DimensionNode 2708 3327 19717 65755 232965
+Feature 1433 3703 500 61278 602
+B. Characteristics of Power-Law Graphs
+Real-world graphs in many critical domains typically follow
+thepower-law distribution [14]–[17], which states that the
+number of nodes yof a given degree xis proportional to
+x bfor a constant b>0. This implies that in the adjacency
+matrix A, a small number of rows (or columns) include the
+majority of non-zeros whereas the majority of the rows (or
+columns) contain only a few non-zeros but are not empty.
+Figure 5 shows the distribution of non-zero elements for the
+ﬁve publicly available datasets that are widely used for GCN
+evaluation [29]. The power-law effect is prominent for Cora ,
+Citeseer ,Pubmed andNell .
+Table I lists the density and dimension of matrices in the ﬁve
+GCN datasets used in this paper. Note that adjacency matrix
+Ais always very sparse ( 99%). Matrix Xis also usually
+sparse. For the ﬁrst layer, the sparsity ( X1) is usually larger
+than 90%. As the weight matrix Wis dense, the output of
+AXW is also dense. However, because of the ReLU activation
+function, the ﬁnal output X2 (also the input of the next layer)
+becomes sparse but with sparsity usually less than 50%. The
+sizes of the matrices in GCNs depend on the dataset and can
+range from thousands to millions or more. Acan be extremely
+large and is stored in a sparse format.
+III. GCN B ASELINE ARCHITECTURE
+This section introduces the multi-core baseline architec-
+ture for GCN acceleration. This baseline supports efﬁcient
+processing of power-law graphs with ultra-high sparsity and
+large sizes. This design alone cannot address the workload
+imbalance issue of power-law graphs, but builds a foundation
+for its further augmentation, described in the next section,
+which achieves near-optimal workload balancing.
+A. Matrix Computation Order
+To compute AXW at each GCONV layer, there are two
+alternative computation orders: (AX)WandA(XW).
+The choice is signiﬁcant as it dictates the volume of non-
+zero multiplications. Based on proﬁling, Ais ultra sparse and
+large, Xis generally sparse and usually has a large number
+of columns, and Wis small and dense. For (AX)W,
+since multiplying Aand Xrequires complex sparse-sparse-
+matrix-multiplication and produces a very large dense matrix,
+multiplying their product by another dense matrix Wleads
+to signiﬁcant computation workload and long delay. Alterna-
+tively, for A(XW), both are sparse-dense matrix multi-
+plications (SpMM) and the scale of computation is drastically
+smaller. Table II lists the amount of computation for the ﬁve
+3
+
+==== Page 4 ====
+Fig. 5. Non-zero distribution imbalance of Adjacency matrices in Cora, Citeseer, Pubmed, Nell and Reddit datasets.
+TABLE II
+OPERATIONS REQUIRED UNDER DIFFERENT EXEC ORDERS .
+Layer Order CORA CITESEER PUBMED NELL REDDIT
+Ops(AX)W 62.8M 198.0M 165.5M 258G 83.3G
+A(XW) 1.33M 2.23M 18.6M 782M 21.4G
+datasets following the two approaches. Since the difference is
+quite obvious, in this design we ﬁrst perform XWand then
+multiply with A.
+B. SpMM Execution Order and Mapping
+We perform column-wise-product-based SpMM [41]–[43]
+as described as follows. Given SB=C, ifSis(mn),Bis
+(nk), and Cis(mk), then we can reformulate Cas:
+C= [n 1
+å
+j=0Sjb(j;0);n 1
+å
+j=0Sjb(j;1);:::;n 1
+å
+j=0Sjb(j;k 1)] (4)
+where Sjis the jth column of Sand bj;kis an element of
+Bat row- jand column- k. In other words, by broadcasting
+thejth element from column- kofBto the entire column- j
+ofS, we can obtain a partial column of C. Essentially, Bis
+processed in a streaming fashion: each element b(j;k)ﬁnishes
+all computation it involves at once and is then evicted. In this
+way, we reuse the entire sparse matrix Sfor each column of C
+(ktimes in total). To reduce off-chip memory access for matrix
+S, we apply inter-layer data forwarding and matrix blocking
+techniques (discussed in Section 3.4).
+This design has additional advantages when SandCare
+stored in Compressed-Sparse-Column (CSC) format. Further-
+more, it provides opportunities to pipeline multiple SpMM
+operations, as is discussed in Section 3.4. Moreover, column-
+wise-product brings massive opportunities of workload distri-
+bution autotuning which is key to achieving high performance.
+Figure 6(A) shows the column-wise order for calculating C.
+The columns of Sand elements of Bin the same color are
+multiplied and stored as partial results in Cwith the same
+color.
+In the baseline design, with the assumption that non-zeros
+are evenly distributed among the rows, we use a direct and
+static mapping from matrix rows to PEs to avoid expensive
+parallel reduction in hardware as illustrated in Figure 6(B).
+C. Design of Baseline Architecture
+Figure 7 illustrates the baseline design for SpMM calcu-
+lation with efﬁcient support of skipping zeros. The archi-
+Fig. 6. (A) SpMM computation order: Column-wise-product; (B) Matrix
+partitioning & mapping among PEs.
+tecture comprises the modules sparse-matrix-memory (Sp-
+MMeM), dense-column-memory (DCM), task-distributor &
+Queue (TDQ), PE-array , and accumulation-buffers-array
+(ACC Buffer). SpMMeM buffers the input sparse matrix S
+(from off-chip) and feeds non-zeros and their indices to TDQ.
+DCM buffers the input dense matrix Band broadcasts its
+elements to TDQ. TDQ distributes tasks to the PEs. The PE-
+array performs concurrent multiplication of non-zero pairs,
+partial result accumulation, and data exchange with the ACC
+Buffers. Finally, the ACC Buffers cache the partial results
+of the resulting matrix Cfor accumulation and send them to
+the next SpMM engine at the completion of a whole column
+calculation. Depending on the sparsity and storage format of
+S, i.e., CSC, we have two alternative designs for TDQ:
+TDQ-1 (Figure 7-left) is used when Sis generally sparse (spar-
+sity<75%) and stored in dense format. We perform the direct
+row partition as discussed and map non-zeros to the input
+buffer of the corresponding PEs (Figure 6(B)). In each cycle,
+NPE =(1 Sparsity )elements are forwarded to the PE array.
+Only non-zeros are kept in the queues. Here NPE denotes
+the number of parallel PEs. Given evenly distributed non-
+zeros, each PE receives one non-zero per cycle to calculate. In
+practice, however, the distribution can be very imbalanced and
+each PE has the chance to receive at most 1 =(1 Sparsity )in
+one cycle. Therefore, each PE is equipped with multiple Task
+Queues (TQs) guaranteeing enough concurrency to cache all
+valid data. As shown in Figure 7-(left), in each cycle a PE can
+receive up to 4 non-zero elements (sparsity <75%). Each PE
+has four task queues to buffer them.
+In each cycle, an arbiter selects a non-empty queue, pops
+an element, checks for a Read-after-Write (RaW) hazard, and
+forwards it to the PE for processing. Since the computations
+are all ﬂoating-point, the pipelined multiply-accumulate-unit
+(MAC) usually takes several cycles to process, but can still
+4
+
+==== Page 5 ====
+Fig. 7. Architecture of the proposed baseline SpMM engine.
+accept new tasks while processing. If the new task tries to
+accumulate the same partial result of C (i.e., from the same
+row of A), it actually fetches a stale partial result from the
+ACC buffer and a RaW hazard occurs. To avoid this hazard,
+we implement a stall buffer of size T, where T is the delay
+of the MAC units. We track the row indices currently being
+processed by the MAC and check whether the current element
+is targeting the same row in the RaW-check-unit. If so, we
+buffer that job and delay until the hazard is resolved. The
+RaW hazard is detected by checking the row index of the
+coming data.
+TDQ-2 (Figure 7-right) is used when Sis ultra-sparse and
+stored in CSC format. Since in CSC the non-zeros are con-
+tiguous in a dense array, if we can directly process the dense
+array, we gain from avoiding all the zeros. However, we suffer
+from the overhead of navigating to the correct PE as the indices
+of neighboring elements are highly scattered. We use a multi-
+stage Omega-network for routing the non-zeros to the correct
+PE according to their row indices. Each router in the Omega-
+network has a local buffer in case the buffer of the next stage is
+saturated. This design attempts to balance the data forwarding
+rate and the processing capability of the PEs by sending NPE
+non-zeros per cycle. This is achieved when non-zero elements
+are distributed evenly among rows. Compared with a global
+crossbar network, the Omega-network design scales better and
+incurs lower hardware complexity.
+When a PE receives a new non-zero pair [ d1;d2] from
+TDQ, it (1) performs the new multiplication task with d1;d2,
+(2) fetches the corresponding partial results [ dacc] of output
+matrix Cfrom the ACC buffers according to the newly
+received row index, (3) accumulates the multiplication result
+and dacc, and (4) updates the ACC buffers with the new
+accumulation result. Each PE is coupled with a bank of ACC
+buffer to store the rows of Cit accounts for. A PE has
+two units: a MAC and an Address-Generation-Unit (AGU)
+for result address generation and forwarding. Since Cis a
+dense matrix and stored in dense format, the rows of Care
+statically partitioned among ACC buffers. Synchronization is
+only needed when an entire column of the resulting matrix C
+is completely calculated.
+Overall, for each layer of GCN, we ﬁrst execute SpMMonXW. Since Xis generally sparse (except the ﬁrst layer)
+and stored in dense format, we use TDQ-1. The result of XW
+is dense. We then compute A(XW)which again is SpMM.
+However, as Ais ultra-sparse and stored in CSC format, we use
+TDQ-2. The result is dense, but after ReLU , a large fraction
+of the entries become zero, and we again have a sparse matrix
+as the input feature matrix for the next layer.
+D. Pipelining SpMM Chains
+Intra-Layer SpMM Pipelining: One can exploit the par-
+allelism between consecutive SpMMs (i.e., XWand A
+(XW)) in a layer through ﬁne-grained pipelining. This is based
+on the observation that Ais constant for the inference of a
+certain graph. Once a column of (XW)is calculated, we can
+start the multiplication of this column with Aimmediately
+without waiting for the entire XW (see Figure 8). This design
+has two major beneﬁts: (i) we gain extra parallelism and
+reduce the overall latency through this ﬁne-grained pipelining,
+and (ii) instead of requiring off-chip storage to cache the
+big resulting XW matrix, we only need to buffer a single
+column of XW; this can be done on-chip. This method can be
+reused within a GCONV layer if (AXW )is left-multiplied by
+any other sparse matrices. For example, some GCNs collect
+information from 2-hop neighbors so the layer formulation
+becomes A(A(XW))and the three multiplications can
+be pipelined and processed in parallel.
+Inter-Layer SpMM Pipelining: SpMMs from different layers
+can also be pipelined. To avoid pipeline bubbles and large
+intermediate buffers, we allocate hardware resources (PEs) in
+proportion to the workload of each layer (Figure 8). In this
+way, the output generation of the previous layer matches the
+data consumption of the current layer, so that the execution
+time of different layers is similar, given optimal workload
+balance and PE utilization. Pipelining SpMMs from different
+layers has two beneﬁts. First, it exploits inter-layer parallelism.
+Second, since Ais shared for all GCONV layers in the
+inference of a particular graph, it can be reused by SpMM
+engines across the layers, so off-chip accesses of Aare only
+required by the ﬁrst layer. This is done by forwarding elements
+ofAthrough the layers.
+Bandwidth Analysis: Off-chip data access of the big Ad-
+jacency matrix Acan be a concern. However, as AWB-GCN
+5
+
+==== Page 6 ====
+Fig. 8. Pipelined SpMMs: data production and consumption rates match
+across consecutive SpMMs by allocating PEs in proportion to workload sizes.
+Fig. 9. Matrix Blocking Optimization to reduce the off-chip bandwidth
+requirement. The sub-SpMM of each pair of blocks is performed in column-
+wise-product order. The numbers represent execution orders.
+always requests and consumes data with continuous addresses,
+the off-chip memory bandwidth and the burst mode access can
+be efﬁciently utilized. Also, we use three extra methods to
+reduce the off-chip bandwidth requirement: (1) as mentioned
+above, Ais reused across layers; (2) matrix blocking is used
+to improve the data locality and reuse of matrix A. Figure 9
+illustrates how the proposed matrix blocking works without
+affecting the efﬁciency of the rebalancing techniques which
+are discussed in the next section. The numbers in the ﬁgure
+are execution orders. Ais partitioned into multiple blocks.
+Instead of calculating each column of A(XW)by multiplying
+all blocks of Aand the corresponding column of (XW), we
+calculate tcolumns of A(XW)in parallel. The calculation of
+a certain block of Awill not start until the previous block is
+reused ttimes and ﬁnishes calculating its intermediate results
+of all tcolumns of the resulting matrix. By doing so, the
+data reuse of matrix Ais improved by ttimes. Note that
+this optimization will not hurt the efﬁciency of the autotuning
+rebalancing of AWB-GCN, as the sub-SpMM of each block
+ofAis still following column-wise product order. (3) AWB-
+GCN is equipped with a scratchpad memory to cache parts of
+Aon-chip as much as possible. For example, the AandX1 of
+Cora can be entirely stored on-chip.
+Based on our experiments, with the proposed optimizations,
+the AWB-GCN accelerator requires at most 459 Gbps off-chip
+bandwidth to keep the hardware busy with 1024 PEs for the 5
+datasets evaluated. This bandwidth demand can be generally
+satisﬁed by current platforms (e.g., Intel D5005 FPGA board
+provides 614 Gbps DDR bandwidth; VCU-128 FPGA provides
+3680 Gbps HBM bandwidth; NVIDIA V100 provides 7176
+Gbps HBM bandwidth).
+E. The Workload Balance Problem
+The baseline architecture works well when non-zeros are
+evenly distributed among the rows of A. However, when this
+0 64 128 192 25600.20.40.60.81
+0 64 128 192 256
+PE IDCiteseer Nell
+PE ID00.20.40.60.81UtilizationUtilizationFig. 10. PE utilization waves of 256-PE Baseline SpMM engine processing
+A(XW)of Nell and Citeseer.
+assumption does not hold, the performance of the baseline
+architecture can degrade considerably due to workload im-
+balance among PEs. Figures 10 illustrates the utilization of
+256 PEs processing SpMMs with Adjacency matrices of the
+Citeseer and NELL datasets. As mentioned in Section 1, evil
+rows and regionally clustered non-zeros in power-law graph
+matrices bring the inefﬁciency. The existence of evil rows
+keeps only a few PEs busy while all others idle most of the
+time, resulting in signiﬁcant major crests in the utilization
+waves; the regionally clustered non-zero elements result in the
+minor crests; the differences in the numbers of non-zeros in
+neighboring rows result in other ﬂuctuations.
+A common software approach for dealing with sparse
+data structures is to proﬁle the structure, e.g., with symbolic
+analysis, and then use that information to guide the “real”
+processing. For GCNs, however, it has been demonstrated
+that the preprocessing stage can take 10 more time than
+the inference itself [31]. In this work, we dynamically adjust
+hardware conﬁgurations for workload rebalancing. This design
+can be applied to a variety of specialized accelerators for
+processing sparse data structures.
+IV. AWB-GCN A RCHITECTURE
+In this section, we describe the AWB-GCN architecture.
+The core is the handling of load balancing at three levels
+of granularity: distribution smoothing for local utilization
+ﬂuctuations among PEs, remote switching for the minor crests,
+androw remapping for the major crests.
+Figure 11 illustrates autotuning with 24 PEs performing
+SpMM on a power-law matrix. The gray bars at the top
+show the execution time of parallel PEs; the length changes
+dynamically through the process. The narrower bars at the
+bottom show the static density-per-row of the matrix. Ideally,
+at the end of autotuning, all bars on the top becomes short
+and have the same length. Each round of autotuning includes
+two phases: First, data processing and distribution smoothing
+in phase 1; then remote switching and row remapping.
+Figure 11 (a)&(b) illustrate the ﬁrst round of autotuning.
+The progression from Figure (a) to (b) shows the ﬁrst phase.
+Figure (a) gives estimated execution time without distribution
+smoothing; Figure (b) shows the actual execution time with
+distribution smoothing applied. During phase 1, PEs keep
+ofﬂoading workloads to their less busier neighbors, resulting
+6
+
+==== Page 7 ====
+Row density of matrix (%)0100Execution time of parallel PEs0
+PE stallPE utilizationRow densityin matrix
+DistributionsmoothingPE3Row density of matrix (%)0100Execution time of parallel PEs0Phase1: Distribution smoothing (1st round)
+Phase2: Remote switching + Row remapping (1st round)
+!
+Evil rows
+PE1PE5
+PE6
+PE18Remote switchingEvil rowremapping
+Distributionsmoothing
+✅
+ Balanced PE workload
+✅
+ High PE utilization
+✅
+ Less execution timeAutotuning converge to optimal balance
+Distribution smoothing (2nd round)(a)(b)
+(c)(d)40% workload
+30% workload
+PE18PE1220% workloadAdjust toFig. 11. Rebalancing process: distribution smoothing, remote switching and
+row remapping per round. (a)&(b): 1st round; (c)&(d): 2nd round.
+in a more ﬂat and smooth execution time wave (shown in (b)).
+Meanwhile, the execution time of PEs at the wave crests and
+troughs is recorded by the Autotuner.
+After all the PEs have ﬁnished, phase 2 starts. The Auto-
+tuner partitions and remaps evil rows to PEs at troughs and
+switches workloads of the PEs at the minor crests with the ones
+at the troughs. The green and blue arrows in (b) show evil row
+remapping and remote switching decisions, respectively. After
+these decisions are made, the second round of autotuning starts
+(Figures (c)&(d)). With remote switching and row remapping
+determined in the ﬁrst round, the initial workload distribution
+among PEs at the start of the second round (shown in (c)) can
+be more efﬁciently balanced by distribution smoothing (shown
+in (d)). The blue arrows in (d) show that remote balancing not
+only ﬁnds new pairs of PEs to switch workloads, but also
+adjusts the switch fractions determined in the previous round.
+After several rounds, the system converges to optimal balanced
+status; this is then used for the remainder of the computation.
+All proﬁling and adjustment are performed at runtime. We
+now present design details.
+A. Distribution Smoothing
+At the start of processing, rows are evenly distributed among
+PEs as introduced in Section 3.2 (as shown in Figure 6(B)).
+During the calculation of each round, we employ distribution
+smoothing by averaging out the workloads among neighbors.
+The architecture is able to monitor the runtime PE utilization
+information by tracking the number of pending tasks in TQs
+and keep ofﬂoading the work of PEs with more pending tasks
+to their less busy neighbors. However, the ofﬂoaded work
+needs to be returned for aggregation after processing. Due to
+Fig. 12. Simpliﬁed architecture of distribution smoothing.
+chip area and design complexity restrictions, we may ofﬂoad
+workloads among direct neighbors, 2-hop neighbors, or even
+3-hop neighbors, but not farther ones.
+Figure 12 illustrates the hardware design of 1-hop distribu-
+tion smoothing for TDQ-1 and TDQ-2.
+TDQ-1: Before a new task is pushed into the TQ of a PE,
+the PE compares the number of pending tasks with those in
+the neighboring TQs. The task is then forwarded to the TQ
+with the fewest pending tasks. If forwarded to a neighbor, the
+result needs to be returned to the ACC buffer of its original
+PE after accumulation (see Figure 12-(B)). The calculation of
+valid return address and accumulation of partial results are
+done in the neighbor PE.
+TDQ-2: The ﬁnal layer of the multi-stage Omega network
+handles neighbor task forwarding. As shown in Figure 12-(C)
+(also in Figure 13), multiple PEs share the same ﬁnal-layer
+switch; we refer to these PEs as a group . AWB-GCN keeps
+tracking the usage of TQs of the ﬁnal layer. Once a new task
+is forwarded to the ﬁnal-layer switch, the TQ usages among
+neighbors are compared and then the task is routed to the PE
+with the lowest TQ usage. To enable PEs on the group edge
+(i.e., the leftmost or rightmost PEs per group) to communicate
+with their out-of-group neighbors, we augment the Omega-
+network by adding 2 extra links per switch in the ﬁnal layer,
+as shown in Figure 12-(D). Note that Figure 12-(D) shows
+sharing only among 1-hop neighbors. By considering more
+distant hop neighbors, a more balanced design is obtained
+at the cost of higher hardware complexity and area. This is
+discussed in the evaluation section.
+Distribution smoothing helps remove local utilization ﬂuc-
+tuations (Figures 11(a) to (b)), but is not sufﬁcient when (1)
+non-zeros are clustered in a region across many PEs, so that
+neighbors are mostly busy and have no chance to help each
+7
+
+==== Page 8 ====
+other, resulting in a minor utilization crests (PE20,21,22 in
+Figure 11(b)); or (2) most non-zeros are clustered in only a
+few rows so that the major crests cannot be eliminated even
+if all neighboring PEs help (PE9 in Figure 11(b)).
+B. Remote Switching
+To address regional clustering, we propose remote switch-
+ing. This process partially or completely exchanges the work-
+loads between under- and overloaded PEs, i.e., at centers of
+utilization wave troughs and crests, respectively. The switch
+fraction is determined at runtime by an autotuner and is based
+on per-round PE utilization. As the sparse matrix Ais reused
+during the processing per round, the switch strategy generated
+in prior rounds is valuable in the processing of later rounds.
+The accelerator remembers the switch strategies used in the
+current round and incrementally optimizes them based on the
+utilization information obtained in the next round. In this way,
+remote switching is able to ﬂatten the crests and troughs;
+after several rounds of autotuning, the switch strategy best
+matching the sparse structure of Ais obtained, and is used for
+the remaining rounds for almost perfect PE utilization.
+The hardware design is shown in Figure 13. The over-
+loaded and under-loaded PEs are identiﬁed by using the PE
+Status Monitor (PESM) of Autotuner during Phase one of
+autotuning. Recall that each TQ has a counter to track the
+number of pending tasks; these can trigger an empty signal
+when reaching zero. These empty signals are connected to the
+PESM. At each cycle, the updated empty signals are xored
+with their values recorded on the previous cycle. The XOR
+results indicate which PEs are newly ﬁnished; this information
+is stored in the Switch Candidate Buffer .
+At the start of each round (after Ais totally sent to TDQs),
+the arbiter scans the buffer and record IDs of newly done PEs
+until enough under-loaded PEs have been found. The number
+of PE tuples for switching at each round can be customized.
+In Figure 13, four tuples of the most over- and under-loaded
+PEs are selected for remote switching. After the arbiter ﬁnds
+the ﬁrst 4 idle PEs, it stops scanning the buffer and instead
+waits for the completion signal ( bit AND all empty signals)
+from the system, which implies all PEs have become idle.
+Meanwhile, the Switch Candidate Buffer caches the newly idle
+info of the most recent cycles. Whenever the arbiter receives
+the completion signal it starts to scan the buffer and continues
+until the four most over-loaded PEs have been found. Note
+that the arbiter does not select neighbor PEs continuously; this
+guarantees that PE tuples selected by PESM are at different
+crests and troughs of the utilization wave.
+To avoid thrashing, we only exchange a portion of the
+workload between PEs. We use the following equation to
+calculate the number of jobs (i.e., rows of A) to be switched
+in the i-th round (i.e., a column of B),Niinit:
+Niinit=Gi=G1(R=2) (5)
+where Giis the workload gap of the selected PE tuple at
+thei-th round, and Ris the number of rows per PE underequal mapping. Here, workload gap is approximated as the
+difference of execution cycles to ﬁnish all tasks.
+In the i+1-th round, new PE-tuples are selected and their
+switch fractions are calculated. Meanwhile, the autotuner also
+tracks the post-switching utilization gaps of PE-tuples selected
+in the prior rounds and uses them as feedback to adjust the
+switch fraction Niinit; this minimizes the utilization gaps
+further. The workload switching fraction for each tracked PE-
+tuple is adjusted for two or more rounds and is highly likely
+to converge to the optimal distribution. Equation 5 can now
+be rewritten as follows:
+Ni;j=(
+Gi=G1(R=2) i f j=0
+N(i 1);(j 1)+Gi=G1(R=2) i f j>0(6)
+where jdenotes the number of rounds of fraction update.
+Ni;jindicates that the current PE-tuple is in its j-th update
+and its initial fraction to switch was calculated in the i j-th
+round. The number of rounds tracked simultaneously can be
+customized and depends on the size of the tracking window in
+the PESM; this is an area/performance tradeoff. In Figure 13,
+two consecutive rounds are tracked.
+Calculation of Equation 6 is done in the Utilization Gap
+Tracker (UGT in Figure 13). To reduce the hardware cost of
+calculating Gi=G1(R=2), we use a hardware-friendly ap-
+proximation with threshold-based counting and table lookup;
+when the most under-loaded PE is found, the left CNTs in
+UGT start counting. The execution cycle gap (G1) at the ﬁrst
+round is right-shifted by gbits (the granularity for division
+approximation). The result is used as a threshold. Whenever
+the left CNTs reach the threshold, they get back to 0 and the
+right CNT adds 1. When the most over-loaded PE is found, the
+counting stops. Assuming the right CNT counts to q, we know
+the execution time gap at the current round is approximately
+qG1=(2g).
+Using qas the address to access the Table for Switch
+Fraction Lookup (TfSFL), we know the approximate number
+of rows that needs to be switched. More details are omitted due
+to space limitations. Once the number of rows to be switched is
+known, it is forwarded to the Workload Distribution Controller
+(WDC) together with the corresponding PE IDs. At the start
+of the next round, the destination PE of these rows is updated
+in the Shufﬂe Switches (SS). By doing so, the non-zeros in
+these rows will be forwarded to the post-switching PEs in the
+coming rounds.
+Furthermore, in order to reduce the workloads of over-
+loaded PEs more efﬁciently, all operations related to the
+main-diagonal elements at the rows assigned to these PEs
+are skipped during processing. Instead of performing these
+operations, when the required elements of the dense matrix
+reach TDQs, they will be directly forwarded to the ACC
+Buffers of the post-switching PEs and be accumulated just
+before the ﬁnal accumulation results are sent to the next kernel.
+Remote switching followed by distribution smoothing is
+efﬁcient on getting rids of most of crests of utilization waves.
+However, for the major crests resulted from evil rows which
+8
+
+==== Page 9 ====
+Fig. 13. Overall architecture of SpMM engine in AWB-GCN with three rebalancing techniques: distribution smoothing, remote switching (red bordered) and
+evil row remapping (purple bordered). Here every 128 PEs has one Super-PEs and four Labor-PEs. These numbers can be customized.
+have too many non-zeros to be shared only by neighbors, extra
+effort is required.
+C. Evil Row Remapping
+We address evil-row clustering by building row remapping
+support into the remote switching hardware. With row remap-
+ping, the evil row is distributed to the most under-loaded
+PEs in troughs; in this way the neighbors of these PEs can
+help. Row remapping is triggered based on demand at the end
+of each round. The autotuner calculates the utilization gaps
+between the most over- and under-loaded PEs and determines
+whether their gaps are too big for remote switching to handle.
+If yes, row remapping is performed. The workloads of the
+PE overloaded in the current round are switched (temporarily)
+with a Super-PE in the next round. During processing of the
+next round, the Super-PE counts the numbers of non-zeros per
+row and ﬁnds the evil rows containing the most non-zeros. In
+the round after, the workloads of each evil row are partitioned
+and distributed to a set of Labor-PEs controlled by the Super-
+PE.
+After evil rows are remapped to labor-PEs, the original
+workloads of the labor-PEs can still be swapped with the most
+under-loaded PEs via remote switching; this ensures that even
+if the labor-PEs are overloaded originally, they do not become
+new crests after row remapping. If a labor-PE itself is found
+to have an evil row, evil row remapping will ﬁrst map its
+workload to the master-PE, and then distributively remap the
+evil row back to labor-PEs, including the one which has the
+evil row originally. By remapping evil rows statically to certain
+PEs instead of dynamically to random ones, the aggregation of
+partial results becomes hardware efﬁcient. If row remapping
+is not triggered, Super- and Labor-PEs serve as regular PEs.
+The existence of evil rows is generally the most critical
+bottleneck, especially when utilization is lower than 50%.
+The proposed row remapping technique makes it possible for
+the autotuner to ﬁnd the optimal workload distributions and
+achieve high utilization. As evil row remapping is normally
+triggered during the ﬁrst few rounds, the utilization of thesystem increases rapidly right at the start and the autotuner
+generally converges quickly.
+Figure 13 illustrates the hardware support of row remap-
+ping. For clarity, only one Super-PE and its four Labor-PEs
+are shown. The Labor-PE has an architecture similar to the
+normal PE, but they are connected to an adder tree for result
+aggregation. The aggregated results of evil rows are cached
+in a small separate ACC buffer. The super-PE is much bigger
+than other PEs, as it serves as a proﬁler to ﬁnd the evil rows. It
+is equipped with two extra modules: a parallel sorting circuit
+that tracks the rows with the most non-zeros; and a non-zero
+counter (including a local buffer) that records the number of
+non-zeros per row. Workload remapping between Super-PE &
+Labor-PEs and workload switching between Super-PE & the
+PE-with-evil-rows are handled by augmenting the Autotuner as
+follows. First, the UGT module is equipped with a comparator
+to identify whether evil row remapping is required; if it
+does, then the UGT will send the information to WDC. The
+WDC knows the IDs of the Super-PE and Labor-PEs. If row
+remapping is triggered or an evil row is found, the entries
+of the Super- and Labor-PE at Distribution Switch Table in
+the WDC are updated. This enables workload switching and
+remapping in the coming round.
+V. E VALUATION
+In this section, we evaluate AWB-GCNs with different
+design choices and compare them with other platforms pro-
+cessing the same networks.
+A. Evaluation Conﬁguration
+We implement AWB-GCNs in Verilog HDL and measure
+PE utilization, performance, energy efﬁciency, and hardware
+resource consumption on Intel acceleration card D5005 which
+is equipped with a Stratix 10 SX FPGA. Note that the FPGA
+is only used as an evaluation platform to demonstrate the per-
+formance of AWB-GCN. The design is a general architecture
+that does not leverage any FPGA-speciﬁc features.
+To measure utilization, we add a counter to each PE to
+track the number of idle cycles. The number of operating
+9
+
+==== Page 10 ====
+Fig. 14. Overall performance and PE utilization of 1K-PE AWB-GCN with ﬁve design choices.
+Fig. 15. Per-SpMM performance and PE utilization of 1K-PE AWB-GCN with ﬁve design choices.
+cycles (i.e., execution delay) is also measured with a hardware
+counter. The hardware consumption and operating frequency
+are reported by Quartus Pro 19.4 after synthesis and imple-
+mentation. To perform fair cross-platform comparisons, we
+implement GCNs with the state-of-the-art and famous software
+framework, PyG [44], and run them on Intel Xeon E5-2680-
+V3 CPU and NVIDIA RTX 8000 GPU. We also compare
+AWB-GCN with prior work on GCNs such as HyGCN [31].
+The datasets used for evaluation are Cora ,Citeseer ,
+Pubmed ,Nell andReddit ; these are the ﬁve most widely used
+publicly available datasets in GCN research.
+B. AWB-GCN Evaluation
+Design efﬁciency is evaluated by comparing the perfor-
+mance, hardware resource consumption, and PE utilization of
+the 1K-PE baseline design without any rebalancing techniques
+(i.e., Baseline ) with the four different design choices of
+1K-PE AWB-GCNs: (i) 1-hop distribution smoothing (i.e.,
+Design(A) ), (ii) 2-hop distribution smoothing (i.e., Design(B) ),
+(iii) 1-hop distribution smoothing plus remote switching and
+row remapping (i.e., Design(C) ), and (iv) 2-hop distribution
+smoothing plus remote switching and row remapping (i.e.,
+Design(D) ). The only exception is for Nell where we use 2-
+hop and 3-hop distribution smoothing (rather than 1-hop and
+2-hop) due to its extremely clustered distribution.
+Figure 14 compares the end-to-end GCN inference latency
+and average utilization of PEs for the ﬁve designs over the
+ﬁve datasets. The lines show the overall PE utilization. The
+bars show the breakdown of execution cycles of different
+Remote Switching + Row Remapping Distribution SmoothingOthers in PE Omega/Shuﬄe network Task Queue MAC in PE
+Remote Switching + Row Remapping Others Task Queue0.60
+0.45
+0.30
+0.15
+05
+4
+3
+2
+145
+36
+27
+18
+925
+20
+15
+10
+50.60
+0.45
+0.30
+0.15
+0On-chip Storage Demand (MB)Normallized Hardware 
+Usage for Logic (ALM)750K
+600K
+450K
+300K
+150K750K
+600K
+450K
+300K
+150K750K
+600K
+450K
+300K
+150K750K
+600K
+450K
+300K
+150K750K900K
+600K
+450K
+300K
+150KFig. 16. (A) Hardware resource consumption normalized to the number of
+ALMs and (B) On-chip storage demand of 1K-PE AWB-GCN.
+GCN layers. The latency of ReLU is too low to show in
+the ﬁgure. The off-chip memory access latency is overlapped
+with computation. We also mark the latency lower bound
+assuming theoretically ideal PE utilization. For Cora ,Citeseer ,
+Pubmed ,Nell andReddit , comparing to Baseline, Design(B)
+can improve PE utilization from 38%, 56%, 44%, 7.1% and
+10
+
+==== Page 11 ====
+Fig. 17. AWB-GCN PE (1K) average utilization per round of workload autotuning.
+Fig. 18. Scalability evaluation: PE utilization and overall performance of Baseline, Design(B) and Design(D) of AWB-GCNs with 512, 1K, 2K and 4K PEs.
+82%, to 79%, 77%, 86%, 39%, and 99%, respectively, leading
+to 1:94, 1:25, 1:56, 5:93, and 1 :19performance
+improvement. Enabling remote switching can further improve
+PE utilization to 88%, 88%, 93%, 88%, and 99%, bringing
+performance gain to 2 :11, 1:41, 1:62, 8:75, and 1 :20.
+The results show that AWB-GCN always provides high uti-
+lization and close to theoretical peak performance for datasets
+with various levels of power-law distribution.
+In AWB-GCN, hardware resources allocated to different
+layers are in proportion to their volume of operations. Thus,
+when perfect utilization is achieved, the same execution delay
+is observed for all layers. As shown in Figure 14, the green
+and red bars have similar lengths at Design(D), while their
+lengths vary signiﬁcantly for the Baseline.
+The shaded area in Figure 14 represents the performance
+overhead of the proposed rebalancing techniques. Distribu-
+tion smoothing is performed during the processing of PEs
+incurring no overhead so Designs(A)&(B) are not shaded.
+For Designs(C)&(D), most of the tasks for remote switching
+and row remapping are also performed in parallel with the
+processing of PEs, e.g., all tasks at PESM and the utilization
+gap calculation at UGT. However, the table lookup for switch
+fraction at UGT and data update at WDC must be done se-
+quentially between the processing of two consecutive iterations
+(columns). They introduce negligible overheads (shaded area
+of bars for Design(C)&(D)), before the system converges to
+optimal balanced status. The shaded areas are only visible for
+Cora and Citeseer whose workloads are relatively lighter.
+Figure 15 further breaks down the numbers of execution
+cycles and shows results for every SpMM kernel; this demon-
+strates the beneﬁts of AWB-GCN on kernels with various
+sparsity, size and distributions. The shaded area of the bars
+represents the Sync cycles due to workload imbalance; the
+unshaded area represents the Ideal cycles assuming perfectworkload balance. The bars in different colors represent the
+execution cycles of the four SpMM kernels in the two-layer
+GCNs [8], [29]: A(XW)and XW at Layer 1 and 2 . The
+lines show the corresponding PE utilizations. As shown in Fig-
+ure 15, Design(D) signiﬁcantly minimizes the synchronization
+overheads for all kernels of the 5 GCN models.
+Comparing SpMM kernels, utilization improves signiﬁ-
+cantly for A(XW)at both layers and XWat Layer-1. As
+forXWat Layer-2, although Xis also sparse after activation
+is performed, its sparsity is much lower than that of the X
+at Layer-1 and its non-zero distribution does not follow the
+power-law (similar to that of the sparse matrices in SCNNs);
+utilization is thus high even with the baseline design.
+Figure 16(A) compares the hardware resource usage of
+the ﬁve designs over the ﬁve datasets. To show comparable
+breakdowns to ASIC implementations, the results of hardware
+resource usage are reported by Quartus Pro 19.4 after synthesis
+(therefore, FPGA-speciﬁc optimizations are not included) and
+are normalized to the number of Adaptive Logic Modules
+(ALMs). ALM is the basic component of Intel FPGAs. In
+an ASIC design the analogue would be the number of tran-
+sistors. The blue segments represent the resource usage for
+the modules of the baseline design including MAC units in
+PEs, other modules in PEs, task queue control logic, and
+omega/shufﬂe networks. The green and red segments refer
+to the hardware overheads for the support of distribution
+smoothing andremote switching + row remapping . Note that
+in practical FPGA implementations, MAC units in PEs are
+instantiated with ﬂoating-point DSP slices. In order to show
+the area breakdown more clearly, we normalize the DSP
+slices to ALMs. As shown in Figure (A), the overheads of
+1-hop and 2-hop distribution smoothing are on average 3.5%
+and 6.7%, respectively, which is acceptable; the overhead of
+remote switching and row remapping is, on average 0.9%,
+11
+
+==== Page 12 ====
+which is negligible.
+Figure 16(B) compares on-chip storage demand. That of
+Task Queues in the Omega-Network is in blue; the buffers for
+remote switching + row remapping are in red; the others are in
+green. As shown in Figure (B), the overall storage demands of
+AWB-GCN with Design(D) are even lower than the baseline.
+This is largely due to dramatically reduced per-PE Task
+Queue size under more balanced workloads. With much more
+balanced workload distributions in Design(D), the congestion
+and backpressure in Omega-Network are signiﬁcantly relieved,
+making the TQs narrower and shallower.
+Finally, Figure 17 shows the utilization improvement due
+to iterative workload autotuning. Rebalancing can be accom-
+plished within 10 iterations. This means that most of the
+iterations can beneﬁt from operating under the converged
+optimal strategy. Note that the utilization of Nell has a sharp
+improvement in round 3 due to effective evil row remapping.
+C. Scalability of AWB-GCN
+We evaluate the scalability of AWB-GCN by running GCN
+inference of the ﬁve datasets on the baseline as well as Designs
+(B) and (D) of AWB-GCN and varying the number of PEs
+from 512, 1024, 2048 to 4096. In Figure 18, the bars represent
+the performance speedup comparing with the baseline design
+with 512 PEs. The lines represent average PE utilizations.
+As shown in Figure 18, the PE utilization of the baseline de-
+sign drops dramatically with increasing number of PEs. This is
+because more PEs means fewer rows per PE, highlighting the
+imbalance among PEs: they have fewer opportunities to absorb
+inter-row imbalance. Due to the dropping PE utilization, the
+performance speedup shows poor scalability. For AWB-GCN
+with only distribution smoothing, PE utilization also drops but
+more slowly than baseline. Nell is an outlier as the utilization
+of baseline with 512 PEs is too low to drop. In contrast, the PE
+utilization of the complete version of AWB-GCN, Design(D),
+is high and stable. The performance scales almost linearly with
+increasing number of PEs.
+D. Cross-platform Comparison
+We evaluate ﬁve scenarios: (i) AWB-GCN Design-(D) with
+4096 PEs, (ii) PyG-based implementation on Intel Xeon E5-
+2680v3 CPU (PyG-CPU), (iii) PyG-based implementation on
+a NVIDIA RTX 8000 GPU (PyG-GPU), (iv) 4096-PE baseline
+AWB-GCN without workload rebalancing, and (v) SCNN [45]
+reproduction with 4096 multipliers (we build a system-C-
+based cycle-accurate simulator for SCNN). We use the ﬁve
+datasets: Cora, Citeseer, Pubmed, Nell, and Reddit for the
+evaluation. The GCN model conﬁguration follows the original
+GCN algorithm papers [29], [46], [47]. We label these GCNs
+“Standard networks ”.
+As shown in Table III, despite running at a relatively
+low frequency, AWB-GCN achieves, on average, speedups of
+2622and 136over the well-optimized PyG implementa-
+tions on high-end CPUs and GPUs. It achieves a speedup of
+6:1over the baseline design without workload rebalancing.
+For the Nell dataset, the speedup over the baseline is 18.8 ,demonstrating in particular the impact of workload balanc-
+ing. Reddit fails on GPU due to out-of-memory. AWB-GCN
+achieves from 2.3to 19.7speedup compared with SCNN.
+SCNN is inefﬁcient when working with GCNs because it uses
+Cartesian Product-based SpMM which requires massive and
+highly irregular reduction of intermediate results, especially
+when the matrices are very big, sparse, and follow power-law.
+SCNN also requires very high off-chip bandwidth for the re-
+duction. In our evaluation, we assume SCNN is equipped with
+a High Bandwidth Memory (HBM) which provides sufﬁcient
+off-chip bandwidth. If DRAMs are used, the performance of
+SCNN would be even lower.
+The tremendous speedups over PyG-CPU and PyG-GPU
+originate from AWB-GCN’s dedicated architecture which uses
+features not available on general-purpose CPUs and GPUs: (a)
+the dynamic autotuning techniques ensure balanced workload
+and high PE utilization (Section 4); (b) all the SpMM kernels
+of the GCN layers are deeply pipelined, leading to reduced on-
+chip storage demand (Figure 8); (c) inter-layer data forwarding
+and matrix blocking (with column-wise-product sub-SpMM
+execution Figure 9) improve data reuse and guarantee that
+off-chip memory accesses are to consecutive addresses.
+We also compare AWB-GCN with existing GCN accelera-
+tors. Prior to this work, to the best of our knowledge, the de-
+sign proposed by Yan et al., HyGCN [31], is the only reported
+accelerator of GCN inference. However, HyGCN customizes
+the hidden layer of all GCN models to 128 channels, which is
+distinct from the original settings [29], [46], [47]. We refer to
+the HyGCN-customized models as HyGCN networks . Also,
+the HyGCN report does not give absolute performance but,
+rather, relative speedups over a E5-2680v3 CPU. To compare
+AWB-GCN with HyGCN, we realize the HyGCN networks
+on the same E5-2680v3 CPU, adopting the same software
+framework (PyG [44] – HyGCN also uses PyG for the testing
+on CPU). The PyG-CPU result is thus a common baseline for
+comparing the relative speedups. Table IV shows the results.
+With the HyGCN networks, AWB-GCN achieves on av-
+erage 3888, 25:3, and 5 :1speedups over PyG-CPU,
+PyG-GPU, and the HyGCN design, respectively. The perfor-
+mance improvement is attributable, in part, to the features of
+AWB-GCN as discussed, and one additional reason: HyGCN
+scheduling is coarse-grained block-wise, while that of AWB-
+GCN is ﬁne-grained element-wise. This avoids redundant data
+access and results in more beneﬁt from a balanced workload.
+As this design is implemented on an FPGA, it is difﬁcult to
+compare energy efﬁciency to HyGCN, which is implemented
+as an ASIC. Comparing to ASIC, the reconﬁgurable routing
+switches on FPGA chip consume extra energy, making the
+energy efﬁciency of FPGA design lower (approximately 14 
+according to the numbers reported by Kuon [48]). To compare
+the performance fairly, we limit the number of multipliers used
+and make it comparable to HyGCN. In particular, we use
+4k 32-bit ﬂoating-point multipliers and HyGCN uses 4608
+32-bit ﬁxed-point multipliers. Floating-point multipliers also
+consume more energy than ﬁxed-point ones.
+12
+
+==== Page 13 ====
+TABLE III
+COMPARISON WITH CPU, GPU AND BASELINE PROCESSING STANDARD NETWORKS . OOM: O UT OF MEMORY .
+Platform Standard networks Cora CiteSeer Pubmed Nell Reddit
+Intel Xeon E5-2680 (PyG) Latency (ms) [speedup] 2.51 [1] 3.66 [1] 13.97 [1] 2.28E3 [1] 2.94E5 [1]
+Freq: 2.5GHz Energy efﬁciency (graph/kJ) 6.68E3 3.88E3 1.03E3 6.99 5.43E-2
+NVIDIA RTX8000 (PyG) Latency (ms) [speedup] 0.69 [3.6] 0.68 [5.4] 0.69 [20.2] 90.50 [25.2] OoM
+Freq: 1395MHz Energy efﬁciency (graph/kJ) 1.06E4 1.29E4 1.11E4 89.06 OoM
+SCNN (Cartesian product, 330MHz) Latency (ms) [speedup] 1.6E-2 [158] 2.6E-2 [142] 7.2E-2 [195] 31.47 [72.4] 73.22 [4015]
+Baseline Intel D5005 FPGA Latency (ms) [speedup] 1.3E-2 [191.8] 9.0E-3 [406] 6.7E-2 [208] 30.09 [75.8] 47.4 [6209]
+Freq: 330MHz Energy efﬁciency (graph/kJ) 6.86E5 9.75E5 1.22E5 3.28E2 1.83E2
+AWB-GCN Intel D5005 FPGA Latency (ms) [speedup] 2.3E-3 [1063] 4.0E-3 [913] 3E-2 [466] 1.6 [1425] 31.81 [9242]
+Freq: 330MHz Energy efﬁciency (graph/kJ) 3.08E6 1.93E6 2.48E5 4.12E3 2.09E2
+TABLE IV
+COMPARISON WITH THE PRIOR ART , HYGCN, PROCESSING HYGCN NETWORKS CUSTOMIZED IN HYGCN PAPER [31].
+Platform HyGCN networks Cora CiteSeer Pubmed Nell Reddit
+Intel Xeon E5-2680 (PyG) Latency (ms) [speedup] 13.07 [1] 15.73 [1] 2.19E2 [1] 3.17E3 [1] 8.05E5 [1]
+Freq: 2.5GHz Energy efﬁciency (graph/kJ) 1.23E3 9.36E2 70.61 4.59 0.02
+NVIDIA RTX8000 (PyG) Latency (ms) [speedup] 0.69 [18.9] 0.69 [22.8] 1.31 [167] 100.18 [31.7] OoM
+Freq: 1395MHz Energy efﬁciency (graph/kJ) 1.16E4 1.09E4 6.46E3 79.81 OoM
+HyGCN TSMC 12 nm Latency (ms) [speedup] 2.1E-2 [627] 0.30 [52.1] 0.64 [341.5] NA 2.89E2 [2787]
+Freq: 1GHz Energy efﬁciency (graph/kJ) 7.16E6 4.94E5 2.33E5 NA 5.17E2
+AWB-GCN Intel D5005 FPGA Latency (ms) [speedup] 1.7E-2 [768] 2.9E-2 [548] 0.23 [948] 3.25 [978] 49.7 [16197]
+Freq: 330MHz Energy efﬁciency (graph/kJ) 4.39E5 2.71E5 3.17E4 2.28E3 1.45E2
+VI. R ELATED WORK
+GNN studies use neural network algorithms to address prob-
+lems in graph processing. The ﬁrst GNN model was proposed
+by Gori et al. [18]. In the past decade, work has continued
+on optimizing GNN algorithms exploring new neural network
+approaches [8], [19], [20], [22]–[25]. More recently, inspired
+by CNNs that achieve great success with euclidean data, GCNs
+are proposed for hidden feature extraction of non-euclidean
+data. In 2013, Bruna et al. [27] proposed the ﬁrst GCNs for
+spectral graph theory; this was developed further in a number
+of variants [26], [28], [29]. GCNs are at the center of the
+research on neural-network-based graph processing [30].
+There have been many efforts on accelerating sparse CNNs
+[38]–[40], [45], [49]–[52]. We summarize them and explain
+why they fall short when applied to GCNs. Kung et al. con-
+dense the sparse parameter matrix through column grouping
+[50]. In case of conﬂict, only the most signiﬁcant parameters
+are kept, others are discarded. Essentially, some accuracy is
+sacriﬁced for performance. Kim et al. [40] address the work-
+load imbalance problem of sparse CNNs, but use information
+from design-time proﬁling and pre-scanning. Han et al. [38]
+propose EIE, an SpMV accelerator that addresses imbalance
+with row-direction queuing. The design is not feasible in
+GCNs due to their large data size and power-law distribution.
+In EIE, weight matrices of SCNNs are distributively pre-
+stored on-chip in local buffers of PEs. This avoids off-chip
+non-zero accesses and online workload distribution, but is
+not possible for GCNs. Also, single-direction queuing fails
+to balance the workload of power-law matrices, which have
+serious imbalance on both directions. Zhang et al. [39] pro-
+pose Cambricon-S with efﬁcient index matching to identify
+and multiplex non-zeros and feed them to massively parallel
+PEs. Again, these proposed architectures are not feasible for
+processing GCNs due to the ultra-low sparsity of power-lawgraphs which leads to highly scattered indices of neighboring
+elements. Given the adjacency matrix of Nell and a 1024-PE
+Cambricon-S, multiplexing enough non-zero pairs to feed all
+PEs per cycle would require 1024 13699:1 multiplexers for
+single-precision ﬂoating point; this is not viable given likely
+chip technology.
+Besides work on sparse CNNs, researchers also propose
+architectures for general SpMM. Zhuo and Prasanna [53]
+present an SPMV design for FPGAs. Pal [54] proposes an
+outer-product-based SpMM architecture. This work focuses on
+reducing redundant memory accesses to non-zeros and does
+not essentially address the ultra-workload-imbalanced issue
+faced with GCNs. In their results, load-imbalances during the
+merge phase and the uneven data sharing patterns during the
+multiply phase lead to degraded speedup for the dataset with
+highly-unbalanced non-zero element distribution.
+SIGMA [55] and ALRESCHA [56] are recent high-
+performance architectures for SpMM and SpMV . We mainly
+discuss SIGMA, as SIGMA focuses on SpMM kernels and
+is equipped with more efﬁcient optimizations for SpMM,
+while ALRESCHA has higher ﬂexibility to support vari-
+ous kernels through switch reconﬁguration. SIGMA uses an
+element-wise smart global controller to distribute every pair
+of non-zeros to the proper PEs dynamically through a Benes
+network. By doing so, PEs work with high utilization and
+the operations are evenly distributed among all multipliers
+so that workload imbalance is eliminated. SIGMA is highly
+efﬁcient for general SpMMs, but needs some augmentation to
+work with GCNs. First, for a very large and sparse matrix,
+the type of bitmap compression format introduces signiﬁcant
+overhead. Second, similar to Cambricon-S, the multiplexer
+required to get source/destination pairs would become very
+large, which limits the performance signiﬁcantly. Third, for the
+extremely large and sparse matrices common in GCN usage,
+the efﬁciency of the element-wise global controller decreases
+13
+
+==== Page 14 ====
+signiﬁcantly when performing tasks such as matrix scanning
+and element ﬁltering/counting which determines the number
+of Flex-DPEs.
+To eliminate workload imbalance without using a global
+element-wise controller (as used in SIGMA), AWB-GCN uses
+auto-tuning-based rebalancing hardware, which is essentially
+also a “controller”, to dynamically distribute tasks. In contrast
+to the controller used in SIGMA, AWB-GCN’s is more coarse-
+grained and lighter weight. In particular, the distribution
+smoothing function is a local element-wise controller which,
+similarly to SIGMA, distributes non-zero pairs to proper
+PEs. However, in contrast to SIGMA, in AWB-GCN the
+destination PEs must be local, meaning that they must within
+a few hops of the PE assigned in the initial mapping. Also,
+remote switching +row remapping is effectively a global row-
+wise controller which can distribute tasks to any proper PEs
+without range limit, rather, with granularity of rows/fraction
+of rows instead of elements. To make the proposed hybrid
+and light-weight controller handle workload imbalance as well
+as a global element-wise controller, we use auto-tuning. The
+proposed auto-tuning-based controller is designed especially
+for SpMMs with power-law matrices. For general SpMMs, a
+global element-wise controller can be more efﬁcient.
+Another active area of research is graph processing. Song
+et al. [57] and Zhang et al. [58] propose GraphR and GraphP,
+which are both based on Processing In Memory (PIM), to
+accelerate low-precision graph tasks. However, they do not
+support complex ﬂoating-point operations. Ham et al. [59] pro-
+pose Graphicionado, a vertex-centric acceleration framework
+for graph analytics applications. It focuses on simple graph
+analysis applications. Ozdal et al. [60] propose a System-C
+based template for graph analytics applications. Ozdal’s work
+and Graphicionado both use crossbars for data exchange which
+limits their scalability. None of these can directly support
+GCNs without signiﬁcant modiﬁcations.
+Researchers also conduct software optimizations for SpMM
+on GPUs and general-purpose multicore CPUs [61]–[65].
+These software solutions, however, do not meet the strict
+timing requirements of GCNs because of signiﬁcant overhead
+in pre-scanning [31], [61]–[63] which is avoided in AWB-
+GCN. Also, adjacency matrices evolve at runtime, making
+ofﬂine processing even less useful.
+VII. C ONCLUSION
+In this paper, we propose AWB-GCN to accelerate GCN
+inference. To tackle the major performance issues derived
+from workload imbalance, we propose a hardware-based au-
+totuning framework including three runtime workload rebal-
+ancing techniques: distribution smoothing, remote switching,
+and row remapping. The proposed rebalancing methods rely
+on hardware ﬂexibility to realize performance autotuning with
+negligible area and delay overhead. This is the ﬁrst accelerator
+design for GCNs that relies on hardware autotuning to achieve
+workload rebalancing for sparse matrix computations. We
+evaluate AWB-GCN using an Intel FPGA D5005 Accelerator
+Card with 5 widely used GCN datasets. Results show thatAWB-GCN can achieve, on average, 3255 , 80.3, and 5.1
+speedups over high-end CPUs, GPUs, and other prior work
+respectively. Although FPGAs are used as a demonstration
+in this paper, the proposed architecture does not rely on any
+FPGA-speciﬁc features. And although AWB-GCN is designed
+for GCNs, it is generally efﬁcient for GNNs whose major
+arithmetic primitives are also SpMMs, e.g., GraphSage [66],
+GINConv [67], and GTN [30].
+ACKNOWLEDGEMENTS
+This work was supported, in part, by the NSF through
+Awards CCF-1618303, CCF-1919130, and CNS-1925504; by
+the NIH through Award R44GM128533; by grants from Mi-
+crosoft and Red Hat; and by Xilinx and by Intel through
+donated FPGAs, tools, and IP. This research was also partially
+funded by Paciﬁc Northwest National Laboratory’s DMC-CFA
+project and DeepScience-HPC LDRD project. The evaluation
+platforms were supported by the U.S. DOE Ofﬁce of Science,
+Ofﬁce of Advanced Scientiﬁc Computing Research, under
+award 66150: “CENATE - Center for Advanced Architecture
+Evaluation.” The Paciﬁc Northwest National Laboratory is
+operated by Battelle for the U.S. Department of Energy under
+contract DE-AC05-76RL01830.
+REFERENCES
+[1] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classiﬁcation
+with deep convolutional neural networks,” in Advances in neural infor-
+mation processing systems , pp. 1097–1105, 2012.
+[2] T. Mikolov, M. Karaﬁ ´at, L. Burget, J. ˇCernock `y, and S. Khudanpur,
+“Recurrent neural network based language model,” in The 11st Annual
+Conference of the International Speech Communication Association ,
+2010.
+[3] H. Kwon, P. Chatarasi, M. Pellauer, A. Parashar, V . Sarkar, and T. Kr-
+ishna, “Understanding reuse, performance, and hardware cost of dnn
+dataﬂow: A data-centric approach,” in Proceedings of the 52nd Annual
+IEEE/ACM International Symposium on Microarchitecture (MICRO) ,
+pp. 754–768, 2019.
+[4] H. Kwon, P. Chatarasi, V . Sarkar, T. Krishna, M. Pellauer, and
+A. Parashar, “MAESTRO: A data-centric approach to understand reuse,
+performance, and hardware cost of dnn mappings,” IEEE Micro , vol. 40,
+no. 3, pp. 20–29, 2020.
+[5] T. Geng, T. Wang, C. Wu, C. Yang, W. Wu, A. Li, and M. Herbordt,
+“O3BNN: An out-of-order architecture for high-performance binarized
+neural network inference with ﬁne-grained pruning,” in ACM Interna-
+tional Conference on Supercomputing (ICS) , vol. 2160, pp. 461–472,
+2019. doi: 10.1145/ 3330345. 3330386.
+[6] T. Geng, T. Wang, A. Sanaullah, C. Yang, R. Xuy, R. Patel, and M. Her-
+bordt, “FPDeep: Acceleration and load balancing of CNN training on
+FPGA clusters,” in 2018 IEEE 26th Annual International Symposium on
+Field-Programmable Custom Computing Machines (FCCM) , p. 8184,
+2018. doi: 10.1109/ FCCM.2018. 00021.
+[7] A. Li, T. Geng, T. Wang, M. Herbordt, S. Song, and K. Barker,
+“BSTC: A novel binarized-soft-tensor-core design for accelerating bit-
+based approximated neural nets,” in International Conference for High
+Performance Computing, Networking, Storage and Analysis (SC) , 2019.
+doi: 10.1145/ 3295500.3356169.
+[8] Z. Wu, S. Pan, F. Chen, G. Long, C. Zhang, and S. Y . Philip, “A
+comprehensive survey on graph neural networks,” IEEE Transactions
+on Neural Networks and Learning Systems , 2020.
+[9] T. Wang, T.Geng, A. Li, X. Jin, and M. Herbordt, “FPDeep: Scalable
+acceleration of CNN training on deeply-pipelined FPGA clusters,” IEEE
+Transactions on Computers , vol. C-69, no. 8, pp. 1143–1158, 2020. doi:
+10.1109/TC.2020.3000118.
+[10] T. Geng, T. Wang, C. Wu, Y . Li, C. Yang, W. Wu, A. Li, and M. Her-
+bordt, “O3BNN-R: An out-of-order architecture for high-performance
+and regularized BNN inference,” IEEE Transactions on Parallel and
+Distributed Systems , 2021. doi: 10.1109/TPDS.2020.3013637.
+14
+
+==== Page 15 ====
+[11] J. E. Gonzalez, Y . Low, H. Gu, D. Bickson, and C. Guestrin, “Pow-
+erGraph: Distributed graph-parallel computation on natural graphs,” in
+Presented as part of the 10th USENIX Symposium on Operating Systems
+Design and Implementation (OSDI) , pp. 17–30, 2012.
+[12] A. Abou-Rjeili and G. Karypis, “Multilevel algorithms for partitioning
+power-law graphs,” in Proceedings 20th IEEE International Parallel &
+Distributed Processing Symposium (IPDPS) , pp. 10–pp, IEEE, 2006.
+[13] M. Latapy, “Main-memory triangle computations for very large (sparse
+(power-law)) graphs,” Theoretical Computer Science , vol. 407, no. 1-3,
+pp. 458–473, 2008.
+[14] C. Xie, L. Yan, W.-J. Li, and Z. Zhang, “Distributed power-law graph
+computing: Theoretical and empirical analysis,” in Advances in Neural
+Information Processing Systems , pp. 1673–1681, 2014.
+[15] W. Aiello, F. Chung, and L. Lu, “A random graph model for power law
+graphs,” Experimental Mathematics , vol. 10, no. 1, pp. 53–66, 2001.
+[16] F. Chung, L. Lu, and V . Vu, “The spectra of random graphs with given
+expected degrees,” Internet Mathematics , vol. 1, no. 3, pp. 257–275,
+2004.
+[17] L. A. Adamic, R. M. Lukose, A. R. Puniyani, and B. A. Huberman,
+“Search in power-law networks,” Physical Review E , vol. 64, no. 4,
+p. 046135, 2001.
+[18] M. Gori, G. Monfardini, and F. Scarselli, “A new model for learning
+in graph domains,” in Proceedings. 2005 IEEE International Joint
+Conference on Neural Networks, 2005. , vol. 2, pp. 729–734, IEEE, 2005.
+[19] A. Micheli, “Neural network for graphs: A contextual constructive
+approach,” IEEE Transactions on Neural Networks , vol. 20, no. 3,
+pp. 498–511, 2009.
+[20] F. Scarselli, M. Gori, A. C. Tsoi, M. Hagenbuchner, and G. Monfardini,
+“The graph neural network model,” IEEE Transactions on Neural
+Networks , vol. 20, no. 1, pp. 61–80, 2008.
+[21] Y . Li, D. Tarlow, M. Brockschmidt, and R. Zemel, “Gated graph
+sequence neural networks,” arXiv:1511.05493 , 2015.
+[22] H. Dai, Z. Kozareva, B. Dai, A. Smola, and L. Song, “Learning steady-
+states of iterative algorithms over graphs,” in International Conference
+on Machine Learning , pp. 1114–1122, 2018.
+[23] J. You, R. Ying, X. Ren, W. L. Hamilton, and J. Leskovec, “GraphRNN:
+A deep generative model for graphs,” arXiv:1802.08773 , 2018.
+[24] S. Abu-El-Haija, B. Perozzi, R. Al-Rfou, and A. A. Alemi, “Watch
+your step: Learning node embeddings via graph attention,” in Advances
+in Neural Information Processing Systems , pp. 9180–9190, 2018.
+[25] H. Gao, Z. Wang, and S. Ji, “Large-scale learnable graph convolutional
+networks,” in Proceedings of the 24th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining , pp. 1416–1424,
+ACM, 2018.
+[26] M. Henaff, J. Bruna, and Y . LeCun, “Deep convolutional networks on
+graph-structured data,” arXiv:1506.05163 , 2015.
+[27] J. Bruna, W. Zaremba, A. Szlam, and Y . LeCun, “Spectral networks and
+locally connected networks on graphs,” arXiv:1312.6203 , 2013.
+[28] M. Defferrard, X. Bresson, and P. Vandergheynst, “Convolutional neural
+networks on graphs with fast localized spectral ﬁltering,” in Advances
+in neural information processing systems , pp. 3844–3852, 2016.
+[29] T. N. Kipf and M. Welling, “Semi-supervised classiﬁcation with graph
+convolutional networks,” arXiv:1609.02907 , 2016.
+[30] S. Yun, M. Jeong, R. Kim, J. Kang, and H. J. Kim, “Graph transformer
+networks,” in Advances in Neural Information Processing Systems ,
+pp. 11960–11970, 2019.
+[31] M. Yan, L. Deng, X. Hu, L. Liang, Y . Feng, X. Ye, Z. Zhang, D. Fan,
+and Y . Xie, “HyGCN: A GCN accelerator with hybrid architecture,” in
+2020 IEEE International Symposium on High Performance Computer
+Architecture (HPCA) , pp. 15–29, IEEE, 2020.
+[32] Y . Liu, N. Zhang, D. Wu, A. Botterud, R. Yao, and C. Kang, “Guiding
+cascading failure search with interpretable graph convolutional network,”
+arXiv:2001.11553 , 2020.
+[33] C. W. Coley, W. Jin, L. Rogers, T. F. Jamison, T. S. Jaakkola, W. H.
+Green, R. Barzilay, and K. F. Jensen, “A graph-convolutional neural
+network model for the prediction of chemical reactivity,” Chemical
+Science , vol. 10, no. 2, pp. 370–377, 2019.
+[34] T. Xie and J. C. Grossman, “Crystal graph convolutional neural networks
+for an accurate and interpretable prediction of material properties,”
+Physical Review Letters , vol. 120, no. 14, p. 145301, 2018.
+[35] M. Zitnik, M. Agrawal, and J. Leskovec, “Modeling polypharmacy side
+effects with graph convolutional networks,” Bioinformatics , vol. 34,
+no. 13, pp. i457–i466, 2018.[36] H. Yang, “AliGraph: A comprehensive graph neural network platform,”
+inProceedings of the 25th ACM SIGKDD International Conference on
+Knowledge Discovery & Data Mining , pp. 3165–3166, ACM, 2019.
+[37] H.-T. Nguyen, Q.-D. Ngo, and V .-H. Le, “IoT botnet detection approach
+based on PSI graph and DGCNN classiﬁer,” in 2018 IEEE International
+Conference on Information Communication and Signal Processing (ICI-
+CSP) , pp. 118–122, IEEE, 2018.
+[38] S. Han, X. Liu, H. Mao, J. Pu, A. Pedram, M. A. Horowitz, and
+W. J. Dally, “EIE: efﬁcient inference engine on compressed deep neural
+network,” in 2016 ACM/IEEE 43rd Annual International Symposium on
+Computer Architecture (ISCA) , pp. 243–254, IEEE, 2016.
+[39] S. Zhang, Z. Du, L. Zhang, H. Lan, S. Liu, L. Li, Q. Guo, T. Chen, and
+Y . Chen, “Cambricon-X: An accelerator for sparse neural networks,” in
+The 49th Annual IEEE/ACM International Symposium on Microarchi-
+tecture (MICRO) , p. 20, IEEE Press, 2016.
+[40] D. Kim, J. Ahn, and S. Yoo, “A novel zero weight/activation-aware
+hardware architecture of convolutional neural network,” in Design,
+Automation & Test in Europe Conference & Exhibition (DATE), 2017 ,
+pp. 1462–1467, IEEE, 2017.
+[41] J. Gao, W. Ji, Z. Tan, and Y . Zhao, “A systematic survey of general
+sparse matrix-matrix multiplication,” arXiv:2002.11273 , 2020.
+[42] M. Deveci, C. Trott, and S. Rajamanickam, “Performance-portable
+sparse matrix-matrix multiplication for many-core architectures,” in
+2017 IEEE International Parallel and Distributed Processing Sympo-
+sium Workshops (IPDPSW) , pp. 693–702, IEEE, 2017.
+[43] Y . Chen, K. Li, W. Yang, G. Xiao, X. Xie, and T. Li, “Performance-aware
+model for sparse matrix-matrix multiplication on the sunway taihulight
+supercomputer,” IEEE Transactions on Parallel and Distributed Systems ,
+vol. 30, no. 4, pp. 923–938, 2018.
+[44] M. Fey and J. E. Lenssen, “Fast graph representation learning with
+PyTorch geometric,” arXiv:1903.02428 , 2019.
+[45] A. Parashar, M. Rhu, A. Mukkara, A. Puglielli, R. Venkatesan,
+B. Khailany, J. Emer, S. W. Keckler, and W. J. Dally, “SCNN: An
+accelerator for compressed-sparse convolutional neural networks,” in
+2017 ACM/IEEE 44th Annual International Symposium on Computer
+Architecture (ISCA) , pp. 27–40, IEEE, 2017.
+[46] C. Zhuang and Q. Ma, “Dual graph convolutional networks for graph-
+based semi-supervised classiﬁcation,” in Proceedings of the 2018 World
+Wide Web Conference , pp. 499–508, 2018.
+[47] J. Chen, J. Zhu, and L. Song, “Stochastic training of graph convolutional
+networks with variance reduction,” arXiv:1710.10568 , 2017.
+[48] I. Kuon and J. Rose, “Measuring the gap between FPGAs and ASICs,”
+IEEE Transactions on Computer-Aided Design of Integrated Circuits
+and Systems , vol. 26, no. 2, pp. 203–215, 2007.
+[49] J. Albericio, P. Judd, T. Hetherington, T. Aamodt, N. E. Jerger, and
+A. Moshovos, “Cnvlutin: Ineffectual-neuron-free deep neural network
+computing,” ACM SIGARCH Computer Architecture News , vol. 44,
+no. 3, pp. 1–13, 2016.
+[50] H. Kung, B. McDanel, and S. Q. Zhang, “Packing sparse convolutional
+neural networks for efﬁcient systolic array implementations: Column
+combining under joint optimization,” in Proceedings of the Twenty-
+Fourth International Conference on Architectural Support for Program-
+ming Languages and Operating Systems (ASPLOS) , pp. 821–834, ACM,
+2019.
+[51] Y .-H. Chen, T. Krishna, J. S. Emer, and V . Sze, “Eyeriss: An energy-
+efﬁcient reconﬁgurable accelerator for deep convolutional neural net-
+works,” IEEE Journal of Solid-State Circuits , vol. 52, no. 1, pp. 127–
+138, 2016.
+[52] C. Ding, S. Liao, Y . Wang, Z. Li, N. Liu, Y . Zhuo, C. Wang, X. Qian,
+Y . Bai, G. Yuan, et al. , “CirCNN: accelerating and compressing deep
+neural networks using block-circulant weight matrices,” in Proceedings
+of the 50th Annual IEEE/ACM International Symposium on Microarchi-
+tecture , pp. 395–408, 2017.
+[53] L. Zhuo and V . K. Prasanna, “Sparse matrix-vector multiplication on
+fpgas,” in Proceedings of the 2005 ACM/SIGDA 13th international
+symposium on Field-programmable gate arrays , pp. 63–74, ACM, 2005.
+[54] S. Pal, J. Beaumont, D.-H. Park, A. Amarnath, S. Feng, C. Chakrabarti,
+H.-S. Kim, D. Blaauw, T. Mudge, and R. Dreslinski, “OuterSPACE:
+An outer product based sparse matrix multiplication accelerator,” in
+2018 IEEE International Symposium on High Performance Computer
+Architecture (HPCA) , pp. 724–736, IEEE, 2018.
+[55] E. Qin, A. Samajdar, H. Kwon, V . Nadella, S. Srinivasan, D. Das,
+B. Kaul, and T. Krishna, “SIGMA: A sparse and irregular gemm
+accelerator with ﬂexible interconnects for dnn training,” in 2020 IEEE
+15
+
+==== Page 16 ====
+International Symposium on High Performance Computer Architecture
+(HPCA) , pp. 58–70, IEEE, 2020.
+[56] B. Asgari, R. Hadidi, T. Krishna, H. Kim, and S. Yalamanchili,
+“ALRESCHA: A lightweight reconﬁgurable sparse-computation accel-
+erator,” in 2020 IEEE International Symposium on High Performance
+Computer Architecture (HPCA) , pp. 249–260, IEEE, 2020.
+[57] L. Song, Y . Zhuo, X. Qian, H. Li, and Y . Chen, “GraphR: Accelerating
+graph processing using ReRAM,” in 2018 IEEE International Sympo-
+sium on High Performance Computer Architecture (HPCA) , pp. 531–
+543, IEEE, 2018.
+[58] M. Zhang, Y . Zhuo, C. Wang, M. Gao, Y . Wu, K. Chen, C. Kozyrakis,
+and X. Qian, “GraphP: Reducing communication for pim-based graph
+processing with efﬁcient data partition,” in 2018 IEEE International
+Symposium on High Performance Computer Architecture (HPCA) ,
+pp. 544–557, IEEE, 2018.
+[59] T. J. Ham, L. Wu, N. Sundaram, N. Satish, and M. Martonosi, “Graphi-
+cionado: A high-performance and energy-efﬁcient accelerator for graph
+analytics,” in 2016 49th Annual IEEE/ACM International Symposium on
+Microarchitecture (MICRO) , pp. 1–13, IEEE, 2016.
+[60] M. M. Ozdal, S. Yesil, T. Kim, A. Ayupov, J. Greth, S. Burns, and
+O. Ozturk, “Energy efﬁcient architecture for graph analytics acceler-
+ators,” ACM SIGARCH Computer Architecture News , vol. 44, no. 3,
+pp. 166–177, 2016.
+[61] J. L. Greathouse and M. Daga, “Efﬁcient sparse matrix-vector multipli-cation on GPUs using the CSR storage format,” in Proceedings of the
+International Conference for High Performance Computing, Networking,
+Storage and Analysis (SC) , pp. 769–780, 2014.
+[62] W. Liu and B. Vinter, “An efﬁcient GPU general sparse matrix-matrix
+multiplication for irregular data,” in 2014 IEEE 28th International
+Parallel and Distributed Processing Symposium (IPDPS) , pp. 370–381,
+IEEE, 2014.
+[63] A. Ashari, N. Sedaghati, J. Eisenlohr, S. Parthasarathy, and P. Sadayap-
+pan, “Fast sparse matrix-vector multiplication on GPUs for graph appli-
+cations,” in Proceedings of the International Conference for High Perfor-
+mance Computing, Networking, Storage and Analysis (SC) , pp. 781–792,
+IEEE Press, 2014.
+[64] N. Bell and M. Garland, “Efﬁcient sparse matrix-vector multiplication
+on CUDA,” tech. rep., Nvidia Technical Report NVR-2008-004, Nvidia
+Corporation, 2008.
+[65] N. Bell and M. Garland, “Implementing sparse matrix-vector mul-
+tiplication on throughput-oriented processors,” in Proceedings of the
+International Conference for High Performance Computing, Networking,
+Storage and Analysis (SC) , p. 18, ACM, 2009.
+[66] W. Hamilton, Z. Ying, and J. Leskovec, “Inductive representation
+learning on large graphs,” in Advances in Neural Information Processing
+Systems , pp. 1024–1034, 2017.
+[67] K. Xu, W. Hu, J. Leskovec, and S. Jegelka, “How powerful are graph
+neural networks?,” arXiv:1810.00826 , 2018.
+16
+

@@ -1,0 +1,612 @@
+==== Page 1 ====
+CHAPTER 21
+Deep learning: RNNs and LSTM
+Robert DiPietro, Gregory D. Hager
+Johns Hopkins University , Department of Computer Science, Baltimore, MD, United States
+Contents
+21.1. From feedforward to recurrent 503
+21.1.1 Simple motivating example 504
+21.1.2 Naive solution 505
+21.1.3 Simple RNNs 505
+21.1.4 Representation power of simple RNNs 506
+21.1.5 More general recurrent neural networks 507
+21.2. Modeling with RNNs 507
+21.2.1 Discriminative sequence models 508
+21.2.2 Generative sequence models 509
+21.2.3 RNN-based encoder–decoder models 509
+21.3. Training RNNs (and why simple RNNs aren’t enough) 510
+21.3.1 The chain rule for ordered derivatives 510
+21.3.2 The vanishing gradient problem 511
+21.3.3 Truncated backpropagation through time 513
+21.3.4 Teacher forcing 513
+21.4. Long short-term memory and gated recurrent units 514
+21.5. Example applications of RNNs at MICCAI 517
+References 518
+Recurrent neural networks (RNNs) are a class of neural networks that are naturally
+suited to processing time-series data and other sequential data. Here we introduce re-
+current neural networks as an extension to feedforward networks, in order to allow
+the processing of variable-length (or even inﬁnite-length) sequences, and some of the
+most popular recurrent architectures in use, including long short-term memory (LSTM)
+and gated recurrent units (GR Us). In addition, various aspects surrounding RNNs are
+discussed in detail, including various probabilistic models that are often realized us-
+ing RNNs and various applications of RNNs that have appeared within the MICCAIcommunity .
+21.1. From feedforward to recurrent
+The transition from feedforward neural networks to recurrent neural networks is con-
+ceptually simple. Feedforward networks traditionally map from ﬁxed-size inputs to
+ﬁxed-size outputs, for example, to map from an image of ﬁxed spatial extent to its class,
+Handbook of Medical Image Computing and Computer Assisted Intervention
+https://doi.org/10.1016/B978-0-12-816176-0.00026-0Copyright ©2020 Elsevier Inc.
+All rights reserved. 503
+
+==== Page 2 ====
+504 Handbook of Medical Image Computing and Computer Assisted Intervention
+Figure 21.1 An example feedforward network (left) and an example recurrent neural network (right).
+In the recurrent example, the function fand its parameters θhare shared over time.
+or to a segmentation map of the same spatial extent. In contrast, recurrent neural net-
+works naturally operate on variable-length input sequences and map to variable-length
+output sequences, for example, to map from an image to various sentences that describethat image. This capability is achieved by sharing parameters and transformations overtime.
+21.1.1 Simple motivating example
+W e begin with a straightforward example. Consider a scenario in which we wish to
+map from a set of measurements describing a tumor, x, to probability of malignancy ,
+p(y|x). Suppose we wish to use feedforward neural networks to solve this problem, and
+that we begin with the simple network
+h=tanh(Wxhx+bh), (21.1)
+p(y|x)=σ(Whyh+by), (21.2)
+where all weights Wand all biases bare parameters to be learned, tanh is the hyperbolic
+tangent function, and σis the sigmoid function, the output of which is between 0 and 1.
+Given this network and a training set of ground-truth (xi,yi)pairs, say , one per patient,
+we typically proceed by maximizing the conditional log-likelihood/summationtext
+ilogp(yi|xi).
+(This is equivalent to minimizing the overall cross-entropy between our predicted distri-
+butions, given by the network, and the ground-truth distributions, given by our trainingdata, as usually done in practice.) Optimization is typically carried out using a variantof stochastic gradient descent, and this is usually carried out in practice by (1) forminga computation graph that corresponds to this network (and loss function) and (2) com-puting gradients via backpropagation [ 1].
+W e now ask the following question: what if each patient is not associated with a
+single measurement vector, but rather with a sequence of measurement vectors, each as-
+sociated with a single examination? How can we modify the network above to map from
+
+==== Page 3 ====
+Deep learning: RNNs and LSTM 505
+a sequence of measurement vectors to a single probability of malignancy , corresponding
+to the latest examination date?
+21.1.2 Naive solution
+Perhaps the most straightforward approach is to stack each patient’s measurement vec-
+tors into one, forming a new input of increased dimensionality . However, this approachis unsatisfactory for a number of reasons. First, we note that such a model makes no
+attempt to capture the inductive biases we might hope for in our model: it would treat
+all elements across all time steps in exactly the same way , rather than incorporating any
+explicit mechanism to capture local dynamics. Second, we expect the number of exam-
+inations per patient to vary , and as a reminder, the input to our network, x,h a sﬁ x e d
+dimensionality . Thus if we proceed in this way , we will be forced to proceed with heuris-
+tics, either by throwing away past information for some patients (those with many ex-
+aminations) or by padding the inputs of other patients (those with fewer examinations).
+21.1.3 Simple RNNs
+Instead, let’s proceed by modifying the simple network above to carry over latent infor-
+mation from time step to time step (after training, these latent states can be interpreted
+as learned representations that are speciﬁc to our task). First, let’s modify our notation sothat the single-examination case more explicitly corresponds to a sequence of length 1:
+h
+1=tanh(Wxhx1+bh), (21.3)
+p(y1|x1)=σ(Whyh1+by). (21.4)
+Next, let’s modify the linear transformation used in the hidden-state computation to
+depend not only our input xbut also on information from the past, which is carried
+through the hidden state. W e will set our previous hidden state to 0, which can be
+interpreted as carrying over no information from the past:
+h0=0, (21.5)
+h1=tanh(Whhh0+Wxhx1+bh), (21.6)
+p(y1|x1)=σ(Whyh1+by). (21.7)
+Notice that, from a modeling perspective, this network is precisely equivalent to our
+original network; it differs only in notation and operation counts (introduced by the
+unnecessary matrix-vector multiply involving h0=0). However, our network now nat-
+urally extends to patients with any number of examinations:
+h0=0, (21.8)
+h1=tanh(Whhh0+Wxhx1+bh), (21.9)
+
+==== Page 4 ====
+506 Handbook of Medical Image Computing and Computer Assisted Intervention
+Figure 21.2 A computation graph corresponding to a simple RNN. The bias (b h) is omitted for sim-
+plicity. Note that all parameters, here WhhandWxh, are shared over time. Two time steps are shown,
+but the computation graph can be unrolled indeﬁnitely. The symbol ∗denotes matrix multiplication
+(with implicit ordering assumed, e.g., Whhh0, not h0Whh).
+h2=tanh(Whhh1+Wxhx2+bh), (21.10)
+··· (21.11)
+hT=tanh(WhhhT−1+WxhxT+bh), (21.12)
+p(yT|x1,...,xT)=σ(WhyhT+by). (21.13)
+This RNN is capable of processing sequences of any length, for example, one with a
+length of T=1 and another with a length of T=7, because the transition function and its
+parameters are shared over time.
+Once deﬁned, training the network is carried out in a way that is nearly identical to
+the process described above for feedforward networks. Each patient now corresponds to
+asequence of exams, x1,...,xT, along with a label yT. W e form our computation graph
+by unrolling the RNN over these time steps, and by adding operations to compute the
+probability of malignancy and the loss. Then we obtain gradients via backpropagation,and optimize via stochastic gradient descent.
+Equations (21.9)–( 21.12) represent one of the ﬁrst RNN variants that can be found
+in the literature – that of simple RNNs or Elman RNNs [ 2]. In the literature, we typically
+see the more compact representation
+h
+t=tanh(Whhht−1+Wxhxt+bh), (21.14)
+in which the initial hidden state is omitted, and, unless otherwise speciﬁed, is oftenassumed to be h
+0=0. A simpliﬁed computation graph corresponding to Eq. ( 21.14)i s
+shown in Fig. 21.2.
+21.1.4 Representation power of simple RNNs
+A well known result is that a feedforward network with only one hidden layer, underfairly unrestrictive assumptions and given enough hidden units, can approximate con-tinuous functions to arbitrary accuracy [ 3]. The analogous result for simple RNNs is
+that they can approximate sequence-to-sequence mappings to arbitrary accuracy [4,5].
+
+==== Page 5 ====
+Deep learning: RNNs and LSTM 507
+(In fact, again under fairly unrestrictive assumptions, one can even show that simple
+RNNs are capable of simulating a T uring machine with only a small, ﬁxed number of
+units (886), under which binary streams are provided as the inputs and outputs of the
+RNN [6,7].)
+Thus even this extremely simple architecture is very powerful from the perspective
+ofrepresentation. However, in practice representational power is not our only concern,
+and it is important to note that these powerful results on representation in no wayindicate that we can learn such representations from data in any reasonable amount of
+time. Indeed, we will later see that a major drawback of simple RNNs is their inabilityto learn long-term dependencies from data, and that long short-term memory (LSTM)
+was introduced explicitly to alleviate this issue.
+21.1.5 More general recurrent neural networks
+Simple RNNs map from hidden state to hidden state through Eq. ( 21.14). More gener-
+ally , RNNs typically map a sequence of inputs x1,...,xTto a sequence of hidden states
+h1,...,hTthrough a set of parameters θvia
+ht=f(ht−1,xt,θ), (21.15)
+where we emphasize that here fshould notbe interpreted as a simple activation function,
+e.g., tanh orσ. For example, below we will discuss long short-term memory , for which
+fis a composition involving various gates and nonlinearities.
+In addition, the inputs xtare not restricted to be our observed (input) data, and
+similarly , htdoes not need to be related to our observed (output) data through a simple
+transformation, as seen in the motivating example above. From this perspective, RNNs
+are another building block that we can use to build rich models that can be trained inan end-to-end fashion. For example, we can compose what is often referred to as a deep
+RNN by applying Eq. (21.15) multiple times: ﬁrst, an RNN is applied to our observedinputs, yielding a sequence of hidden states; and these hidden states are fed as inputs
+into another RNN; and so on.
+21.2. Modeling with RNNs
+RNNs were motivated above through a simple example: mapping from a sequence of
+measurement vectors describing a tumor, x1through xT, to the probability of ma-
+lignancy as of the last measurement, p(yT|x1,...,xT). This was an example of a
+discriminative model, and in particular a discriminative model which maps from as e -
+quence of inputs toas i n g l eo u t p u t . However, RNNs are also applicable to many other
+modeling scenarios, and this section aims to introduce some of the most common typesof models found in the literature.
+
+==== Page 6 ====
+508 Handbook of Medical Image Computing and Computer Assisted Intervention
+Figure 21.3 Example RNN-based discriminative model. Here, each time step is associated with exactly
+one input, xt, and one output label, yt. Notice that each distribution over ytis conditioned not only on
+the current input xtbut also on all previous inputs.
+21.2.1 Discriminative sequence models
+W e have already seen one simple discriminative model above, where we modeled the
+probability of malignancy given a sequence of patient measurements, p(yT|x1,...,xT).
+Another common application of RNNs is to discriminatively model the distribution
+over a sequence of outputs, y1,..., yT, given a sequence of inputs, x1,...,xT, under the
+assumption that the outputs are conditionally independent given the input sequence .A s
+an example, one can consider surgical activity recognition from hand-movement data
+during robot-assisted surgery , where for each time step we aim to predict the currentactivity (e.g., suturing or knot tying), conditioned on either past motion data (in theonline setting) or past and future motion data (in the ofﬂine setting) [ 8].
+In the online setting, we are restricted to leveraging only past and current inputs.
+Here, we model p
+(yt|x1,...,xt)for all t. This model can be realized with RNNs (again
+assuming binary classiﬁcation for simplicity) via
+ht=f(ht−1,xt,θh), (21.16)
+p(yt|x1,...,xt)=softmax (Whyht+by), (21.17)
+which is illustrated in Fig. 21.3. This is also useful as a simple baseline even when online
+inference is not mandatory .
+In the ofﬂine setting, we can also make use of future inputs, and this is done using
+bidirectional RNNs . The idea is simple: in order to leverage both past and future inputs,
+one RNN is run in the forward direction, and another is run in the reverse direction,after which hidden states are concatenated and ﬁnally used together for prediction:
+h
+(→)
+t=f(ht−1,xt,θ(→)
+h)for t=1,2,..., T, (21.18)
+h(←)
+t=f(ht+1,xt,θ(←)
+h)for t=T,T−1,..., 1, (21.19)
+ht=[h(→)
+t;h(←)
+t], (21.20)
+p(yt|x1,...,xT)=softmax (Whyht+by). (21.21)
+
+==== Page 7 ====
+Deep learning: RNNs and LSTM 509
+Figure 21.4 Example RNN-based generative model. At training time, each xtfed into the model is
+taken directly from the observed sequence; this is known as teacher forcing. In contrast, at inference
+time, each input is sampled from the distribution governed by the previous time step.
+21.2.2 Generative sequence models
+Another common use of RNNs is autoregressive density estimation, in which we model
+a full joint distribution by making use of the factorized form
+p(x1,x2,...,xT)=p(x1)p(x2|x1)···p(xT|x1,x2,...,xT−1). (21.22)
+Again we can consider hand-motion data in the context of robot-assisted surgery , thistime for representation learning (e.g., for data exploration or down-stream tasks such asmotion-based search, as considered in [ 9]). Notice that the factorization above does not
+make any independence assumptions over time; this model has the potential to generatefull trajectories of surgical motion through intermediate (learned) representations. Forsimplicity , assume the motion data at each time step has been discretized, so that at
+each time step we have a categorical distribution. (It is not difﬁcult to instead associate
+each time step with, e.g., a mixture of multimodal continuous distributions, but this isbeyond the scope of this chapter; see, e.g., [ 9].) Each RNN step is then associated with
+one factor in the joint distribution:
+h
+t=f(ht−1,xt−1,θh), (21.23)
+p(xt|x1,...,xt−1)=softmax (Whyht+by). (21.24)
+This is illustrated in Fig. 21.4.
+21.2.3 RNN-based encoder–decoder models
+Above we have seen some of the versatility of RNN-based modeling. In this section weconsider one more discriminative model which essentially combines the ideas from the
+simple discriminative and generative models that we have already discussed.
+In Sect. 21.2.1, we saw an example of surgical activity recognition from hand-
+motion data through the discriminative model p
+(y1,..., yT|x1,...,xT). However, recall
+that we made the assumption that our outputs y1,..., yTare conditionally independent
+
+==== Page 8 ====
+510 Handbook of Medical Image Computing and Computer Assisted Intervention
+when conditioned on the input sequence x1,...,xT. How can we relax this assump-
+tion? W e can proceed with a discriminative model p(y1,..., yT|x1,...,xT)that without
+any independence assumptions over the outputs using the factorization
+p(y1,..., yT|x1,...,xT)=p(y1|x1,...,xT)p(y2|y1,x1,...,xT)···. (21.25)
+The simplest approach to realizing this model with RNNs is to (a) run one RNN over
+x1,...,xTand (b) feed the ﬁnal hidden state of this ﬁrst RNN to a second RNN which
+captures the joint distribution over the labels, as in Sect. 21.2.2:
+h(enc)
+t=f(h(enc)
+t−1,xt,θh), (21.26)
+h(dec)
+0≡h(enc)
+T, (21.27)
+h(dec)
+t=f(h(dec)
+t−1,xt,θh), (21.28)
+p(yt|y1,..., yt−1,x1,...,xT)=softmax (Whyh(dec)
+t+by). (21.29)
+This is an example of an RNN-based encoder–decoder model, which was ﬁrst in-troduced for machine translation to model p
+(sentence in target language |sentence in
+source language )[10]. Similar ideas can also be applied even if we do not desire struc-
+ture over our outputs. For example, this approach was taken in [ 9]t om o d e lf u t u r e
+motion as a function of past motion through an embedding (for the purpose of repre-sentation learning).
+21.3. Training RNNs (and why simple RNNs aren’t enough)
+As with feedforward networks, recurrent neural networks are typically trained us-ing gradient-based optimization, where gradients are obtained using backpropagation[11,1]. (In the literature, a habit has formed of referring to backpropagation through time
+when backpropagation is discussed in the context of RNNs; but this just leads to con-fusion, since the difference is only one of terminology: in [1], the application of errorbackpropagation to RNNs was discussed; and in [ 12], backpropagation through time does
+not refer to an RNN-speciﬁc algorithm, but rather to an algorithm that applies to a setof computations with well-deﬁned order.) In this section, we introduce the chain rule
+for ordered derivatives [12], highlight the vanishing gradient problem [13], and discuss various
+tricks that are often used to train RNNs in practice.
+21.3.1 The chain rule for ordered derivatives
+First let’s disambiguate notation, since the symbol∂f
+∂xis routinely overloaded in the
+literature. Consider the Jacobian of f(x,u(x))with respect to x.W el e t∂+f
+∂xdenote
+∂f(x)
+∂x, a collection of full derivatives, and we let∂f
+∂xdenote∂f(x,u)
+∂x, a collection of partial
+derivatives. For example, using this notation, the ordinary chain rule can be expressed as
+
+==== Page 9 ====
+Deep learning: RNNs and LSTM 511
+∂+f
+∂x=∂f
+∂x∂+x
+∂x+∂f
+∂u∂+u
+∂x. (This notation is consistent with [14,12], and is the exact opposite
+of the convention used in [ 13].)
+Now consider an ordered system of nvectors v1,v2,...,vn, where each is a function
+of all previous:
+vi≡vi(vi−1,vi−2,...,v1),1≤i≤n. (21.30)
+The chain rule for ordered derivatives, which can be derived from the ordinary chain
+rule [ 14], expresses the full derivatives∂+vi
+∂vjfor any j<iin terms of the full derivatives
+that relate vito all previous vk:
+∂+vi
+∂vj=/summationdisplay
+i≥k>j∂+vi
+∂vk∂vk
+∂vj,j<i. (21.31)
+Before moving on, it will be useful to relate the gradient components associated with
+anyviandvito the paths between them (see Figs. 21.1 and21.2 for speciﬁc examples).
+W e will now apply Eq. (21.31 ) recursively , ﬁrst to expand∂+vi
+∂vj, then to expand each
+term in the sum, and so on.
+For each intermediate vk,w es e et h a tE q .( 21.31) has exactly one component in the
+sum involving the partial∂vk
+∂vj. This implies that if vkis not computed directly in terms
+ofvj, then the corresponding partial is 0, and so the component itself is also 0.I no t h e r
+words, upon a ﬁrst application of Eq. (21.31), we obtain exactly one component foreachv
+/primethat is computed directly from vj. For each such v/prime, the component is the prod-
+uct∂+vi
+∂v/prime∂v/prime
+∂vj. Each v/primethen yields one component for each v/prime/primethat is computed directly
+from v/prime. Taken together, this yields exactly one component for each path vj→v/prime→v/prime/prime.
+For each v/prime,v/prime/primepair, the component is the product∂+vi
+∂v/prime/prime∂v/prime/prime
+∂v/prime∂v/prime
+∂vj. Recursively applying
+Eq. (21.31) until only partials remain, we ﬁnally obtain a sum with exactly one additivegradient component for each path from v
+jtovi; and each component itself consists of
+a product of partials, with one partial for each edge along the path.
+21.3.2 The vanishing gradient problem
+Consider Fig. 21.1 (right), along with a loss fl(hT,θy)which is computed directly from
+hT(under which fy(hT,θy)andp(y|x1,...,xT)are computed implicitly). Suppose we
+are interested in obtaining the gradients with respect to θ, the parameters belonging
+to the RNN itself (as in the ﬁgure). Using the ordinary chain rule, we can write theJacobian (or transposed gradient) as
+∂+fl
+∂θ=∂fl
+∂hT∂+hT
+∂θ(21.32)
+
+==== Page 10 ====
+512 Handbook of Medical Image Computing and Computer Assisted Intervention
+because∂+θy
+∂θ=0. Now , applying the chain rule for ordered derivatives to∂+hT
+∂θwith
+v1=θ,v2=h0,v3=x1,v4=h1,...immediately gives
+∂+hT
+∂θ=∂+hT
+∂hT∂hT
+∂θ+∂+hT
+∂hT−1∂hT−1
+∂θ+∂+hT
+∂xT−1∂xT−1
+∂θ+∂+hT
+∂hT−2∂hT−2
+∂θ+···.(21.33)
+Finally , noticing that∂xt
+∂θ=0for all tand that∂h0
+∂θ=0,w eh a v e
+∂+hT
+∂θ=T−1/summationdisplay
+τ=0∂+hT
+∂hT−τ∂hT−τ
+∂θ. (21.34)
+This decomposition breaks∂+hT
+∂θinto its temporal components, making it clear that
+the spectral norm of∂+hT
+∂hT−τplays a major role in how hT−τaffects the ﬁnal gradient
+∂+fl
+∂θT. In particular, if the spectral norm of∂+hT
+∂hT−τis extremely small, then hT−τhas a
+negligible effect on the ﬁnal gradient, which in turn makes it extremely difﬁcult to
+learn from events that occurred at time T−τ. W e also emphasize that this discussion
+applies unchanged for a loss computed at any time step t(e.g., when losses are computed
+at every time step rather than only at the end of the sequence).
+The ﬁnal step is to consider∂+hT
+∂hT−τin more detail. Notice that, for simple RNNs,
+there is exactly one path from hT−τtohT(see Fig. 21.2), and this corresponds to only
+one gradient component,
+∂+hT
+∂hT−τ=∂hT
+∂hT−1∂hT−1
+∂hT−2···∂hT−τ+1
+∂hT−τ, (21.35)
+and so, in terms of the spectral norm, we have
+/vextenddouble/vextenddouble/vextenddouble/vextenddouble∂+hT
+∂hT−τ/vextenddouble/vextenddouble/vextenddouble/vextenddouble≤/vextenddouble/vextenddouble/vextenddouble/vextenddouble∂
+hT
+∂hT−1/vextenddouble/vextenddouble/vextenddouble/vextenddouble/vextenddouble/vextenddouble/vextenddouble/vextenddouble∂
+hT−1
+∂hT−2/vextenddouble/vextenddouble/vextenddouble/vextenddouble···/vextenddouble/vextenddouble/vextenddouble/vextenddouble∂
+hT−τ+1
+∂hT−τ/vextenddouble/vextenddouble/vextenddouble/vextenddouble.(21.36)
+In the case of simple RNNs, each partial is the product of two Jacobians, one cor-
+responding to tanh (which is diagonal) and the other corresponding to the matrix
+multiplication (which is Whh); and this in turn means that the spectral norms associ-
+ated with these partials can vary dramatically during training. In particular, we can seethat if largest spectral norm of any partial is
+λ<1, then we have /bardbl∂+hT
+∂hT−τ/bardbl≤λτ,a n ds o
+the contribution to gradients from events at time T−τfall off exponentially fast with τ.
+Many attempts have been made at alleviating this issue, for example, by regularizing thenorms directly [13], initializing or restricting weight matrices to be orthogonal [ 15,16],
+or including direct connections between nonadjacent hidden states [ 17,9]. However, the
+architecture that gained widespread success is long short-term memory [ 18,19], which
+introduces additional paths between h
+T−τandhTthat are associated with more stable
+
+==== Page 11 ====
+Deep learning: RNNs and LSTM 513
+spectral norms (long short-term memory is the subject of Sect. 21.4). W e also remark
+that exploding gradients can also be an issue (for example, if the minimum singular
+value across partials is λ>1); however, gradient clipping is routinely used in practice to
+mitigate this issue, with the simplest solution being to clip the derivative with respectto each
+θi,s ot h a te a c hl i e si nas p e c i ﬁ e dr a n g e .
+21.3.3 Truncated backpropagation through time
+Notice that the computational complexity of RNNs, during both the forward andbackward passes, grows linearly with sequence length; and recall that backpropagationrequires us to cache outputs during the forward pass (so that they can be reused duringthe backward pass). This means that, during training, the amount of memory we needgrows linearly with sequence length; and the amount of compute per gradient update also
+grows linearly with sequence length. This can be prohibitive when sequences are long,and truncated backpropagation through time (TBTT) [20] is a heuristic that alleviates this
+issue. TBTT is applicable when we form predictions at the subsequence level, and ismost commonly used when we have predictions (and associated losses during training)atevery time step.
+This is perhaps easiest explained through an example. Consider a single training
+sequence with length T
+=10000. Using backpropagation through time, we would com-
+pute a complete forward pass, caching all intermediate results in memory , and then acomplete backward pass, in the end visiting each time step twice. T o instead proceedwith truncated backpropagation, we ﬁrst choose a maximum number of time steps
+˜T≤Tto visit before performing a gradient update; moving forward with the example,
+let’s choose ˜T=100. Proceeding with TBTT , we perform a forward, backward pass
+using only the ﬁrst 100 time steps, after which we perform a gradient update and dis-card all cached outputs except h
+100from memory . Next, we proceed to time step 101,
+carrying over the stale hidden state h100(which was computed with our oldparameters, be-
+fore the gradient update). W e now complete a forward, backward pass using time steps101 through 200, take an optimization step, and discard cached outputs from memory .In repeating this process until our sequence is exhausted, we require only 1% of thememory as for full backpropagation; we perform 100x as many gradient updates; andin doing so we end up performing the same amount of overall computation as one fullforward, backward pass. This is illustrated in Fig. 21.5 (with T
+=10 and ˜T=2).
+21.3.4 Teacher forcing
+When training RNN-based generative models using the factorized representationp
+(x1,x2,...,xT)=p(x1)p(x2|x1)···p(xT|x1,x2,...,xT−1), we usually have access to
+only a limited training dataset which consists of a ﬁxed number of training sequences.For example, in the case of modeling surgical hand motion, imagine that the beginning
+
+==== Page 12 ====
+514 Handbook of Medical Image Computing and Computer Assisted Intervention
+Figure 21.5 Depiction of truncated backpropagation with a sequence of T=10 time steps, perform-
+ing updates every ˜T=2 time steps. As in Figs. 21.3 and21.4, inputs are fed to an RNN to form hidden
+states, and these hidden states are used to compute per-time-step outputs; and during training, each
+output is associated with a loss (e.g., cross-entropy). We ﬁrst compute a forward and backward pass
+using the ﬁrst group alone (time steps 1 and 2), and we use the obtained gradients to update model pa-
+rameters. Next, we pass the stale hidden state to the next group (this hidden state is not recomputed
+using the updated parameters). Next, we compute a forward and backward pass using the secondgroup alone (time steps 3 and 4), and again update the model parameters. And so on. This heuristicdemands 1/5 the working memory as typical backpropagation (since we only need to cache states on aper-group basis during backpropagation), and it yields 5x as many gradient updates per computation.
+of a sequence consists of a surgeon beginning to suture. The true underlying distribu-
+tion captures many possible ways to complete the sequence (as there are many possible
+ways that the suture will be completed); however, we often have access to only onesuch future – the speciﬁc future that was observed in the sequence that we collected.
+Because of this, there is a disconnect between training an RNN-based generative model
+andsampling from an RNN-based generative model at inference time. At training time,
+we resort to teacher forcing :a tt i m et , when computing f
+(ht−1,xt−1,θ), we do not sample
+xt−1from our model, but rather use the observed xt−1that comes directly from our
+training data.
+21.4. Long short-term memory and gated recurrent units
+Long short-term memory (LSTM) was introduced to alleviate the vanishing gradient
+problem [ 18], and has become one of the most popular RNN architectures to date.
+Gated recurrent units (GR Us) [ 10] were later introduced as a simpler alternative to
+LSTM, and have also become quite popular. Here we will introduce both architecturesin the context of the vanishing gradient problem, and we will see that LSTM andGR Us alleviate this problem in very similar ways. For an intuitive view of the primary
+difference between simple RNNs and LSTM / GR Us, see Fig. 21.6.
+W e ﬁrst remark that many different variants of LSTM and GR Us exist in literature,
+and that even the default implementations in various major deep learning frameworksoften differ. (Performance is often similar – see, e.g., [ 21] – but this can nevertheless
+lead to confusion when reproducing results.) The most common variant of LSTM is
+
+==== Page 13 ====
+Deep learning: RNNs and LSTM 515
+Figure 21.6 Illustration of paths for simple RNNs, LSTM, and GRUs. Simple RNNs yield exactly one path
+between times Tand T−τ, with each step inhibited by linear transformations and nonlinearities.
+LSTM and GRUs give exponentially many paths between times Tand T−τ, with one path inhibited
+by neither linear transformations nor nonlinearities.
+described by
+ft=σ(Wfhht−1+Wfxxt+bf), (21.37)
+it=σ(Wihht−1+Wixxt+bi), (21.38)
+ot=σ(Wohht−1+Woxxt+bo), (21.39)
+˜ct=tanh(Wchht−1+Wcxxt+bc), (21.40)
+ct=ft⊙ct−1+it⊙˜ct, (21.41)
+ht=ot⊙tanh(ct). (21.42)
+At a high level, LSTM is often interpreted as maintaining a memory cell, ct,w h i c hi s
+reset, written to, and read from according to the forget gate ft, the input gate it,a n dt h e
+output gate ot[5], which all vary over time. W e can see the clear similarity between the
+updates for these different gates; they differ only in that they have distinct weight ma-
+trices and biases (to be learned). In particular, all three gates very much resemble simple
+RNNs, but with the key difference being the sigmoid activation function (restricting
+outputs to lie between 0 and 1), rather than the tanh activation function. These gates
+therefore have elements that can be interpreted as lying between fully off (0), shutting
+down information ﬂow; and fully on (1), allowing full information ﬂow . Next, we see
+the formation of the candidate update to our memory cell, ˜ct. Notice that this transfor-
+mation is identical to that of a simple RNN. Next, in Eq. (21.41), the elements of the
+previous cell ct−1are combined with the candidate update ˜ct, according to the forget
+gateftand the input gate it. And ﬁnally the new hidden state htis formed by applying
+
+==== Page 14 ====
+516 Handbook of Medical Image Computing and Computer Assisted Intervention
+Figure 21.7 Empirical gradient magnitudes /bardbl∂+fT∂hT−τ/bardblwhile training on the ﬂattened-MNIST task (im-
+ages of digits are ﬂattened and scanned sequentially, pixel by pixel, and the goal is to output the digit
+upon completion).
+a ﬁnal activation function to the memory cell and then weighting elements according
+to the output gate.
+Eq. (21.41), the formation of the new memory cell, is at the core of alleviating
+the vanishing gradient problem. Notice here that there is one path between ct−1and
+ctthat is modulated only by the forget gate. In the context of Sect. 21.3,w eh a v e
+exponentially many paths from cT−τtocT, but one of these paths corresponds simply
+to elementwise multiplications by forget gates. This in turn means that we have an
+additive gradient component which itself is the product of diagonal Jacobians withdiagonal elements corresponding to the forget gates. Hence gradient contributions canstill decay exponentially with
+τ,b u t if the forget gates have elements that are close to 1, then
+the base of the exponential decay is also close to 1 .T h i si sp r e c i s e l yw h yi ti sc o m m o ni n
+practice to initialize the bias bfo ft h ef o r g e tg a t et ob ep o s i t i v e( e . g . ,1o r2 )a tt h es t a r t
+of training. Fig. 21.6 illustrates this idea.
+Before moving on to GR Us, we make a few closing remarks about LSTM in hope
+of avoiding confusion. First, our notation was chosen to be consistent with literature.
+However, note that the true hidden state – the collection of all information passed
+from one time step to the next – is actually a concatenation of htandct. Second,
+it is worth noting that some sources state that LSTM “solves” the vanishing gradientproblem and/or that LSTM alleviates the exploding-gradient problem. Both of these
+statements are incorrect. As we have seen, gradient norms still decay exponentially fast
+with delay . This is also illustrated in Fig. 21.7, which shows gradient magnitude vs. delay
+during training. And with regard to the second statement, we know of no theoreticalargument or empirical result that suggests that LSTM alleviates the exploding-gradientproblem, and indeed many practitioners still ﬁnd it necessary to clip gradients when
+training LSTM networks.
+After encountering LSTM, one may wonder what parts of LSTM are most necessary ,
+and whether it is possible to simplify the architecture while retaining its key beneﬁts.
+
+==== Page 15 ====
+Deep learning: RNNs and LSTM 517
+One recently proposed architecture that was inspired by LSTM is that of gated recurrent
+units (GR Us) [ 10]. GR Us are simpler than LSTM, as they use one less gate and eliminate
+the need for distinguishing between hidden states and memory cells. The most common
+variant is described by
+ut=σ(Wuhht−1+Wuxxt+bu), (21.43)
+rt=σ(Wrhht−1+Wrxxt+br), (21.44)
+˜ht=tanh(Whh(rt⊙ht−1)+Whxxt+bh), (21.45)
+ht=ut⊙ht−1+(1−ut)⊙˜ht. (21.46)
+Notice that GR Us mitigate the vanishing gradient problem using a mechanism verysimilar to that of LSTM; from Eq. (21.46), we can see that if u
+t,iis nearly 1, then the
+corresponding partial∂ht,i
+∂ht−1,iis also nearly 1; rtandutare referred to as the reset and
+update gates, respectively .
+21.5. Example applications of RNNs at MICCAI
+Here we explain some example applications of RNNs that have appeared at MICCAI.W e do not intend to provide an exhaustive list, but rather intend to provide the readerwith some concrete and in-depth examples of the material discussed above.
+Recognizing surgical activities from motion in robot-assisted surgery. In
+[8], surgical activities are recognized from motion using long short-term memory ,
+speciﬁcally in the benchtop training setting for robot-assisted surgery . Here two types ofactivities are considered: short, low-level activities, or gestures , and longer, mid-level ac-
+tivities, or maneuvers . Results match state-of-the-art performance in the case of gesture
+recognition and surpass previous state-of-the-art performance in the case of maneuverrecognition. In the latter case, each time step was classiﬁed as one of 4 activities: suturethrow , knot tying, grasp pull run suture, and intermaneuver segment. The error rate in
+this setting was reduced to 10
+.5±4.0%(from 18 .3±6.2%), and the segmentwise edit
+distance was reduced to 19 .5±5.2%(from 29 .7±6.8%).
+Perimysium segmentation from HE stained microscopy images. In [22],
+clockwork RNNs (which at their core operate at multiple time scales) are extended
+from 1D to 2D for perimysium segmentation. Their approach is shown to performfavorably to multiple baselines, for example, achieving an intersection over union of0.84, in comparison to 0.77 with the common U-Net segmentation architecture [ 23].
+Mitosis event detection and stage localization from phase-contrast mi-
+croscopy images. In [24], CNNs and bidirectional LSTM are combined for detecting
+mitosis events in phase-contrast microscopy image sequences, and, when present, for
+localizing various stages (interphase, start of mitosis, formation of daughter cells, sep-aration of daughter cells) in the sequence. Here, CNNs are trained to detect the
+
+==== Page 16 ====
+518 Handbook of Medical Image Computing and Computer Assisted Intervention
+start-of-mitosis phase from image and motion images, and the features extracted from
+these CNNs are fed to bidirectional LSTM (and processed further) to predict whether a
+mitosis event has occurred (at the sequence level) and to regress the frames at which the
+various stages occur. For event detection, they achieve an F1 score of 97 .7±1.2%, out-
+performing the previous state-of-the-art result of 95 .8±0.8%, based on CNNs alone.
+For stage localization, given that a mitosis event is known to have occurred ,t h e ya c h i e v ea
+stage-3 localization error of 0 .62±0.62 frames, which is comparable to prior methods
+for this task.
+Assessing the quality of image sequences in echocardiography. In [25],
+CNNs are combined with LSTM to assess quality in echocardiographic cines. Five
+standard imaging planes are assessed, with lower-level CNN layers shared among planes
+and high-level layers being plane speciﬁc. Here, LSTM is used to aggregate featuresover time, such that a single quality score is obtained for each sequence of 20 images
+for any given plane. With assessment scores normalized to the
+[0,1]range, they achieve
+15±12%error (as measured by L1 distance to ground-truth scores provided by clini-
+cians).
+Unsupervised learning for surgical motion in robot-assisted surgery. In
+[26], representations of surgical motion are learned using an LSTM-based encoder–decoder architecture, where past motion is encoded and subsequently decoded to
+predict future actions. The resulting encodings end up clustering into high-level ac-
+tivities, and these encodings are used in an information-retrieval setting to search a
+database of surgical motion using motion-based queries. In this application, they in-crease state-of-the-art performance for suturing queries from an F1 score of 0
+.60±0.14
+to 0.77±0.05.
+References
+[1] D.E. Rumelhart, G.E. Hinton, R.J. Williams, Learning representations by back-propagating errors,
+Nature 323 (6088) (1986) 533.
+[2] J.L. Elman, Finding structure in time, Cognitive Science 14 (2) (1990) 179–211.
+[3] K. Hornik, M. Stinchcombe, H. White, Multilayer feedforward networks are universal approximators,
+Neural Networks 2 (5) (1989) 359–366.
+[4] B. Hammer, On the approximation capability of recurrent neural networks, Neurocomputing 31 (1–4)
+(2000) 107–123.
+[5] A. Graves, Supervised sequence labelling, in: Supervised Sequence Labelling with Recurrent Neural
+Networks, Springer, 2012.
+[6] H. Siegelmann, E. Sontag, On the computational power of neural nets, Journal of Computer and
+System Sciences 50 (1) (1995) 132–150.
+[7] I. Goodfellow , Y . Bengio, A. Courville, Deep Learning, MIT Press, Cambridge, 2016.
+[8] R. DiPietro, C. Lea, A. Malpani, N. Ahmidi, S.S. V edula, G.I. Lee, et al., Recognizing surgical
+activities with recurrent neural networks, in: International Conference on Medical Image Computing
+and Computer-Assisted Intervention, 2016, pp. 551–558.
+[9] R. DiPietro, C. Rupprecht, N. Navab, G.D. Hager, Analyzing and exploiting NARX recurrent neural
+networks for long-term dependencies, arXiv preprint, arXiv:1702.07805, 2017.
+
+==== Page 17 ====
+Deep learning: RNNs and LSTM 519
+[10] K. Cho, B. van Merriënboer, Ç. Gülçehre, D. Bahdanau, F . Bougares, H. Schwenk, et al., Learning
+phrase representations using RNN encoder–decoder for statistical machine translation, in: EMNLP ,
+2014.
+[11] P .J. W erbos, Applications of advances in nonlinear sensitivity analysis, in: System Modeling and Opti-
+mization, Springer, 1982, pp. 762–770.
+[12] P .J. W erbos, Backpropagation through time: what it does and how to do it, Proceedings of the IEEE
+78 (10) (1990) 1550–1560.
+[13] R. Pascanu, T . Mikolov, Y . Bengio, On the difﬁculty of training recurrent neural networks, in: Inter-
+national Conference on Machine Learning (ICML), vol. 28, 2013, pp. 1310–1318.
+[14] P .J. W erbos, Maximizing long-term gas industry proﬁts in two minutes in lotus using neural network
+methods, IEEE Transactions on Systems, Man, and Cybernetics 19 (2) (1989) 315–333.
+[15] M. Arjovsky , S. Amar, Y . Bengio, Unitary evolution recurrent neural networks, in: International
+Conference on Machine Learning (ICML), 2016.
+[16] M. Henaff, A. Szlam, Y . LeCun, Orthogonal RNNs and long-memory tasks, in: International Con-
+ference on Machine Learning (ICML), 2016.
+[17] T . Lin, B.G. Horne, P . Tino, Learning long-term dependencies in NARX recurrent neural networks,
+IEEE Transactions on Neural Networks 7 (6) (1996) 1329–1338.
+[18] S. Hochreiter, J. Schmidhuber, Long short-term memory , Neural Computation 9 (8) (1997)
+1735–1780.
+[19] F .A. Gers, J. Schmidhuber, F . Cummins, Learning to forget: continual prediction with LSTM, Neural
+Computation 12 (10) (2000) 2451–2471.
+[20] I. Sutskever, Training Recurrent Neural Networks, University of T oronto, T oronto, Ontario, Canada,
+2013.
+[21] K. Greff, R.K. Srivastava, J. Koutník, B.R. Steunebrink, J. Schmidhuber, LSTM: a search space
+odyssey , IEEE Transactions on Neural Networks and Learning Systems 28 (10) (2017) 2222–2232.
+[22] Y . Xie, Z. Zhang, M. Sapkota, L. Y ang, Spatial clockwork recurrent neural network for muscle per-
+imysium segmentation, in: International Conference on Medical Image Computing and Computer-Assisted Intervention, Springer, 2016, pp. 185–193.
+[23] O. Ronneberger, P . Fischer, T . Brox, U-Net: convolutional networks for biomedical image segmen-
+tation, in: International Conference on Medical Image Computing and Computer-Assisted Interven-tion, Springer, 2015, pp. 234–241.
+[24] Y . Mao, Z. Yin, A hierarchical convolutional neural network for mitosis detection in phase-contrast
+microscopy images, in: International Conference on Medical Image Computing and Computer-Assisted Intervention, Springer, 2016, pp. 685–692.
+[25] A.H. Abdi, C. Luong, T . Tsang, G. Allan, S. Nouranian, J. Jue, et al., Automatic quality assessment
+of echocardiograms using convolutional neural networks: feasibility on the apical four-chamber view ,IEEE Transactions on Medical Imaging 36 (6) (2017) 1221–1230.
+[26] R. DiPietro, G.D. Hager, Unsupervised learning for surgical motion by learning to predict the future,
+arXiv preprint, arXiv:1806.03318, 2018.
+

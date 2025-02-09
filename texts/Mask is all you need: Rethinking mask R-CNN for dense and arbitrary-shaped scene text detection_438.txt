@@ -1,0 +1,938 @@
+==== Page 1 ====
+Mask is All You Need: Rethinking Mask R-CNN
+for Dense and Arbitrary-Shaped Scene Text Detection
+Xugong Qin1,2, Yu Zhou1,2,∗, Youhui Guo1,2, Dayan Wu1, Zhihong Tian3, Ning Jiang4,
+Hongbin Wang4, and Weiping Wang1
+1Institute of Information Engineering, Chinese Academy of Sciences, Beijing, China
+2School of Cyber Security, University of Chinese Academy of Sciences, Beijing, China
+3Guangzhou University, Guangzhou, China
+4Mashang Consumer Finance Co., Ltd., Beijing, China
+{qinxugong,zhouyu,guoyouhui,wudayan,wangweiping}@iie.ac.cn
+tianzhihong@gzhu.edu.cn,{ning.jiang02,hongbin.wang02}@msxf.com
+ABSTRACT
+Due to the large success in object detection and instance segmenta-
+tion, Mask R-CNN attracts great attention and is widely adopted
+as a strong baseline for arbitrary-shaped scene text detection and
+spotting. However, two issues remain to be settled. The first is
+dense text case, which is easy to be neglected but quite practical.
+There may exist multiple instances in one proposal, which makes
+it difficult for the mask head to distinguish different instances and
+degrades the performance. In this work, we argue that the perfor-
+mance degradation results from the learning confusion issue in
+the mask head. We propose to use an MLP decoder instead of the
+“deconv-conv” decoder in the mask head, which alleviates the issue
+and promotes robustness significantly. And we propose instance-
+aware mask learning in which the mask head learns to predict the
+shape of the whole instance rather than classify each pixel to text
+or non-text. With instance-aware mask learning, the mask branch
+can learn separated and compact masks. The second is that due to
+large variations in scale and aspect ratio, RPN needs complicated
+anchor settings, making it hard to maintain and transfer across
+different datasets. To settle this issue, we propose an adaptive label
+assignment in which all instances especially those with extreme
+aspect ratios are guaranteed to be associated with enough anchors.
+Equipped with these components, the proposed method named
+MAYOR1achieves state-of-the-art performance on five benchmarks
+including DAST1500, MSRA-TD500, ICDAR2015, CTW1500, and
+Total-Text.
+CCS CONCEPTS
+•Applied computing →Optical character recognition ;•Com-
+puting methodologies →Object detection .
+1Mask is AllYOu need: Rethinking Mask R-CNN for dense and arbitrary-shaped scene
+text detection, abbreviated as MAYOR
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.
+MM ’21, October 20–24, 2021, Virtual Event, China
+©2021 Association for Computing Machinery.
+ACM ISBN 978-1-4503-8651-7/21/10. . . $15.00
+https://doi.org/10.1145/3474085.3475178KEYWORDS
+Dense Text Detection; Instance Segmentation; Learning Confusion
+ACM Reference Format:
+Xugong Qin, Yu Zhou, Youhui Guo, Dayan Wu, Zhihong Tian, Ning Jiang,
+Hongbin Wang, and Weiping Wang. 2021. Mask is All You Need: Rethinking
+Mask R-CNN for Dense and Arbitrary-Shaped Scene Text Detection. In
+Proceedings of the 29th ACM International Conference on Multimedia (MM
+’21), October 20-24, 2021, Virtual Event, China. ACM, New York, NY, USA, 10
+pages. https://doi.org/10.1145/3474085.3475178
+(a) Mask R -CNN
+(b) MAYOR
+Figure 1: Comparison between results produced by differ-
+ent methods on DAST1500. (a) and (b) denote results from
+Mask R-CNN and MAYOR1. Different colors are used to dis-
+tinguish different instances. The boxes and the masks are
+the corresponding predicted bounding boxes and masks.
+1 INTRODUCTION
+Scene text detection (STD) has attracted attention due to its practi-
+cal applications, e.g., scene understanding, blind navigation, and
+* Yu Zhou is the corresponding author.arXiv:2109.03426v1  [cs.CV]  8 Sep 2021
+
+==== Page 2 ====
+document analysis. Though great progress has been achieved with
+CNN-based methods inspired by general object detection and seg-
+mentation frameworks like Faster R-CNN [ 44], Mask R-CNN [ 10],
+and FCN [ 29], STD remains challenging due to large variations in
+scale, orientation, and aspect ratio, as well as arbitrary shape.
+Mask R-CNN, as one of the most powerful detectors for general
+object detection and instance segmentation, is widely adopted as
+a strong baseline for arbitrary-shaped scene text detection and
+spotting [ 15,16,21,24,26,33,41,57,60,70]. Though excellent
+performance has been achieved with Mask R-CNN based methods,
+there are still two challenges to be addressed in dense and arbitrary-
+shaped scene text detection.
+The first challenge is dense text case, which is not received
+enough attention in previous works [ 35,47] and is regarded as one
+of the key bottlenecks for Mask R-CNN based scene text detection
+frameworks. Mask R-CNN can not well handle dense text case
+which may result in multiple instances falling in one proposal as
+shown in Fig. 1 (a). Liao et al. [ 16] propose to integrate segmentation-
+based methods [ 18,53,54] to generate proposals in a bottom-up
+manner, which can avoid this issue and achieve robust text reading.
+However, the segmentation proposal network requires sequentially
+finding connected regions, slowing down the training and inference
+process. It also suffers from the accumulated errors from the text
+kernel localization. Different from it, we handle this problem from
+a top-down perspective. As shown in Fig. 1, our motivation comes
+from an observation: though a box contains multiple text instances,
+the box branch can localize texts accurately with an axis-aligned
+rectangle bounding box. Since the RoI feature representation is able
+to decode the information of the instance in the box branch, it may
+have considerable representation to recover the whole instance in
+the mask branch. Thus it is reasonable to delve into the mask branch.
+We revisit the mask learning process and find the performance
+degradation is caused by the learning confusion issue in the training
+process.
+The second challenge is that the manually pre-designed an-
+chors cannot easily match text instances of extreme aspect ratios.
+TextBoxes++ [ 17] and RRD [ 19] places 5+ and 10+ anchors with dif-
+ferent aspect ratios for short text and long text detection, resulting
+in a large amount of computational redundancy and long inference
+time. Anchor clustering is performed in SD [ 59] to better match the
+aspect ratios. However, the computed anchors depend on specific
+datasets. Different from these methods of designing complicated
+anchors, we turn to the perspective of label assignment since the
+core reason is few or even no positive samples matching to text
+instances with extreme aspect ratios.
+In this paper, an accurate text detector named MAYOR is pro-
+posed to solve these two problems. First, we introduce the learning
+confusion issue in the mask branch which commonly exists in Mask
+R-CNN based frameworks. Two ways are proposed to improve the
+mask branch: (1) We propose to use an MLP decoder instead of the
+“deconv-conv” decoder in the mask head, which alleviates the issue
+and promotes robustness significantly. (2) We propose instance-
+aware mask learning (IAML) in which the mask head learns to
+predict the shape of the whole instance rather than classify each
+pixel to text or non-text. As shown in Fig. 1 (b), the quality of the
+predicted masks is largely promoted with the two proposed tech-
+niques. In addition, to meet the demand for large variations of scaleand aspect ratio in RPN, we propose a two-step label assignment,
+namely adaptive label assignment (ALA), in which more positive
+samples are involved in the pre-assignment process and then 𝑘
+high-quality samples for each ground-truth are selected as the final
+positive samples according to the matching quality.
+The contributions of this work are summarized as follows:
+•We analyze the performance degradation when Mask R-CNN
+based frameworks meet dense text detection and argue that
+the failure originates from the learning confusion issue in
+the mask head.
+•A two-layer MLP decoder is proposed to replace the “deconv-
+conv” decoder in the standard mask head, which alleviates
+the learning confusion issue and promotes robustness sig-
+nificantly.
+•We propose instance-aware mask learning in which the
+mask head learns to predict the shape of the whole instance
+rather than classify each pixel to text or non-text in the
+pixel-aligned mask learning.
+•An adaptive label assignment is proposed in RPN, which
+brings robust hyper-parameter selection, simple anchor set-
+ting, as well as better performance.
+•Experiments on five public datasets including DAST1500,
+MSRA-TD500, ICDAR2015, CTW1500, and Total-Text demon-
+strate the effectiveness of the proposed method. The experi-
+mental results also show that the proposed method does not
+rely on extra pretraining datasets and runs fast in inference.
+Results on the general instance segmentation task illustrate
+the generalization of the proposed method.
+2 RELATED WORK
+According to different perspectives for modeling scene text, scene
+text detection can be roughly divided into bottom-up and top-down
+methods. Compared with general objects, the text objects are typi-
+cally long which require a larger receptive field.
+Bottom-Up Methods alleviate the demand by detecting lo-
+cal boxes or pixels and then grouping them into text instances.
+Segmentation-based methods [ 6,18,49,53,54,58,62] predict text
+or non-text segmentation and other attributes (e.g. similarity embed-
+dings [ 49,54], shrink kernels [ 53,54]) to group pixels into different
+instances. Though flexible in the representation of text instances,
+these methods are sensitive to text-like noise and rely on post-
+processing. Component-based methods [ 1,3,7,30,36,45,47,48,73,
+78] predict local units and linkages between the components. Lyu et
+al. [34] propose to first localize corners of text bounding boxes then
+group the corners into different instances with a position-aware
+segmentation score. Bottom-up methods could localize local units
+accurately. However, due to the lack of holistically instance-level
+supervision, the methods suffer from accumulated errors.
+Top-Down Methods directly perform instance-aware predic-
+tion, typically comprising one or several stages in a coarse-to-fine
+manner. These methods adopt global modeling with general object
+detection frameworks in which multiple detections are generated
+and Non-Maximum Suppression (NMS) is used to suppress the re-
+dundant detections. In regression-based methods, geometry of text
+is directly predicted from convolutional features [ 2,11,12,17,19,
+22,23,42,50–52,56,77] or RoI features [ 25,37,55,72], and then
+
+==== Page 3 ====
+Fast R -CNN
+(b) Standard Mask Head28×28×1conv×4
+maskclass
+box
+RPN
+Mask branch
+(c) Proposed Mask Head784maskdeconv conv
+Flatten14×14×256 Encoder
+EncoderDecoder
+Decoder
+(a) Overall Pipeline14×14×256 
+28×28×256 
+28×28×1conv×4RoI
+14×14×256 14×14×256 RoIRoIAlign
+1024ReshapeMLPFigure 2: (a) The overall pipeline of MAYOR. (b) and (c) are the architectures of the standard mask head in Mask R-CNN and
+the proposed mask head.
+used to decode to produce the predicted results based on given
+reference points or boxes. In instance segmentation based methods,
+typically, Mask R-CNN based methods [ 28,33,43,57,59,60], an
+extra branch is added to a detection framework. The results are
+achieved via instance segmentation, getting rids of learning target
+confusion problem [ 26,61] which exists in regression-based meth-
+ods. LOMO [ 71] is similar to Mask R-CNN on the whole framework,
+but differs on quadrilateral proposals and a shape expression mod-
+ule to achieve accurate instance-level bounding boxes. These kinds
+of methods usually consist of multiple stages, the final instance
+segmentation results rely heavily on the quality of the detected
+bounding boxes.
+Hybrid Methods. In addition to the above two types of meth-
+ods, another trend is to collaborate the bottom-up methods with the
+top-down frameworks, which can benefit from two modeling per-
+spectives. Liao et al. [ 16] propose a segmentation proposal network
+to replace the original RPN in [ 15], which make the network robust
+for text spotting. However, it also suffers from the shortcomings of
+the segmentation framework. The localization errors from the ker-
+nel segmentation degrade the accuracy of the bounding boxes and
+the discriminant ability of the classifier in the fast R-CNN branch.
+Detection in Crowded Scenes. There may be multiple instances
+falling into a bounding box in crowded scenes, making it difficult
+to distinguish different instances. Mask R-CNN settles this by class-
+aware mask prediction. Since the number of dense objects of the
+same category is relatively rare in typical object detection bench-
+marks like COCO, this issue does not catch extensive attention of
+the object detection community. However, it is quite noteworthy in
+dense text detection which only has a single class. Though difficulty
+also exists in localizing highly overlapped boxes [ 5], we find that
+with sufficient rotation data augmentation, text instances can be
+well localized with axis-aligned bounding boxes. The focus of this
+work is learning masks and generating proposals accurately.
+In this work, from a top-down perspective, we delve into mask
+learning and point out the learning confusion issue in the mask
+head when detecting dense texts. Benefiting from the proposedMLP mask decoder, IAML, and ALA in RPN, our methods effectively
+handle the learning confusion issue and large aspect ratio variance
+problem, achieving more accurate mask predictions compared with
+previous methods.
+3 PROPOSED METHOD
+In this section, we describe the proposed method in detail. First, we
+revisit Mask R-CNN for dense scene text detection and introduce
+the learning confusion issue in pixel-aligned mask learning. An
+MLP mask decoder is proposed to alleviate it. Next, the concept
+of instance-aware learning is elaborated. Then we describe the
+adaptive label assignment. Finally, the optimization is presented.
+3.1 Scene Text Detection with Mask R-CNN
+3.1.1 Revisiting Pixel-Aligned Mask Learning. As shown in Fig. 2
+(a), the proposed method follows the overall framework of Mask
+R-CNN and consists of four modules: a ResNet50-FPN backbone
+[20] for feature extraction, an RPN module for proposal generation,
+a fast R-CNN module for refining proposals, and a mask branch for
+accurate detection. The architecture of the standard mask branch is
+illustrated in Fig. 2 (b), which can be viewed as an encoder-decoder
+structure: four convolutions for feature encoding and a deconvolu-
+tion layer with a convolution predictor for mask decoding.
+Given proposals generated by RPN and multi-scale features gen-
+erated by FPN, the RoI features are obtained by the RoIAlign oper-
+ation [ 10]. The mask predictions are produced via the mask branch.
+In training, binary mask labels are first cropped based on the propos-
+als and then resized to the shape of mask predictions (e.g., 28×28)
+to produce the learning targets. In standard Mask R-CNN, the mask
+predictions are supervised by the corresponding targets in a pixel-
+aligned manner as shown in Fig. 5. Though the whole modeling
+follows a top-down perspective, the mask branch is trained to distin-
+guish each pixel belong to text or non-text locally. During inference,
+the predicted masks are resized according to the predicted boxes
+and then pasted to the original image.
+
+==== Page 4 ====
+p1
+p2𝑓𝐴2𝑓𝐴1
+p1
+p2𝑓𝐵2𝑓𝐵1Figure 3: Illustration of the learning confusion issue in mask
+head. The rotated rectangles and dotted boxes denote differ-
+ent instances and the corresponding proposals generated by
+RPN.𝑓1
+𝐴and𝑓1
+𝐵denote the closest feature vector to reference
+point p1 in the RoI feature 𝐹𝐴and𝐹𝐵.𝑓2
+𝐴and𝑓2
+𝐵denote the
+closest feature vector to reference point p2 in the RoI fea-
+ture𝐹𝐴and𝐹𝐵. Spatial closed feature pairs ( 𝑓1
+𝐴,𝑓1
+𝐵), (𝑓2
+𝐴,𝑓2
+𝐵)
+are likely to have very similar features but associated with
+opposite labels.
+3.1.2 Learning Confusion When Mask R-CNN Meets Dense Texts.
+Despite powerful representation for arbitrary-shaped text, Mask R-
+CNN can not handle dense texts well. We find that the performance
+degradation is caused by the learning confusion issue in mask
+learning. As illustrated in Fig. 3, given two close text instances A
+and B, we denote the RoI features encoded by the mask encoder for
+the two instances as 𝐹𝐴,𝐹𝐵∈R𝑁×𝑁×𝐶.𝑁and𝐶are the dimensions
+of the spatial output and channel respectively. The mask decoder
+requires to classify each feature vector 𝑓𝐴,𝑓𝐵∈R𝐶in𝐹𝐴,𝐹𝐵to
+text or non-text. We introduce two reference points p1 and p2 that
+fall into text A and B respectively. Given p1 and p2, 𝑓1
+𝐴and𝑓2
+𝐴
+denote the nearest feature vectors in 𝐹𝐴. Analogously, 𝑓1
+𝐵and𝑓2
+𝐵
+denote the nearest feature vectors to the two points in 𝐹𝐵. Since
+the spatial positions of feature pairs ( 𝑓1
+𝐴,𝑓1
+𝐵) and (𝑓2
+𝐴,𝑓2
+𝐵) are quite
+close, they are likely to have very similar features. When training
+with𝐹𝐴,𝑓1
+𝐴and𝑓2
+𝐴are taken as positive and negative respectively.
+When training with 𝐹𝐵,𝑓1
+𝐵and𝑓2
+𝐵are taken as negative and positive
+respectively. The labels are opposite when training with the pairs,
+resulting in the learning confusion issue and degrading the overall
+performance.
+3.1.3 MLP Mask Decoder. As a basic component in deep neural
+networks, convolution is popular and widely used due to the bene-
+fits of weight sharing and local connectivity. However, we find it
+harmful to use a convolution classifier for pixel-wise binary classifi-
+cation when detecting dense texts. The learning confusion issue, as
+mentioned in the last subsection, is magnified by the convolution
+classifier. The weight sharing makes the weights update more fre-
+quently and reduces the discrimination performance of the classifier.
+To alleviate the learning confusion issue, we design two variants,
+called locally connected (LC) predictor and fully connected (FC)
+predictor. Both of them discard weight sharing, while FC predictor
+makes use of global context information. The predictors of different
+types are illustrated in Fig. 4.
+As shown in Tab. 1, without weight sharing, the composed mask
+decoder with LC predictor (deconv-LC) outperforms the “deconv-
+conv” decoder by 2.8% F-measure. When we further replace the
+(a) Convolution (b) Locally Connected (c) Fully ConnectedFigure 4: Illustration of different mask predictors. The solid
+lines denote the data flow. The dotted lines represent shar-
+ing weights.
+LC predictor with the FC predictor (deconv-FC) in which more
+contexts are used to predict the mask, another 0.9% F-measure
+increase is obtained. Compared with using more contexts, the dis-
+carding of weight sharing brings more obvious improvement with
+fewer parameters. The reason may be that the RoI features have
+already obtained a certain extent of receptive field with the mask
+encoder. The FC predictor also brings in more parameters and com-
+putations. In practice, we replace the deconvolution layer with a
+fully connected with 1024 dimensions (FC-FC) for speed/accuracy
+trade-off and fair comparison. The computation overhead of the
+composed two-layer MLP decoder (5.3 GFLOPS) is comparable with
+the “deconv-conv” decoder (5.2 GFLOPS) considering 100 proposals.
+The head architecture is shown in Fig. 2 (c).
+Table 1: Performance with different decoders on DAST1500.
+Where “R”, “P”, “F” mean recall, precision, and F-measure re-
+spectively. “deconv”, “conv”, “LC” and “FC” are short for de-
+convolution, convolution, locally connected, and fully con-
+nected.
+Decoder R P F
+deconv-conv 79.8 86.7 83.1
+deconv-LC 84.0 87.9 85.9
+deconv-FC 84.6 89.1 86.8
+FC-FC 85.5 87.8 86.6
+3.2 Instance-Aware Mask Learning
+With the proposed MLP mask decoder, the robustness of the mask
+head is significantly improved. The separated weights and more
+contexts with the whole RoI features can alleviate the learning
+confusion issue. However, the issue still exists in the standard pixel-
+aligned mask learning manner.
+To eliminate the issue, we alternatively propose instance-aware
+mask learning in which the mask branch learns a global instance-
+aware mask. Instead of classifying pixels into foreground and back-
+ground in pixel-aligned mask learning, the mask head learns a
+global representation of how the mask is distributed in the nor-
+malized subdivision grids as illustrated in Fig. 5. Compared with
+the standard pixel-aligned mask learning, the IAML is more like
+the bounding box regression task, in which a more detailed global
+shape mask is learned as the coarse bounding box presentation is
+learned in fast R-CNN branch. We also use the MLP decoder archi-
+tecture in IMAL since the IAML naturally requires global modeling.
+In IAML, the learning targets are independent of the proposal boxes
+and are identical if associated with the same ground-truths.
+
+==== Page 5 ====
+Pixel -Aligned Learning
+Instance -Aware Learning
+Figure 5: Illustration of pixel-aligned mask learning and
+instance-aware mask learning. The red and green boxes de-
+note the RoI and the corresponding ground-truth box re-
+spectively.
+3.3 Adaptive Label Assignment in Region
+Proposal Network
+Let us take a brief look at how label assignment is conducted in
+standard RPN. Given an input image 𝑀, the ground-truth annota-
+tions are denoted as 𝐺, where a ground-truth box 𝑔𝑖∈𝐺is made up
+of a class label 𝑔𝑜𝑏𝑗
+𝑖and a location 𝑔𝑙𝑜𝑐
+𝑖. In RPN,𝑎𝑗∈𝐴stands for an
+anchor box. Intersection-over-Union (IoU) is used as the matching
+quality. During training, 𝑎𝑗is assigned to GT 𝑔𝑖if𝐼𝑜𝑈(𝑎𝑗,𝑔𝑙𝑜𝑐
+𝑖)>
+0.7, while𝑎𝑗is defined as negative if ∀𝑔𝑖∈𝐺,𝐼𝑜𝑈(𝑎𝑗,𝑔𝑙𝑜𝑐
+𝑖)<0.3.
+Anchors which are neither positive nor negative are ignored at
+the training step. Due to large variations in aspect ratio for scene
+text, hand-crafted anchor setting is required, and is hard to match
+texts with extreme aspect ratios, resulting in no or too few positive
+anchors for these instances and degeneration on performance.
+The proposed adaptive label assignment consists of two steps:
+a pre-assignment step in which abundant samples are likely to be
+taken as positives and an assignment step in which high-quality
+samples are further selected as the final positives among the candi-
+dates produced in pre-assignment.
+Label Pre-Assignment. The pre-assignment process is the same
+as the label assignment in standard RPN except that the IoU thresh-
+olds for the positives and the negatives are both set to 0. The pre-
+assignment eliminates the hyper-parameter setting for the thresh-
+olds and enables more samples to participate in training. The posi-
+tive candidates for 𝑔𝑖∈𝐺after this process are denoted as 𝐶𝑖.
+Label Assignment. In this process, we need to select high-
+quality samples from the positive candidates. Inspired by FreeAn-
+chor [ 74], we propose to use losses as the measurement of matching
+quality. For each ground-truth 𝑔𝑖∈𝐺, we calculate the losses with
+candidates𝑐𝑗∈𝐶𝑖to get {𝐿𝑟𝑝𝑛(𝑔𝑖,𝑐𝑗),𝑗=1,...,|𝐶𝑖|} and pick can-
+didates with the top 𝑘smallest values as the final positive samples.
+Other samples are taken as negatives. As shown in Tab. 4 and Tab. 5,
+the proposed adaptive label assignment can simplify anchor setting.
+3.4 Optimization
+The loss function 𝐿is defined as bellow:
+𝐿=𝐿𝑟𝑝𝑛+𝜆1𝐿𝑟𝑐𝑛𝑛+𝜆2𝐿𝑚𝑎𝑠𝑘 (1)
+where𝐿𝑟𝑝𝑛,𝐿𝑟𝑐𝑛𝑛, and𝐿𝑚𝑎𝑠𝑘 are the loss functions defined in
+RPN, Fast R-CNN, and Mask R-CNN which are identical as these in
+[8, 10, 44]. In this work, the 𝜆1and𝜆2are empirically set to 1.0.The learning targets in the pixel-aligned mask learning are iden-
+tical to those in Mask R-CNN. In IAML, the learning targets are
+generated with the ground-truth bounding boxes instead of the
+proposal boxes.
+4 EXPERIMENTS
+4.1 Datasets
+DAST1500 [47] is a dense and arbitrary-shaped text detection
+dataset, which collects commodity images with a detailed descrip-
+tion of the commodities on small wrinkled packages from the In-
+ternet. It contains 1038 training images and 500 testing images.
+Polygon annotations are given at the text line level.
+RotDAST is generated from the DAST1500 dataset [ 47]. To test
+rotation robustness, the dataset is created by rotating the images
+and annotations in the test set of the DAST1500 with some specific
+angles, including 0◦,15◦,30◦,45◦,60◦,75◦, and 90◦. The evaluation
+protocol is the same as that in DAST1500.
+MSRA-TD500 [68] is a multilingual dataset focusing on oriented
+text lines. Large variations of text scale and orientation are pre-
+sented in this dataset. It consists of 300 training images and 200
+testing images. Since the training images are too few, we follow the
+common practice of previous works [ 30,54,77] to add 400 more
+images from HUST-TR400 [67] to the training data.
+ICDAR2015 (IC15) [13] is a multi-oriented text detection dataset
+only for English, which includes 1000 training images and 500
+testing images. The text regions are annotated with quadrilaterals.
+CTW1500 [25] contains 1000 training images and 500 testing im-
+ages. There are 10751 text instances in total, where 3530 are curved
+texts and each image has at least one curved text. In this dataset,
+text instances are annotated with 14-point polygons at the text line
+level.
+Total-Text (TT) [4] has 1255 training images and 300 testing im-
+ages, which contains curved texts, as well as horizontal and multi-
+oriented texts. Each text is labeled as a polygon in word-level.
+4.2 Implementation Details
+The model is initialized with ImageNet and trained using SGD
+optimizer with the learning rate that starts from 0.00125. All the
+experiments are performed on a GeForce GTX 2080 Ti. The batch
+size is set to 1. 90k iterations are in total for all datasets. The learn-
+ing rate decays by 0.1 at 60k and 80k iterations. We adopt random
+rotation, random crop, random scale as data augmentation in train-
+ing. Follow the common practice [ 26,57,60], the aspect ratios of
+anchors are set to {0.25, 0.5, 1.0, 2.0, 4.0} in the Mask R-CNN baseline.
+During inference, predicted masks are converted to polygons by
+finding connected components. When multiple components case
+arises, the one with the largest area is picked as the result. Single-
+scale testing is used for fair comparison and an additional polygonal
+NMS is adopted to suppress redundant detections. The short side
+of input images is resized to 800 if not specified.
+4.3 Ablation Study
+We conduct several ablation studies on DAST1500 to verify the
+effectiveness of the proposed MLP mask decoder, IAML, and ALA
+in RPN.
+MLP Mask Decoder. To evaluate the effectiveness of the pro-
+posed MLP mask decoder, we conduct experiments on DAST1500.
+
+==== Page 6 ====
+As shown in Tab. 2, with the proposed MLP mask decoder, a pure in-
+crease of 3.5% is achieved, illustrating the benefits of the unshared
+weight setting and using more context information. The use of
+the MLP mask decoder alleviates the learning confusion issue in
+the mask head and promotes robustness in dense text detection
+significantly. A decrease is also observed when using IAML. The
+reason behind this phenomenon is quite simple. Since the IAML
+is decoupled with the proposal box in learning, it relies more on
+the accuracy of the detected bounding box. As a contrast, in pixel-
+aligned learning, the variation of proposal boxes serves as a data
+augmentation in training, which makes it more robust on unseen
+images from the testing set.
+Table 2: Detection results on the DAST1500 dataset. * indi-
+cates the results from [47]. †denotes pretrained with Syn-
+thText [9]. “MRCNN”, “ALA”, and “MMD” denote Mask R-
+CNN, adaptive label assignment in RPN, and the proposed
+MLP mask decoder.
+Method R P F
+TextBoxes*++ [17] 40.9 67.3 50.9
+RRD* [19] 43.8 67.2 53.0
+EAST* [77] 55.7 70.0 62.0
+SegLink* [45] 64.7 66.0 65.3
+CTD+TLOC* [25] 60.8 73.8 66.6
+PixelLink* [6] 75.0 74.5 74.7
+ICG†[47] 79.2 79.6 79.4
+ReLaText†[35] 82.9 89.0 85.8
+MRCNN 79.0 86.3 82.5
+MRCNN + ALA 79.8 86.7 83.1
+MRCNN + ALA + MMD (MAYOR) 85.5 87.8 86.6
+MAYOR w IAML 83.4 87.3 85.3
+Table 3: Detection results on RotDAST when using ground-
+truths instead of predicted bounding boxes.
+MethodRotDAST ( 0◦) RotDAST ( 45◦)
+R P F R P F
+MRCNN 90.8 96.4 93.5 57.2 64.8 60.7
+MAYOR 98.2 99.0 98.6 82.9 88.2 85.5
+MAYOR (IAML) 99.2 99.4 99.3 96.5 96.9 96.7
+Instance-Aware Mask Learning. To better illustrate the effec-
+tiveness of the proposed IAML which is superior in distinguish-
+ing different instances with accurate mask predictions, we further
+perform experiments on RotDAST. Specifically, we replace the pre-
+dicted bounding boxes with the corresponding ground-truth boxes
+to clearly eliminate the impact from bounding box localization. As
+shown in Tab. 3, the MLP mask decoder promotes the Mask R-CNN
+baseline by 5.1% in F-measure. With IAML, another 0.7% increment
+is obtained. On a more challenging RotDAST with 45 degree, the
+gaps are further enlarged to 24.8% and 11.2% in F-measure. The
+results demonstrate that the proposed IAML can well distinguish
+dense text instances. We list results from different degrees to show
+the robustness of different methods. As shown in Fig. 6, the pro-
+posed method with IAML is quite robust with different rotation
+degrees. As a contrast, the performance of Mask R-CNN drops
+rapidly when the rotation degree is close to 45.
+6065707580859095100
+0° 15° 30° 45° 60° 75° 90°F-measure (%)
+Rotation Angle
+MRCNN MAYOR MAYOR (IAML)Figure 6: Detection results on RotDAST with different rota-
+tion angles when testing with ground-truth bounding boxes.
+ALA in RPN. We first study the robustness of hyper-parameter
+𝑘. As shown in Tab. 4, the 𝑘value is quite robust across different
+values. We take 𝑘=5as the default setting. Then we perform
+experiments with anchors of different aspect ratios. The use of
+ALA enables the number of aspect ratios to be reduced to one as
+shown in Tab. 5. The two observations make the design of anchors
+more robust and flexible. Furthermore, a study is also conducted
+with different types of losses as shown in Tab. 6. Combining with
+losses of localization and objectness achieves the best performance.
+Surprisingly, selecting positives with only objectness loss can also
+achieve an F-measure of 84.4%. We find that it may come from the
+strong prior that all positive candidates must have an 𝐼𝑜𝑈>0with
+a certain ground-truth, which makes the samples quite reliable.
+Table 4: Detection results on DAST1500 with different values
+of k.
+k 3 5 7 9 11 13 15
+R 84.8 85.5 84.6 84.6 85.2 84.5 85.2
+P 88.2 87.8 88.5 88.1 88.0 88.4 87.7
+F 86.5 86.6 86.5 86.3 86.6 86.4 86.4
+Table 5: Detection results on DAST1500 with different aspect
+ratios of anchors.
+Aspect Ratio R P F
+{1.0} 85.5 87.8 86.6
+{0.5, 1.0, 2.0} 83.7 89.0 86.3
+{0.25, 0.5, 1.0, 2.0, 4.0} 84.8 88.4 86.5
+Table 6: Detection results on DAST1500 with different loss
+settings in adaptive label assignment in RPN, “Loc” and
+“Obj” denote localization and objectness.
+Loc Obj R P F
+✓ 82.8 90.1 86.3
+✓ 82.9 85.9 84.4
+✓ ✓ 85.5 87.8 86.6
+
+==== Page 7 ====
+Table 7: The single-scale results on ICDAR2015, CTW1500, and Total-Text. Ext is the short for external data used in training
+stage. “ST” and “MLT” denote SynthText [9] and ICDAR2017-MLT [38].
+MethodICDAR2015 CTW1500 Total-Text
+Ext R P F FPS Ext R P F FPS Ext R P F FPS
+PSENet [53] - 79.7 81.5 80.6 1.6 - 75.6 80.6 78.0 3.9 - 75.1 81.8 78.3 3.9
+ATRR [55] - 86.0 89.2 87.6 - - 80.2 80.1 80.1 - - 76.2 80.9 78.5 -
+PAN [54] - 77.8 82.9 80.3 26.1 - 77.7 84.6 81.0 39.8 - 79.4 88.0 83.5 39.6
+ContourNet [57] - 86.1 87.6 86.9 3.5 - 84.1 83.7 83.9 4.5 - 83.9 86.9 85.4 3.8
+TextSnake [30] ST 80.4 84.9 82.6 1.1 ST 85.3 67.9 75.6 - ST 74.5 82.7 78.4 -
+TextField [62] ST 83.9 84.3 84.1 1.8 ST 79.8 83.0 81.4 6.0 ST 79.9 81.2 80.6 6.0
+LOMO [71] ST 83.5 91.3 87.2 3.4 ST 69.6 89.2 78.4 4.4 ST 75.7 88.6 81.6 4.4
+SAE [49] ST 85.0 88.3 86.6 - ST 77.8 82.7 80.1 - - - - - -
+MSR [64] ST 78.4 86.6 82.3 4.3 ST 78.3 85.0 81.5 4.3 ST 74.8 83.8 79.0 4.3
+PAN [54] ST 81.9 84.0 82.9 26.1 ST 81.2 86.4 83.7 39.8 ST 81.0 89.3 85.0 39.6
+DB [18] ST 83.2 91.8 87.3 12.0 ST 80.2 86.9 83.4 22.0 ST 82.5 87.1 84.7 32.0
+SPCNet [60] ST+MLT 85.8 88.7 87.2 - - - - - - ST+MLT 82.8 83.0 82.9 -
+PSENet [53] MLT 84.5 86.9 85.7 1.6 MLT 79.7 84.8 82.2 3.9 MLT 78.0 84.0 80.9 3.9
+CRAFT [1] ST 84.3 89.8 86.9 - ST+MLT 81.1 86.0 83.5 - ST+MLT 79.9 87.6 83.6 -
+DRRG [73] ST+MLT 84.7 88.5 86.6 - ST+MLT 83.0 85.9 84.5 - ST+MLT 84.9 86.5 85.7 -
+SD [59] MLT 88.4 88.7 88.6 - TT+MLT 82.3 85.8 84.0 - MLT 84.7 89.2 86.9 -
+MRCNN - 82.0 90.1 85.9 6.7 - 81.4 87.0 84.1 19.7 - 82.3 88.9 85.5 19.7
+MAYOR - 85.2 90.5 87.8 7.0 - 82.7 88.0 85.3 19.9 - 84.5 88.2 86.3 19.9
+MAYOR (IAML) - 85.5 89.7 87.6 7.0 - 81.0 89.0 84.9 19.9 - 84.2 87.8 86.0 19.9
+MAYOR MLT 85.9 92.7 89.2 7.0 MLT 83.6 88.7 86.1 19.9 MLT 85.3 92.9 88.9 19.9
+MAYOR (IAML) MLT 87.3 91.5 89.3 7.0 MLT 82.1 88.7 85.3 19.9 MLT 87.1 90.7 88.9 19.9
+4.4 Comparison with State-of-the-Art Methods
+We compare our MAYOR with recent state-of-the-art methods on
+DAST1500, MSRA-TD500, ICDAR2015, CTW1500, and Total-Text
+to demonstrate its effectiveness for dense and arbitrary-shaped text
+detection.
+4.4.1 Evaluation on Dense and Arbitrary-Shaped Text Benchmark.
+We evaluate the proposed method on DAST1500 to test its perfor-
+mance for dense and arbitrary-shaped texts. As shown in Tab. 2,
+with the help of ALA and MMD, MAYOR achieves a new state-of-
+the-art result of 85.5%, 87.8%, and 86.6% in recall, precision, and
+F-measure respectively without external data, and outperforms ICG
+[47] by a large margin. Though ReLaText [ 35] uses a powerful graph
+convolutional network and additional pretraining data, our method
+trained with only original annotations outperforms ReLaText by
+0.8% in F-measure. Compared with state-of-the-art methods which
+mostly utilize flexible bottom-up representations, MAYOR directly
+works in a top-down manner, which also demonstrates top-down
+modeling can also perform well on dense texts.
+4.4.2 Evaluation on Multi-Oriented Text Benchmark. We evalu-
+ate our method on MSRA-TD500 and ICDAR2015 to test its per-
+formance for multi-oriented texts. As shown in Tab. 8, MAYOR
+achieves 85.2%, 91.7%, and 88.3% on MSRA-TD500 without external
+data, outperforming existing SOTA methods (e.g. DB [ 18], DRRG
+[73], ReLaText [ 35]) by a large margin. It also outperforms MTS v3
+[16] which uses a segmentation-based method to generated propos-
+als. Compared with MTS v3, MAYOR benefits from global modeling
+in which proposals are further refined in fast R-CNN branch, allevi-
+ating the accumulated localization errors from proposal generation.
+Since the scales of texts in ICDAR1205 are generally small, we
+follow the common practice to use a larger scale input in which the
+short side to resized to 1440 for testing. On ICDAR2015, MAYORachieves 87.8% and 87.6% (IAML) F-measure without external data
+as shown in Tab. 7, which outperforms most methods and is only
+inferior to SD [ 73] that uses ICDAR2017-MLT. To fairly compared
+with methods that use external data, MLT is also combined as pre-
+training data. With MLT, MAYOR achieves state-of-the-art results
+of 89.2% and 89.3% (IAML), indicating the effectiveness of detecting
+multi-oriented texts.
+Table 8: The single-scale results on MSRA-TD500. * indicates
+multi-scale testing. “RCTW” denotes RCTW17 [46].
+Method Ext R P F FPS
+EAST [77] - 67.4 87.3 76.1 13.2
+RRPN [37] - 68.0 82.0 74.0 -
+ITN [51] - 72.3 90.3 80.3 -
+Border* [63] - 77.4 83.0 80.1 -
+PAN [54] - 77.3 80.7 78.9 30.2
+ATRR [55] - 82.1 85.2 83.6 -
+SegLink [45] ST 70.0 86.0 77.0 8.9
+RRD [19] ST 73.0 87.0 79.0 10.0
+Corner [34] ST 76.2 87.6 81.5 5.7
+MCN [27] ST 79.0 88.0 83.0 -
+TextSnake [30] ST 73.9 83.2 78.3 1.1
+SAE [49] ST 81.7 84.2 82.9 -
+TextField [62] ST 75.9 87.4 81.3 -
+DB [18] ST 79.2 91.5 84.9 32.0
+MTS v3 [16] ST 90.7 77.5 83.5 -
+ReLaText [35] ST 83.2 90.5 86.7 8.3
+PixelLink [6] IC15 73.2 83.0 77.8 3.0
+SBD [26] RCTW 80.5 89.6 84.8 3.2
+CRAFT [1] MLT 78.2 88.2 82.9 8.6
+DRRG [73] ST+MLT 82.3 88.1 85.1 -
+MAYOR - 85.2 91.7 88.3 20.5
+
+==== Page 8 ====
+(b) MSRA -TD500 (c) ICDAR2015 (d) CTW1500 (e) Total -Text
+ (a) DAST1500Figure 7: Qualitative results on DAST1500, MSRA-TD500, ICADR2015, CTW1500, and Total-Text. The first two rows and the
+last two rows are results from MAYOR and MAYOR (IAML), respectively.
+4.4.3 Evaluation on Curved Text Benchmark. To show the perfor-
+mance of our method for curved texts, we compare its performance
+with the state-of-the-arts on CTW1500 and Total-Text. As shown
+in Tab. 7, the proposed method is much better than other methods
+including TextSnake [ 30], MSR [ 64], and DB [ 18], which are de-
+signed for curved texts. MAYOR achieves 85.3% and 84.9% (IAML)
+in F-measure on CTW1500 without external data and outperforms
+recently proposed methods ContourNet [ 57], DRRG [ 73], and SD
+[59]. With MLT as pretraining data, it achieves state-of-the-art re-
+sult of 86.1% in F-measure. Compared with SD, which is also a Mask
+R-CNN based framework, the proposed ALA in RPN can exploit
+more samples for long texts with extreme aspect ratios. And the
+proposed MMD and IAML are also more robust in detecting long
+texts.
+On Total-Text, MAYOR achieves 86.3% and 86.0% (IAML) in F-
+measure without external data, outperforming existing methods
+except for SD which uses ICADAR2017-MLT as the external data.
+When MLT is also combined in training, a state-of-the-art result
+of 88.9% in F-measure is achieved, outperforming SD by 2%. The
+performance across different datasets shows the effectiveness and
+robustness in various scene text cases. Detection results on five
+datasets are visualized in Fig. 7.
+4.5 General Instance Segmentation on COCO
+The proposed method is general since we consider texts as one type
+of instance during modeling. When MMD is added to MRCNN, we
+find an increment from 35.1% to 35.6% on mask AP on COCO valida-
+tion set, which illustrates its effectiveness. Though close instances
+within the same category are relatively rare on COCO, learning
+confusion exists and results in fragment prediction. We observe
+2%-5% AP improvement on snowboard, hot dog, and toothbrush
+which are also long and thin. As shown in Fig. 8, the prediction is
+more compact and complete due to global modeling.
+MRCNN MRCNN w MMDFigure 8: Visualization results on COCO.
+5 CONCLUSION
+In this work, we rethink the limitation of Mask R-CNN based meth-
+ods on dense scene text detection and point out the learning confu-
+sion issue in the mask head. An MLP mask decoder is proposed to
+alleviate the issue. We alternatively propose instance-aware mask
+learning to eliminate this issue from a global perspective. The adap-
+tive label assignment is also designed for better matching texts with
+extreme aspect ratios. With the proposed techniques, our method,
+namely MAYOR, can better detect dense and arbitrary-shaped text.
+The performance on five public benchmarks demonstrates the effec-
+tiveness and robustness of our approach. We’d like to combine text
+recognition [ 39,40], self-supervised learning [ 14,31,32,69,75,76],
+and knowledge distillation [ 65,66] to build a robust text reading
+system.
+ACKNOWLEDGMENTS
+This work is supported by the Open Research Project of the State
+Key Laboratory of Media Convergence and Communication, Com-
+munication University of China, China (No. SKLMCC2020KF004),
+the Beijing Municipal Science & Technology Commission (Z1911000
+07119002), the Key Research Program of Frontier Sciences, CAS,
+Grant NO ZDBS-LY-7024, the National Natural Science Foundation
+of China (No. 62006221), and CAAI-Huawei MindSpore Open Fund.
+
+==== Page 9 ====
+REFERENCES
+[1]Youngmin Baek, Bado Lee, Dongyoon Han, Sangdoo Yun, and Hwalsuk Lee. 2019.
+Character region awareness for text detection. In CVPR . 9365–9374.
+[2]Yudi Chen, Wei Wang, Yu Zhou, Fei Yang, Dongbao Yang, and Weiping Wang.
+2020. Self-Training for Domain Adaptive Scene Text Detection. In ICPR . 850–857.
+[3]Yudi Chen, Yu Zhou, Dongbao Yang, and Weiping Wang. 2019. Constrained
+Relation Network for Character Detection in Scene Images. In PRICAI , Vol. 11672.
+137–149.
+[4]Chee Kheng Ch’ng and Chee Seng Chan. 2017. Total-text: A comprehensive
+dataset for scene text detection and recognition. In ICDAR . 935–942.
+[5] Xuangeng Chu, Anlin Zheng, Xiangyu Zhang, and Jian Sun. 2020. Detection in
+crowded scenes: One proposal, multiple predictions. In CVPR . 12214–12223.
+[6]Dan Deng, Haifeng Liu, Xuelong Li, and Deng Cai. 2018. Pixellink: Detecting
+scene text via instance segmentation. In AAAI . 6773–6780.
+[7]Wei Feng, Wenhao He, Fei Yin, Xu-Yao Zhang, and Cheng-Lin Liu. 2019.
+TextDragon: An end-to-end framework for arbitrary shaped text spotting. In
+ICCV . 9076–9085.
+[8] Ross Girshick. 2015. Fast R-CNN. In ICCV . 1440–1448.
+[9]Ankush Gupta, Andrea Vedaldi, and Andrew Zisserman. 2016. Synthetic data for
+text localisation in natural images. In CVPR . 2315–2324.
+[10] Kaiming He, Georgia Gkioxari, Piotr Dollár, and Ross Girshick. 2017. Mask
+R-CNN. In ICCV . 2980–2988.
+[11] Pan He, Weilin Huang, Tong He, Qile Zhu, Yu Qiao, and Xiaolin Li. 2017. Single
+shot text detector with regional attention. In ICCV . 3047–3055.
+[12] Wenhao He, Xu-Yao Zhang, Fei Yin, and Cheng-Lin Liu. 2017. Deep direct
+regression for multi-oriented scene text detection. In ICCV . 745–753.
+[13] Dimosthenis Karatzas, Lluis Gomez-Bigorda, Anguelos Nicolaou, Suman Ghosh,
+Andrew Bagdanov, Masakazu Iwamura, Jiri Matas, Lukas Neumann, Vijay Ra-
+maseshan Chandrasekhar, Shijian Lu, et al .2015. ICDAR 2015 competition on
+robust reading. In ICDAR . 1156–1160.
+[14] Wei Li, Dezhao Luo, Bo Fang, Yu Zhou, and Weiping Wang. 2021. Video 3D
+Sampling for Self-supervised Representation Learning. CoRR abs/2107.03578
+(2021).
+[15] Minghui Liao, Pengyuan Lyu, Minghang He, Cong Yao, Wenhao Wu, and Xiang
+Bai. 2021. Mask textSpotter: An end-to-end trainable neural network for spotting
+text with arbitrary shapes. IEEE TPAMI (2021), 532–548.
+[16] Minghui Liao, Guan Pang, Jing Huang, Tal Hassner, and Xiang Bai. 2020. Mask
+TextSpotter v3: Segmentation proposal network for robust scene text spotting.
+InECCV . 706–722.
+[17] Minghui Liao, Baoguang Shi, and Xiang Bai. 2018. Textboxes++: A single-shot
+oriented scene text detector. IEEE TIP (2018), 3676–3690.
+[18] Minghui Liao, Zhaoyi Wan, Cong Yao, Kai Chen, and Xiang Bai. 2020. Real-time
+scene text detection with differentiable binarization. In AAAI . 11474–11481.
+[19] Minghui Liao, Zhen Zhu, Baoguang Shi, Gui-song Xia, and Xiang Bai. 2018.
+Rotation-sensitive regression for oriented scene text detection. In CVPR . 5909–
+5918.
+[20] Tsung-Yi Lin, Piotr Dollár, Ross Girshick, Kaiming He, Bharath Hariharan, and
+Serge Belongie. 2017. Feature pyramid networks for object detection. In CVPR .
+2117–2125.
+[21] Juhua Liu, Zhe Chen, Bo Du, and Dacheng Tao. 2020. ASTS: A unified framework
+for arbitrary shape text spotting. IEEE TIP (2020), 5924–5936.
+[22] Yuliang Liu, Hao Chen, Chunhua Shen, Tong He, Lianwen Jin, and Liangwei
+Wang. 2020. ABCNet: Real-time scene text spotting with adaptive bezier-curve
+network. In CVPR . 9806–9815.
+[23] Yuliang Liu and Lianwen Jin. 2017. Deep matching prior network: Toward tighter
+multi-oriented text detection. In CVPR . 3454–3461.
+[24] Yuliang Liu, Lianwen Jin, and Chuanming Fang. 2019. Arbitrarily shaped scene
+text detection with a mask tightness text detector. IEEE TIP (2019), 2918–2930.
+[25] Yuliang Liu, Lianwen Jin, Shuaitao Zhang, Canjie Luo, and Sheng Zhang. 2019.
+Curved scene text detection via transverse and longitudinal sequence connection.
+PR(2019), 337–345.
+[26] Yuliang Liu, Sheng Zhang, Lianwen Jin, Lele Xie, Yaqiang Wu, and Zhepeng
+Wang. 2019. Omnidirectional scene text detection with sequential-free box
+discretization. In IJCAI . 3052–3058.
+[27] Zichuan Liu, Guosheng Lin, Sheng Yang, Jiashi Feng, Weisi Lin, and Wang
+Ling Goh. 2018. Learning markov clustering networks for scene text detection.
+InCVPR . 6936–6944.
+[28] Zichuan Liu, Guosheng Lin, Sheng Yang, Fayao Liu, Weisi Lin, and Wang Ling
+Goh. 2019. Towards robust curve text detection with conditional spatial expansion.
+InCVPR . 7269–7278.
+[29] Jonathan Long, Evan Shelhamer, and Trevor Darrell. 2015. Fully convolutional
+networks for semantic segmentation. In CVPR . 3431–3440.
+[30] Shangbang Long, Jiaqiang Ruan, Wenjie Zhang, Xin He, Wenhao Wu, and Cong
+Yao. 2018. Textsnake: A flexible representation for detecting text of arbitrary
+shapes. In ECCV . 20–36.
+[31] Dezhao Luo, Bo Fang, Yu Zhou, Yucan Zhou, Dayan Wu, and Weiping Wang.
+2020. Exploring Relations in Untrimmed Videos for Self-Supervised Learning.CoRR abs/2008.02711 (2020).
+[32] Dezhao Luo, Chang Liu, Yu Zhou, Dongbao Yang, Can Ma, Qixiang Ye, and
+Weiping Wang. 2020. Video Cloze Procedure for Self-Supervised Spatio-Temporal
+Learning. In AAAI . 11701–11708.
+[33] Pengyuan Lyu, Minghui Liao, Cong Yao, Wenhao Wu, and Xiang Bai. 2018.
+Mask textSpotter: An end-to-end trainable neural network for spotting text with
+arbitrary shapes. In ECCV . 71–88.
+[34] Pengyuan Lyu, Cong Yao, Wenhao Wu, Shuicheng Yan, and Xiang Bai. 2018. Multi-
+oriented scene text detection via corner localization and region segmentation. In
+CVPR . 7553–7563.
+[35] Chixiang Ma, Lei Sun, Zhuoyao Zhong, and Qiang Huo. 2021. ReLaText: Ex-
+ploiting visual relationships for arbitrary-shaped scene text detection with graph
+convolutional networks. PR(2021), 337–345.
+[36] Chixiang Ma, Zhuoyao Zhong, Lei Sun, and Qiang Huo. 2019. A relation network
+based approach to curved text detection. In ICDAR . 707–713.
+[37] Jianqi Ma, Weiyuan Shao, Hao Ye, Li Wang, Hong Wang, Yingbin Zheng, and Xi-
+angyang Xue. 2018. Arbitrary-oriented scene text detection via rotation proposals.
+IEEE TMM (2018), 3111–3122.
+[38] Nibal Nayef, Fei Yin, Imen Bizid, Hyunsoo Choi, Yuan Feng, Dimosthenis Karatzas,
+Zhenbo Luo, Umapada Pal, Christophe Rigaud, Joseph Chazalon, et al .2017.
+Icdar2017 robust reading challenge on multi-lingual scene text detection and
+script identification-rrc-mlt. In ICDAR . 1454–1459.
+[39] Zhi Qiao, Xugong Qin, Yu Zhou, Fei Yang, and Weiping Wang. 2020. Gaussian
+Constrained Attention Network for Scene Text Recognition. In ICPR . 3328–3335.
+[40] Zhi Qiao, Yu Zhou, Dongbao Yang, Yucan Zhou, and Weiping Wang. 2020. SEED:
+Semantics Enhanced Encoder-Decoder Framework for Scene Text Recognition.
+InCVPR . 13525–13534.
+[41] Siyang Qin, Alessandro Bissacco, Michalis Raptis, Yasuhisa Fujii, and Ying Xiao.
+2019. Towards unconstrained end-to-end text spotting. In ICCV . 4704–4714.
+[42] Xugong Qin, Yu Zhou, Youhui Guo, Dayan Wu, and Weiping Wang. 2021. FC2RN:
+A Fully Convolutional Corner Refinement Network for Accurate Multi-Oriented
+Scene Text Detection. In ICASSP . 4350–4354.
+[43] Xugong Qin, Yu Zhou, Dongbao Yang, and Weiping Wang. 2019. Curved Text
+Detection in Natural Scene Images with Semi- and Weakly-Supervised Learning.
+InICDAR . 559–564.
+[44] Shaoqing Ren, Kaiming He, Ross Girshick, and Jian Sun. 2015. Faster R-CNN:
+Towards real-time object detection with region proposal networks. In NeurIPS .
+91–99.
+[45] Baoguang Shi, Xiang Bai, and Serge Belongie. 2017. Detecting oriented text in
+natural images by linking segments. In CVPR . 2550–2558.
+[46] Baoguang Shi, Cong Yao, Minghui Liao, Mingkun Yang, Pei Xu, Linyan Cui, Serge
+Belongie, Shijian Lu, and Xiang Bai. 2017. Icdar2017 competition on reading
+chinese text in the wild (rctw-17). In ICDAR . 1429–1434.
+[47] Jun Tang, Zhibo Yang, Yongpan Wang, Qi Zheng, Yongchao Xu, and Xiang Bai.
+2019. SegLink++: Detecting dense and arbitrary-shaped scene text by instance-
+aware component grouping. PR(2019), 106954.
+[48] Zhi Tian, Weilin Huang, Tong He, Pan He, and Yu Qiao. 2016. Detecting text in
+natural image with connectionist text proposal network. In ECCV . 56–72.
+[49] Zhuotao Tian, Michelle Shu, Pengyuan Lyu, Ruiyu Li, Chao Zhou, Xiaoyong Shen,
+and Jiaya Jia. 2019. Learning shape-aware embedding for scene text detection. In
+CVPR . 4234–4243.
+[50] Fangfang Wang, Yifeng Chen, Fei Wu, and Xi Li. 2020. TextRay: Contour-based
+geometric modeling for arbitrary-shaped scene text detection. In ACM MM . 111–
+119.
+[51] Fangfang Wang, Liming Zhao, Xi Li, Xinchao Wang, and Dacheng Tao. 2018.
+Geometry-aware scene text detection with instance transformation network. In
+CVPR . 1381–1389.
+[52] Pengfei Wang, Chengquan Zhang, Fei Qi, Zuming Huang, Mengyi En, Junyu
+Han, Jingtuo Liu, Errui Ding, and Guangming Shi. 2019. A single-shot arbitrarily-
+shaped text detector based on context attended multi-task learning. In ACM MM .
+1277–1285.
+[53] Wenhai Wang, Enze Xie, Xiang Li, Wenbo Hou, Tong Lu, Gang Yu, and Shuai
+Shao. 2019. Shape robust text detection with progressive scale expansion network.
+InCVPR . 9336–9345.
+[54] Wenhai Wang, Enze Xie, Xiaoge Song, Yuhang Zang, Wenjia Wang, Tong Lu,
+Gang Yu, and Chunhua Shen. 2019. Efficient and accurate arbitrary-shaped text
+detection with pixel aggregation network. In ICCV . 8440–8449.
+[55] Xiaobing Wang, Yingying Jiang, Zhenbo Luo, Cheng-Lin Liu, Hyunsoo Choi,
+and Sungjin Kim. 2019. Arbitrary shape scene text detection with adaptive text
+region representation. In CVPR . 6449–6458.
+[56] Yuxin Wang, Hongtao Xie, Zilong Fu, and Yongdong Zhang. 2019. DSRN: A deep
+scale relationship network for scene text detection.. In IJCAI . 947–953.
+[57] Yuxin Wang, Hongtao Xie, Zheng-Jun Zha, Mengting Xing, Zilong Fu, and Yong-
+dong Zhang. 2020. ContourNet: Taking a further step toward accurate arbitrary-
+shaped scene text detection. In CVPR . 11750–11759.
+[58] Yue Wu and Prem Natarajan. 2017. Self-organized text detection with minimal
+post-processing via border learning. In ICCV . 5000–5009.
+
+==== Page 10 ====
+[59] Shanyu Xiao, Liangrui Peng, Yan Ruijie, An Keyu, Yao Gang, and Min Jaesik. 2020.
+Sequential deformation for accurate scene text detection. In ECCV . 108–124.
+[60] Enze Xie, Yuhang Zang, Shuai Shao, Gang Yu, Cong Yao, and Guangyao Li.
+2019. Scene text detection with supervised pyramid context network. In AAAI .
+9038–9045.
+[61] Youjiang Xu, Jiaqi Duan, Zhanghui Kuang, Xiaoyu Yue, Hongbin Sun, Yue Guan,
+and Wayne Zhang. 2019. Geometry normalization networks for accurate scene
+text detection. In ICCV . 9137–9146.
+[62] Yongchao Xu, Yukang Wang, Wei Zhou, Yongpan Wang, Zhibo Yang, and Xiang
+Bai. 2019. TextField: Learning a deep direction field for irregular scene text
+detection. IEEE TIP (2019), 5566–5579.
+[63] Chuhui Xue, Shijian Lu, and Fangneng Zhan. 2018. Accurate scene text detection
+through border semantics awareness and bootstrapping. In ECCV . 355–372.
+[64] Chuhui Xue, Shijian Lu, and Wei Zhang. 2019. MSR: multi-scale shape regression
+for scene text detection. In IJCAI . 989–995.
+[65] Dongbao Yang, Yu Zhou, and Weiping Wang. 2021. Multi-View Correlation
+Distillation for Incremental Object Detection. CoRR abs/2107.01787 (2021).
+[66] Dongbao Yang, Yu Zhou, Dayan Wu, Can Ma, Fei Yang, and Weiping Wang. 2020.
+Two-Level Residual Distillation based Triple Network for Incremental Object
+Detection. CoRR abs/2007.13428 (2020).
+[67] Cong Yao, Xiang Bai, and Wenyu Liu. 2014. A unified framework for multioriented
+text detection and recognition. IEEE TIP (2014), 4737–4749.
+[68] Cong Yao, Xiang Bai, Wenyu Liu, Yi Ma, and Zhuowen Tu. 2012. Detecting texts
+of arbitrary orientations in natural images. In CVPR . 1083–1090.
+[69] Yuan Yao, Chang Liu, Dezhao Luo, Yu Zhou, and Qixiang Ye. 2020. Video Playback
+Rate Perception for Self-Supervised Spatio-Temporal Representation Learning.InCVPR . 6547–6556.
+[70] Jian Ye, Zhe Chen, Juhua Liu, and Bo Du. 2020. TextFuseNet: Scene text detection
+with richer fused features. In IJCAI . 516–522.
+[71] Chengquan Zhang, Borong Liang, Zuming Huang, Mengyi En, Junyu Han, Errui
+Ding, and Xinghao Ding. 2019. Look more than once: An accurate detector for
+text of arbitrary shapes. In CVPR . 10552–10561.
+[72] Sheng Zhang, Yuliang Liu, Lianwen Jin, and Canjie Luo. 2018. Feature enhance-
+ment network: A refined scene text detector. In AAAI . 2612–2619.
+[73] Shi-Xue Zhang, Xiaobin Zhu, Jie-Bo Hou, Chang Liu, Chun Yang, Hongfa Wang,
+and Xu-Cheng Yin. 2020. Deep relational reasoning graph network for arbitrary
+shape text detection. In CVPR . 9696–9705.
+[74] Xiaosong Zhang, Fang Wan, Chang Liu, Rongrong Ji, and Qixiang Ye. 2019.
+FreeAnchor: Learning to match anchors for visual object detection. In NeurIPS .
+147–155.
+[75] Yifei Zhang, Chang Liu, Yu Zhou, Wei Wang, Weiping Wang, and Qixiang Ye.
+2020. Progressive Cluster Purification for Unsupervised Feature Learning. In
+ICPR . 8476–8483.
+[76] Yifei Zhang, Yu Zhou, and Weiping Wang. 2021. Exploring Instance Relations
+for Unsupervised Feature Embedding. CoRR abs/2105.03341 (2021).
+[77] Xinyu Zhou, Cong Yao, He Wen, Yuzhi Wang, Shuchang Zhou, Weiran He, and
+Jiajun Liang. 2017. EAST: An efficient and accurate scene text detector. In CVPR .
+2642–2651.
+[78] Yu Zhou, Hongtao Xie, Shancheng Fang, Yan Li, and Yongdong Zhang. 2020.
+CRNet: A center-aware representation for detecting text of arbitrary shapes. In
+ACM MM . 2571–2580.
+

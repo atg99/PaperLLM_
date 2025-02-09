@@ -1,0 +1,1081 @@
+==== Page 1 ====
+Least squares binary quantization of neural networks
+Hadi Pouransari, Zhucheng Tu, Oncel Tuzel
+Apple Inc.
+Cupertino, CA 95014, USA
+{mpouransari,zhucheng tu,ctuzel }@apple.com
+Abstract
+Quantizing weights and activations of deep neural net-
+works results in signiﬁcant improvement in inference efﬁ-
+ciency at the cost of lower accuracy. A source of the ac-
+curacy gap between full precision and quantized models is
+the quantization error. In this work, we focus on the bi-
+nary quantization, in which values are mapped to -1 and 1.
+We provide a uniﬁed framework to analyze different scaling
+strategies. Inspired by the pareto-optimality of 2-bits versus
+1-bit quantization, we introduce a novel 2-bits quantization
+with provably least squares error. Our quantization algo-
+rithms can be implemented efﬁciently on the hardware us-
+ing bitwise operations. We present proofs to show that our
+proposed methods are optimal, and also provide empirical
+error analysis. We conduct experiments on the ImageNet
+dataset and show a reduced accuracy gap when using the
+proposed least squares quantization algorithms.1
+1. Introduction
+A major challenge in the deployment of Deep Neural
+Networks (DNNs) is their high computational cost. Find-
+ing effective methods to improve run-time efﬁciency is still
+an area of research. We can group various approaches taken
+by researchers into the following three categories.
+Hardware optimization : Speciﬁcally designed hard-
+wares are deployed to efﬁciently perform computations
+in ML tasks. Compiler optimization : Compression and
+fusion techniques coupled with efﬁcient hardware-aware
+implementations, such as dense and sparse matrix-vector
+multiplication, are used. Model optimization : Run-time
+performance can also be gained by modifying the model
+structure and the underlying arithmetic operations. While
+hardware and compiler optimization are typically lossless,
+model optimization trades-off computational cost (memory,
+runtime, or power) for model accuracy. For example, by
+scaling the width of the network [53]. The goal of model
+1Code will be available.optimization is to improve the trade-off between computa-
+tional cost and model accuracy. This work falls into this
+category. We brieﬂy explain different model optimization
+techniques here.
+Architecture optimization One strategy to construct ef-
+ﬁcient DNNs is to deﬁne a template from which efﬁcient
+computational blocks can be generated. SqueezeNet [29],
+MobileNets [27, 45], ShufﬂeNets [39, 55], and ESPNets
+[40, 41] fall into this category. Complementary to these
+methods, NASNet [58] and EfﬁcientNet [49] search for an
+optimal composition of blocks restricted to a computational
+budget (e.g., FLOPS) by changing the resolution, depth,
+width, or other parameters of each layer.
+Pruning and Compression : Several methods have been
+proposed to improve runtime performance by detecting and
+removing computational redundancies. Examples of meth-
+ods in this category include low-rank acceleration [32], the
+use of depth-wise convolution in Inception [48], sparsiﬁca-
+tion of kernels in deep compression [20], re-training redun-
+dant neurons in DSD [21], depth-wise separable convolu-
+tion in Xception [10], pruning redundant ﬁlters in PFA [47],
+ﬁnding an optimal sub-network in lottery ticket hypothe-
+sis [16], and separating channels based on the features res-
+olution in octave convolution [8].
+Low-precision arithmetic and quantization: Another
+avenue to improve runtime performance, and the focus of
+this work, is to use low-precision arithmetic. The idea is to
+use fewer bits to represent weights and activations. Some
+instances of these strategies already exist in AI compilers,
+where it is common to cast weights of a trained model
+from 32 bits to 16 or 8 bits. However, in general, post-
+training quantization reduces the model accuracy. This can
+be addressed by incorporating lower-precision arithmetic
+into the training process (during-training quantization), al-
+lowing the resulting model to better adapt to the lower pre-
+cision [18, 31]. Additionally, to improve utilization, many
+works considered mixed-precision quantization, where dif-
+ferent number of bits are allowed at different layers of the
+network [14, 50, 52].
+Using fewer bits results in dramatic memory savings.
+1
+
+
+==== Page 2 ====
+This has motivated research into methods that use a single
+bit to represent a scalar weight: In [11] the authors train
+models with weights quantized to the values in {−1,1}.
+While this results in a high level of compression, model
+accuracy can drop signiﬁcantly. [35] and [57] reduce the
+accuracy gap between full precision and quantized mod-
+els by considering ternary quantization (using the values in
+{−1,0,1}), at the cost of slightly less compression.
+To further improve the computational efﬁciency, the in-
+termediate activation tensors (feature maps) can also be
+quantized. When this is the case, an implementation can use
+high-performance operators that act on quantized inputs, for
+example a convolutional block depicted in Figure 1. This
+idea has been explored in [7, 12, 28, 36, 42, 43, 44, 54, 56],
+and many other works.
++1 -1 -1 +1
+...
+v/one.denominator
+v/one.denominator
+v/two.denominator+1 -1 -1 +1
+...+x
++1 -1 -1 +1
+...XNor
+Conv
+XNor
+Convxxw
+xNon
+LinBatch
+NormQuantQuant
+Figure 1. When both weights and activations are quantized us-
+ing binary quantization, the convolution can be implemented efﬁ-
+ciently using bitwise XNor and bit-counting operations. See Sec-
+tion 3.2 for more details.
+We call a mapping from a tensor with full precision en-
+tries to a tensor with the same shape but with values in
+{−1,1}abinary quantization . When both weights and
+activations of a DNN are quantized using binary quantiza-
+tion, called Binary Neural Network (BNN), fast and power-
+efﬁcient kernels which use bitwise operations can be im-
+plemented. Observe that the inner-product between two
+vectors with entries in {−1,1}can be written as bitwise
+XNor operations followed by bit-counting [12]. However,
+the quantization of both weights and activations further re-
+duces the model accuracy [28, 44].
+The accuracy drop due to quantization can be compen-
+sated by increasing model capacity through architecture
+modiﬁcations, for example by increasing the number of ﬁl-
+ters as in [53]. In Figure 2 we show the trade-off between
+computational cost (memory and ﬂops) and classiﬁcation
+error for different quantization schemes by uniformly scal-
+ing the number of ﬁlters in ResNet18 architecture trained
+on CIFAR100 dataset [34]. We followed methodology in
+[51] to approximate equivalent ﬂops of BNNs. We use the
+same training setup for quantized models without any tun-
+ing. This empirical result suggests that for a given compu-
+tational budget using 2-bits quantizations is pareto-optimal
+when compared to the original BNN and the full-precisionnetwork. [33] also observed much larger accuracy degrada-
+tion when the bit precision is reduced from 2-bits to 1-bit
+than other cases with >2-bits. This interesting observation,
+although not necessarily a universal conclusion, motivates
+deriving the optimal 2-bits quantization.
+Figure 2. The trade-off between computational cost model error
+for ResNet18 trained on CIFAR100. Left plot show memory foot-
+print, and right plot shows ﬂop counts. ka/kwrefers to using ka
+bits for activations and kwbits for weights.
+Note that there are many other directions to improve the
+accuracy of BNNs. For example, using learned clipping
+in PACT [9], double skip-connection in BiRealNet [37],
+parametric ReLU in [6], multi-stage knowledge distillation
+in [2, 6], and tailored binary optimization in [24]. These are
+all orthogonal improvements to the proposed provably least
+squares error 2-bits quantization, and can be used together
+to further improve the model accuracy.
+1.1. Main contributions
+In this work, we analyze the accuracy of binary quantiza-
+tion when applied to both weights and activations of a DNN,
+and propose methods to improve the quantization accuracy:
+•We present a uniﬁed framework to analyze different
+scaling strategies for BNNs, and show that scaled bi-
+nary quantization is a good approximation (Section 2).
+•We derive 2-bits (Section 3.2.2) and ternary (Section
+3.2.3) scaled binary quantization algorithms with least
+squares error. We also propose greedy variants of these
+algorithms (Section 3.2.4).
+•Experiments on the ImageNet dataset show that the op-
+timal algorithms have reduced quantization error, and
+lead to improved classiﬁcation accuracy (Section 5).
+2. Low-rank binary quantization
+Binary quantization (that maps entries of a tensor to
+{−1,1}) of weights and activation tensors of a neural net-
+work can signiﬁcantly reduce the model accuracy. A rem-
+edy to retrieve this accuracy loss is to scale the binarized
+tensors with few full precision values. For example, [28]
+learn a scaling for each channel from the parameters of
+2
+
+==== Page 3 ====
+batch-normalization, and [44] scale the quantized activation
+tensors using the channel-wise average of pixel values.
+In this section, using low-rank matrix analysis, we ana-
+lyze different scaling strategies. We conclude that multiply-
+ing the quantized tensor by a single scalar, which is compu-
+tationally the most efﬁcient option, has approximately the
+same accuracy as the more expensive alternatives.
+We introduce the rank-1 binary quantization– an approx-
+imation to a matrix X∈Rm×n:
+X≃X1⊙S, (1)
+whereX1∈Rm×nis a rank- 1matrix,S∈
+{−1,1}m×n, and⊙is element-wise multiplication
+(Hadamard product). Note that this approximation is also
+deﬁned for tensors, after appropriate reshaping. For exam-
+ple, for an image classiﬁcation task, we can reshape the out-
+put of a layer of a DNN with shape h×w×n, whereh,w,
+andnare height, width, and number of channels, respec-
+tively, into an m×nmatrix with m=hwrows and one
+column per channel.
+We deﬁne the error of a rank- 1binary quantization as
+/bardblX−X1⊙S/bardblF, where/bardbl/bardblFis the Frobenius norm. En-
+tries ofSare in{−1,1}, therefore, the quantization error is
+equal to/bardblX⊙S−X1/bardblF. Note that/bardblX⊙S/bardbl2
+F(the total
+energy), which is equal to sum of the squared singular val-
+ues, is the same for any S. Different choices of Schange
+the distribution of the total energy among components of
+the Singular Value Decomposition (SVD) of X⊙S. The
+optimal rank- 1binary quantization is achieved when most
+of the energy of X⊙Sis in its ﬁrst component.
+In [44], the authors proposed to quantize the activa-
+tions by applying the sign function and scale them by
+their channel-wise average. We can formulate this scal-
+ing strategy as a special rank-1 binary quantization X≃
+a1⊤⊙sign(X), where
+ai=/summationtextn
+j=1|Xi,j|
+nfor1≤i≤m,
+sign(x) =/braceleftBigg
+−1ifx <0
+1 ifx≥0,(2)
+and1is ann-dimensional vector with all entries 1.
+In Appendix A we show that the optimal rank-1 bi-
+nary quantization of an arbitrary X∈Rm×nis given
+byS=sign(X)andX1=truncated 1-SVD(|X|),
+where sign (X)is the element-wise sign of X, and
+truncated 1-SVD(|X|) =σ1u1v⊤
+1is the ﬁrst component of
+the SVD of X⊙sign(X) =|X|. Moreover, if entries of
+Xare i.i.d.∼N(0,1), the ﬁrst singular value of |X|cap-
+tures most of the energy σ2
+1(|X|)//bardblX/bardbl2
+F≃0.64, and the
+ﬁrst left and right singular vectors are almost constant vec-
+tors. Normal distribution assumption for entries of Xis rel-
+evant due to application of Batch Normalization (BN) [30].Therefore, a scalar multiple of sign (X)approximates X
+well:X≃σ1u1v⊤
+1⊙sign(X)≃v11⊤⊙sign(X) =
+vsign(X), wherev∈R≥0. We call this computationally
+efﬁcient approximation scaled binary quantization .
+3. Scaled binary quantization
+In Section 2 we showed that scaled binary quantization
+is a good approximation to activation and weight tensors of
+a DNN. Next we show how we can further improve the ac-
+curacy of scaled binary quantization using more bits. To
+simplify the presentation (1) we ﬂatten matrix X∈Rm×n
+in to a vector x∈RNwithN=mn, and (2) we assume
+the entries of xare different realizations of a random vari-
+able x with an underlying probability distribution p(x). In
+practice, we compute all statistics using their unbiased es-
+timators from vector x(e.g.,/summationtext
+ixi/Nis an unbiased esti-
+mator ofEx∼p[x]). Furthermore, for f:R→R, we denote
+entrywise application of ftoxbyf(x). The quantized ap-
+proximation of xis denoted by xq, and the error (loss) of
+quantization is/bardblx−xq/bardbl2. All optimal solutions refers to
+the least squares error and hold for an arbitrary distribution
+p(x).
+3.1.1­Bit quantization
+A 1-bit scaled binary quantization of xis:
+x≃xq=vs(x), (3)
+which is determined by a scalar v∈R≥0and a function
+s:R→{−1,1}. Finding the least squares 1-bit scaled
+binary quantization can be formulated as the following op-
+timization problem:
+minimize
+v,s/integraldisplay+∞
+−∞p(x)(vs(x)−x)2dx
+s.t.s:R→{−1,1},v∈R≥0(4)
+3.1.1 Least squares 1-Bit algorithm
+The solution of problem (4) is given by v=Ex∼p[|x|]and
+s(x) = sign(x)(for the proofs see Appendix B). There-
+fore, for a vector xthe optimal scaled binary quantization
+is given by
+x≃xq=/summationtext
+i|xi|
+Nsign(x), (5)
+where/summationtext
+i|xi|
+Nis an unbiased estimator of Ex∼p[|x|].
+3.2.k­Bits quantization
+We can further improve the accuracy of scaled binary
+quantization by adding more terms to the approximation (3).
+3
+
+==== Page 4 ====
+Ak-bits scaled binary quantization of xis
+x≃xq=k/summationdisplay
+i=1visi(x), (6)
+which is determined by a set of kpairs of scalars vi’s and
+functions si:R→{−1,1}. Observe that any permutation
+of(vi,si)’s results in the same quantization. To remove
+ambiguity, we assume v1≥...≥vk≥0.
+When both weights, w, and activations, x, are quantized
+using (6), their inner-product can be written as:
+/an}bracketle{txq,wq/an}bracketri}ht=ka/summationdisplay
+i=1kw/summationdisplay
+j=1va
+ivw
+j/an}bracketle{tsa
+i,sw
+j/an}bracketri}ht, (7)
+wherexq=/summationtextka
+i=1va
+isa
+iandwq=/summationtextkw
+j=1vw
+jsw
+iare quan-
+tized activations and weights with kaandkwbits, respec-
+tively,sa
+i=sa
+i(x), andsw
+j=sw
+j(w). This inner-product
+can be computed efﬁciently using bitwise XNors followed
+by bit-counting (see Figure 1 with ka= 2andkw= 1).
+Finding the least squares k-bits scaled binary quantiza-
+tion can be formulated as:
+minimize
+si,vi/integraldisplay+∞
+−∞p(x)/parenleftBigg/parenleftBiggk/summationdisplay
+i=1visi(x)/parenrightBigg
+−x/parenrightBigg2
+dx
+s.t.∀1≤i≤k si:R→{−1,1},
+v1≥v2≥...≥vk≥0(8)
+This is an optimization problem with a non-convex domain
+for allk≥1. We solve the optimization for k= 1 in Sec-
+tion 3.1 and k= 2in Section 3.2.2 for arbitrary distribution
+p(x). We also provide an approximate solution to (8) in
+Section 3.2.4 using a greedy algorithm.
+Discussion: A general k-bits quantizer maps full preci-
+sion values to an arbitrary set of 2knumbers, not necessar-
+ily in the form of (6). The optimal quantization in this case
+can be computed using the Lloyd’s algorithm [38]. While a
+generalk-bits quantization has more representation power
+compared to k-bits scaled binary quantization, it does not
+allow an efﬁcient implementation based on bitwise oper-
+ations. Fixed-point representation (as opposed to ﬂoating
+point) is also in the form of (6) with an additional constant
+term. However, ﬁxed-point quantization uniformly quan-
+tizes the space, therefore, it can be signiﬁcantly inaccurate
+for small values of k.
+3.2.1 Foldable quantization
+In this section, we introduce a special family of k-bits
+scaled binary quantizations that allow fast computation of
+the quantized values. We name this family of quantiza-
+tions foldable . Ak-bits scaled binary quantization givenby(vi,si)’s is foldable if the following conditions are satis-
+ﬁed:
+si(x) =sign(x−i−1/summationdisplay
+j=1vjsj(x))for1≤i≤k(9)
+When the foldable condition is satisﬁed, given vi’s, we can
+compute the si(x)’s in (6) efﬁciently by applying the sign
+function.
+3.2.2 Least squares 2-bits algorithm
+In this section, we present the least squares 2-bits binary
+quantization algorithm, the solution of (8) for k= 2. In
+Appendix C we show that the least squares 2-bits binary
+quantization is foldable and the scalars v1andv2should
+satisfy the following optimality conditions:
+v1=1
+2(Ex∼p[|x|||x|> v1]+Ex∼p[|x|||x|≤v1])(10)
+v2=1
+2(Ex∼p[|x|||x|> v1]−Ex∼p[|x|||x|≤v1])(11)
+In Figure 3 we visualize the conditional expectations that
+show up in (10) for a random variable x with standard nor-
+mal distribution. The optimal v1lies on the intersection of
+the identity line and average of the conditional expectations
+in (10).
+For a given vector x∈RNwe can solve for v1in
+(10) efﬁciently. We substitute the conditional expectations
+in (10) by conditional average operators as their unbiased
+estimators. (10) implies that for the optimal v1, the aver-
+age of the entries in |x|smaller than v1(an estimator of
+Ex∼p[|x|||x|≤v1]) and the average of the entries greater
+thanv1(an estimator of Ex∼p[|x|||x|> v1]) should be
+equidistant form v1. Note that (10) may have more than
+one solution, which are local minima of the objective func-
+tion in (8). We ﬁnd all the values that satisfy this condi-
+tion inO(NlogN)time. We ﬁrst sort entries of xbased
+on their absolute value and compute their cumulative sum.
+Then with one pass we can check whether (10) is satisﬁed
+for each element of x. We evaluate the objective function
+in (8) for each local minima, and retain the best. After
+v1is calculated v2is simply computed from (11). As ex-
+plained in Section 4, this process is only done during the
+training. In our experiments, ﬁnding the least squares 2-
+bits quantization was as fast as the 2-bits greedy algorithm
+(see Section 3.2.4). Since the least squares 2-bits binary
+quantization is foldable, after recovering v1andv2, we have
+s1(x) =sign(x)ands2(x) =sign(x−v1sign(x)).
+3.2.3 Least squares ternary algorithm
+The boundaries of the optimization domain in (8) for k= 2,
+v2= 0 andv1=v2=v, correspond to 1-bit binary
+4
+
+==== Page 5 ====
+0.00.51 .01 .52 .02 .5
+v01 2 3El=E[|x|||x|<v]
+Er=E[|x|||x|>v]
+(El+Er)/2 
+v
+v1
+Figure 3. The conditional expectations in (10) for a random vari-
+able x with standard normal distribution. The optimal value for
+2-bits quantization is shown with a solid dot.
+and ternary [35] quantizations, respectively. The scaled
+ternary quantization maps each full precision value xto
+{−2v,0,2v}. Ternary quantization needs 2-bits for repre-
+sentation. However, when a hardware with sparse calcula-
+tion support is available, for example as in EIE [19], using
+ternary quantization can be more efﬁcient compared to a
+general 2-bits quantization. Setting v1=v2=vin (10)
+and (11) we get the ternary optimality condition:
+v=1
+2Ex∼p[|x|||x|> v] (12)
+The process of solving for vin (12) is similar to that of
+solving for v1in (10) as described above. The optimality
+condition in (12) has been also obtained in [26] using a dif-
+ferent approach.
+3.2.4k-bits greedy algorithm
+In this section, we propose a greedy algorithm to compute
+k-bits scaled binary quantization, which we call Greedy
+Foldable (GF). It is given in Algorithm 1.
+Algorithm 1: k-bits Greedy Foldable (GF) binary
+quantization: compute xqgivenx
+r←x
+fori←1tokdo
+vi←mean(abs( r))
+si←sign(r)// element-wise sign.
+For gradient of sign use STE.
+r←r−visi// compute new
+residual.
+end
+returnx−r
+In GF algorithm we compute a sequence of residuals. At
+each step, we greedily ﬁnd the best siandvifor the current
+residual using the least squares 1-bit binary quantization (5).
+Note that for k= 1 the GF is the same as the least squares
+1-bit binary quantization.Few of the other papers that have tackled the k-bits bi-
+nary quantization to train quantized DNNs are as follows.
+In ReBNet [17], the authors proposed an algorithm similar
+to Algorithm 1, but considered vi’s as trainable parameters
+to be learned by back-propagation. [36] and [54] ﬁnd k-
+bits binary quantization via alternating optimization for si’s
+andvi’s. Note that, all these methods produce sub-optimal
+solutions.
+4. Training binary networks
+The loss functions in our quantized neural networks are
+non-differentiable due to the sign function in the quantiz-
+ers. To address this challenge we use the training algo-
+rithm proposed in [11]. To compute the gradient of the sign
+function we use the Straight Through Estimator (STE) [3]:
+d/dx sign(x) =1|x|≤1. During the training we keep the
+full precision weights and use Stochastic Gradient Descent
+(SGD) to gradually update them in back-propagation. In the
+forward-pass, only the quantized weights are used.
+During the training we compute quantizers (for both
+weights and activations) using the online statistics, i.e., the
+scalars in a k-bits scaled binary quantization (6) are com-
+puted based on the observed values. During the training we
+also store the running average of these scalars. During in-
+ference we use the stored quantized scalars to improve the
+efﬁciency. This procedure is similar to the update of the
+batch normalization parameters in a standard DNN train-
+ing [30].
+5. Experiments
+We conduct experiments on the ImageNet dataset [13]
+using the ResNet-18 architecture [23]. The details of the
+architecture and training are provided in Appendix D.
+We conduct three sets of experiments: (1) evaluate quan-
+tization error of activations of a pre-trained DNN, (2) eval-
+uate the quantization error based on the classiﬁcation accu-
+racy of a post-training quantized network, and (3) evaluate
+the classiﬁcation accuracy of during-training quantized net-
+works. We report the quantization errors of the proposed
+binary quantization algorithms (least squares 1-bit, 2-bits,
+ternary, and the greedy foldable quantizations) and compare
+with the state-of-the-art algorithms BWN-Net [44], XNor-
+Net [44], TWN-Net [35], DoReFa-Net [56], ABC-Net [36],
+and LQ-Net [54].
+5.1. Quantization error of activations
+To quantify the errors of the introduced binary quanti-
+zation algorithms we adopt the analysis performed by [1].
+They show that the angle between xandxqcan be used
+as a measure of accuracy of a quantization scheme. They
+prove that when xq=sign(x)and elements of xare i.i.d.
+∼N(0,1),∠(x,xq)converges to∼37◦for largeN.
+5
+
+==== Page 6 ====
+Method kakwTop-1 Top-5
+Post Greedy Foldable 32 1 0.1 0.5
+Post Greedy Foldable 32 2 0.3 1.1
+Post Greedy Foldable 32 3 1.4 4.6
+Post Greedy Foldable 32 4 5.3 14.1
+Post Least Squares 32 2 5.3 13.9
+Table 1. Validation accuracy of a quantized ResNet-18 trained on
+ImageNet. kaandkware number of bits to quantize activations
+and weights, respectively.
+Here we use the real data distribution. We trained a full
+precision network, and computed the activation tensors at
+each layer for a set of 128 images. In Figure 4 we show
+the angle between the full precision and quantized activa-
+tions for different layers. When the least squares quantiza-
+tion is used, a signiﬁcant reduction in the angle is observed
+compared to the greedy algorithm. The least squares 2-bits
+quantization is even better than the greedy 4-bits quantiza-
+tion for later layers of the network, for which activation
+tensors have more skewed distribution, make it harder for
+quantization in form of (6). Furthermore, the accuracy of
+the least squares quantization has less variance with respect
+to different input images and different layers of the network.
+2
+4
+6
+8
+10
+12
+14
+16
+layer index
+0
+10
+20
+30
+40
+50
+60
+70/ne}ationslash(x,xq)
+GF/LS-1
+GF-2GF-3
+GF-4LS-2
+Figure 4. The angle between the full precision and the quantized
+activations for different layers of a trained full precision ResNet-
+18 architecture on ImageNet. The 95% conﬁdence interval over
+different input images is shown. LS and GF refer to Least Squares
+and Greedy Foldable, respectively.
+5.2. Post­training quantization
+In this section we apply post-training quantization to the
+weights of a pre-trained full precision network. We then use
+the quantized network for inference and report the classiﬁ-Method kakwtop-1 top-5
+XNor-Net [44] 1 1 51.2 73.2
+Bi-Real Net [37] 1 1 56.4 79.5
+XNor-Net++ [5] 1 1 57.1 79.9
+Least Squares (ours) 1 1 58.9 81.4
+Least Squares (ours) T 1 62.0 83.6
+HWGQ-Net [7] 2 1 59.6 82.2
+LQ-Net [54] 2 1 62.6 84.3
+Greedy Foldable (ours) 2 1 62.6 84.0
+Least Squares (ours) 2 1 63.4 84.6
+DoReFa-Net [56] 4 1 59.2 81.5
+SYQ [15] 8 1 62.9 84.6
+DoReFa-Net [56] 2 2 62.6 84.4
+ABC-Net [36] 3 3 61.0 83.2
+BWN-Net [44] 32 1 60.8 83.0
+Least Squares (ours) 32 1 66.1 86.5
+TWN-Net [35] 32 T 61.8 84.2
+Full precision baseline 32 32 69.6 89.2
+Table 2. Validation accuracy of ResNet-18 architecture on the Im-
+ageNet dataset. T refers to ternary quantization.
+cation accuracy. This procedure can result in an acceptable
+accuracy for a moderate number of bits (e.g., 16 or 8). How-
+ever, the error signiﬁcantly grows with a lower number of
+bits, which is the case in this experiment. Therefore, we
+only care about the relative differences between different
+quantization strategies. This experiment demonstrates the
+effect of quantization errors on the accuracy of the quan-
+tized DNNs. The results are shown in Table 1. When the
+least squares 2-bits quantization is used, signiﬁcant accu-
+racy improvement (more than one order of magnitude) is
+observed compared to the greedy 2-bits quantization, which
+illustrate the effectiveness of the optimal quantization.
+5.3. During­training quantization
+To achieve higher accuracy we apply quantization dur-
+ing the training, so that the model can adapt to the quan-
+tized weights and activations. In Table 2 we report results
+from the related works in which ResNet-18 architecture
+with quantized weights and/or activations is trained on the
+ImageNet dataset for the classiﬁcation task. The proposed
+least-squares quantization algorithms improve the classiﬁ-
+cation accuracies when compared with the state-of-the-art
+(with even more number of bits) signiﬁcantly. For all of our
+results we use some of the suggested training setups dis-
+cussed in the literature (see Appendix D) to train the BNNs.
+These changes improved the performance of the baseline
+1-bit XNor-Net [44] from 51.2 %to 59.0%. With2-bits
+the least squares quantization algorithm achieves a signif-
+icantly better accuracy compared to the 2-bits greedy and
+1-bit, with an identical training setup.
+6
+
+==== Page 7 ====
+6. Conclusion
+In this work, we analyze the accuracy of binary quantiza-
+tion to train DNNs with quantized weights and activations.
+We discuss methods to improve the accuracy of quantiza-
+tion, namely scaling and using more bits.
+We introduce the rank- 1binary quantization, as a gen-
+eral scaling scheme. Based on a singular value analysis we
+motivate using the scaled binary quantization, a computa-
+tionally efﬁcient scaling strategy. We deﬁne a general k-
+bits scaled binary quantization. We provide provably least
+squares 1-bit, 2-bits, and ternary quantizations. In addi-
+tion, we propose a greedy k-bits quantization algorithm.
+We show results for post and during-training quantization,
+and demonstrate signiﬁcant improvement in accuracy when
+least squares quantization is used. We compare the pro-
+posed quantization algorithms with state-of-the-art BNNs
+on the ImageNet dataset and show improved classiﬁcation
+accuracies.
+A. Optimal rank- 1binary quantization
+In this section, we ﬁnd the optimal rank-1 binary quanti-
+zation of an mbynmatrixXdiscussed in Section 2:
+minimize
+X1,S/bardblX−X1⊙S/bardblF
+s.t.S∈{−1,1}m×n
+X1∈Rm×n,rank(X1) = 1(13)
+First, observe that the element-wise multiplication by −1
+and+1does not change the Frobenius norm. Therefore:
+min
+S,X1/bardblX−X1⊙S/bardblF= min
+S,X1/bardbl(X−X1⊙S)⊙S/bardblF
+= min
+S,X1/bardblX⊙S−X1/bardblF
+(14)
+Furthermore, note that
+min
+S,X1/bardblX⊙S−X1/bardbl2
+F=σ2
+2(X⊙S)+...+σ2
+r(X⊙S)
+(15)
+Hereσi(X⊙S)is thei’th singular value of X⊙Sandr
+is its rank. In addition for any S:
+r/summationdisplay
+i=1σ2
+i(X⊙S) =/bardblX⊙S/bardbl2
+F=/bardblX/bardbl2
+F (16)
+Hence, to minimize the sum in (15) we need to ﬁnd an S
+for which σ2
+1(X⊙S)is maximized:
+min
+S,X1/bardblX⊙S−X1/bardbl2
+F=/bardblX/bardbl2
+F−max
+Sσ2
+1(X⊙S)(17)
+σ1(X⊙S) =/bardblX⊙S/bardbl2is the 2-norm of X⊙S. Therefore:
+max
+Sσ2
+1(X⊙S) = max
+Smax
+/bardblr/bardbl2=1/bardbl(X⊙S)r/bardbl2
+2 (18)For anySandr∈Rnwe have/bardbl(X⊙S)r/bardbl2
+2≤/bardbl|X||r|/bardbl2
+2
+since for 1≤i≤mwe have|/summationtext
+jSi,jXi,jrj| ≤/summationtext
+j|Xi,j||rj|. Here|X|=X⊙sign(X)is the element-
+wise absolute value of X. Note that for S=sign(X)and
+rwith positive values the inequality becomes an equality.
+Therefore:
+max
+Smax
+/bardblr/bardbl2=1/bardbl(X⊙S)r/bardbl2
+2= max
+/bardblr/bardbl2=1/bardbl|X||r|/bardbl2
+2(19)
+Observe that the element-wise absolute value does not
+change the vector norm, i.e. /bardbl|r|/bardbl2=/bardblr/bardbl2, and hence
+|r|is a unit vector when ris. Also for any rwe have
+/bardbl|X|r/bardbl2
+2≤/bardbl|X||r|/bardbl2
+2since for 1≤i≤mwe have
+|/summationtext
+j|Xi,j|rj|≤/summationtext
+j|Xi,j||rj|. So we have
+max
+/bardblr/bardbl2=1/bardbl|X||r|/bardbl2
+2= max
+/bardblr/bardbl2=1/bardbl|X|r/bardbl2
+2=σ2
+1(|X|)(20)
+Therefore, we showed that S=sign(X)andX1equal to
+the best rank-1 approximation of |X|(i.e. the ﬁrst term in
+its SVD) is a solution of (13). /squaresolid
+Now consider the case that entries of Xare i.i.d.∼
+N(0,1). In [4, 46] the authors show that the largest singular
+value of a random matrix with i.i.d. entries from a distribu-
+tion with mean µand bounded 4th moment (which is the
+case for standard folded normal distribution) asymptotes to√mnµ asmandnare increased (with m/n→constant).
+Note that E[1T
+√m|X||X|T1√m] =E[1T
+√n|X|T|X|1√n] =
+mnµ2(with convergence given by the central limit theo-
+rem), and therefore, for large matrices the ﬁrst left and right
+singular vectors are expected to be almost constant, that is:
+truncated-SVD-1(|X|)≈µ11Twhereµ=/radicalbig
+2/π. This
+is shown empirically in Figure 5. Therefore, the optimal
+rank-1 binary quantization captures 2/π≃0.64of the total
+energy of X, making it a good approximation, and can be
+written as a scalar times a binary matrix.
+0 10 20 30
+i0.00.20.40.6σ2
+i(|X|)//bardblX/bardbl2F
+0 10 20 30
+i−1.0−0.50.00.51.0
+u1
+v1u2
+v2
+Figure 5. Left: Distribution of energy for |X|, whereX∈
+R30×30is a standard normal random matrix. Right : Entries of
+the ﬁrst left and right singular vectors of |X|(shown in green and
+blue) are almost constant.
+B. Least squares 1-bit binary quantization
+In this section, we solve (4). First, observe that:
+∀x∈R: (v−x)2<(−v−x)2iffx >0 (21)
+7
+
+==== Page 8 ====
+Therefore, the optimal choice for function sin (4) iss(x) =
+sign(x). We can rewrite (4) as follows:
+minimize
+v/integraldisplay+∞
+−∞p(x)(v−|x|)2dx
+s.t.v∈R≥0(22)
+Setting the gradient of the objective function in (22) with
+respect to vto zero, we get:
+v=/integraltext+∞
+−∞p(x)|x|dx
+/integraltext+∞
+−∞p(x)dx=Ex∼p[|x|]/squaresolid (23)
+C. Least squares 2-bits binary quantization
+In this section, we solve the following optimization prob-
+lem corresponding to the least squares 2-bits binary quanti-
+zation as discussed in Section 3.2.2:
+minimize
+v1,v2,s1,s2/integraldisplay+∞
+−∞p(x)(v1s1(x)+v2s2(x)−x)2dx
+s.t.s1,s2:R→{−1,1}, v1≥v2≥0
+(24)
+First, we show that the optimal 2-bits binary quantization
+is foldable, i.e.,∀x∈Rs1(x) = sign(x)ands2(x) =
+sign(x−v1s1(x)). Observe that
+f(x) = (v1s1(x)+v2s2(x)−x)2
+=v2
+1/parenleftbigg
+1+v2
+v1s1(x)s2(x)−s1(x)x
+v1/parenrightbigg2
+≥v2
+1/parenleftbigg
+1+v2
+v1s1(x)s2(x)−|s1(x)x|
+v1/parenrightbigg2
+=g(x)
+(25)
+The inequality in (25) holds because v1≥v2, and therefore,
+1+v2
+v1s1(x)s2(x)≥0. The objective function in (24) is a
+weighted average of f(x)with non-negative weights. For
+x∈Rthe inequality is strict if s1(x)/ne}ationslash=sign(x). In that
+case, ﬂipping the value of both s1(x)ands2(x)reduces
+f(x)to a strictly smaller g(x). Hence, the optimal solution
+of (24) should satisfy s1(x) =sign(x)for allx∈R.
+For anyv1ands1if we consider y=x−v1s1(x),
+the problem reduces to the 1-bit binary quantization for y.
+Based on the result showed in Appendix B for the optimal
+solution we have s2(x) = sign(y) = sign(x−v1s1(x)).
+This completes the proof to show that the optimal 2-bits bi-
+nary quantization is foldable.
+Next, we ﬁnd the optimal values for v1andv2. Substitute
+s1(x) =sign(x)ands2(x) =sign(x−v1s1(x))in (24):
+e(v1,v2) =/integraldisplay+∞
+−∞p(x)(v1s1(x)+v2s2(x)−x)2dx=
+/integraldisplayv1
+0q(x)(x−v1+v2)2dx+/integraldisplay+∞
+v1q(x)(x−v1−v2)2dx
+(26)Heree(v1,v2)is the error as a function of v1andv2, and
+q(x) =p(−x) +p(x)is the folded distribution func-
+tion. Assuming the optimal point occurs in the interior of
+the domain, it should satisfy the zero gradient condition:
+∂e/∂v1=∂e/∂v2= 0. Taking derivative from (26) with
+respect to v1andv2and set it to zero we get:
+v1=/integraldisplayv1
+0xq(x)dx+/integraldisplay+∞
+v1xq(x)dx
++v2/parenleftbigg/integraldisplayv1
+0q(x)dx−/integraldisplay+∞
+v1q(x)dx/parenrightbigg
+v2=−/integraldisplayv1
+0xq(x)dx+/integraldisplay+∞
+v1xq(x)dx
++v1/parenleftbigg/integraldisplayv1
+0q(x)dx−/integraldisplay+∞
+v1q(x)dx/parenrightbigg(27)
+Simplifying (27) results in (10) and (11). /squaresolid
+D. Details of training ResNet on ImageNet
+In this section, we explain the details of how the DNN re-
+sults reported in this paper are produced using some of the
+stable good practices from the literature. We use the stan-
+dard training and validation splits of the ImageNet dataset,
+without hyper parameters search. We followed a similar ar-
+chitecture as XNor-Net [44]. The convolutional block that
+we use is depicted in Figure 1. We use PReLU [22, 6]
+non-linearity before the batch normalization as suggested
+by [44]. Also, we ﬁnd it important to use bounded dynamic
+range, and therefore clip the values to [−d,d]. Without tun-
+ing, we picked d=2, 3, 5, and 8 for k=1, 2/T, 3, and 4
+bits quantizations, respectively. Similar to the other BNNs
+for the ﬁrst and last layers we use full precision. Also,
+as suggested by [37] we use full precision double short-
+cuts in ResNet architecture, which adds a small computa-
+tional/memory overhead. We quantize weights per ﬁlter
+and activations per layer. As [7] we use ﬁrst-order poly-
+nomial learning-rate annealing schedule (from 2.0e−4to
+2.0e−7) and train for 240 epochs with Adam optimizer.
+When use 120 epochs, with identical setup, we get top-1
+accuracies for different activations quantizations (with ls-1
+binary weights) as follows: ls-1: 58.1, T:61.1, gf-2:61.1,
+ls-2:62.4, and fp:65.2. We use smooth labels from a pre-
+trained full precision teacher [25] with unit temperature.
+Quantized networks are initialized randomly. We do not
+use weight decay. For the data augmentation we use the
+standard methods used to train full precision ResNet archi-
+tecture. For training we apply random resize and crop to
+224×224, followed by random horizontal ﬂipping, color
+jittering, and lightening. For test we resize the images to
+256×256 followed by a center cropping to 224 ×224.
+8
+
+==== Page 9 ====
+References
+[1] Alexander G Anderson and Cory P Berg. The high-
+dimensional geometry of binary neural networks. arXiv
+preprint arXiv:1705.07199 , 2017.
+[2] Hessam Bagherinezhad, Maxwell Horton, Mohammad
+Rastegari, and Ali Farhadi. Label reﬁnery: Improving ima-
+genet classiﬁcation through label progression. arXiv preprint
+arXiv:1805.02641 , 2018.
+[3] Yoshua Bengio, Nicholas L ´eonard, and Aaron Courville.
+Estimating or propagating gradients through stochastic
+neurons for conditional computation. arXiv preprint
+arXiv:1308.3432 , 2013.
+[4] Włodek Bryc and Jack W Silverstein. Singular values of
+large non-central random matrices. Random Matrices: The-
+ory and Applications , page 2050012, 2019.
+[5] Adrian Bulat and Georgios Tzimiropoulos. Xnor-
+net++: Improved binary neural networks. arXiv preprint
+arXiv:1909.13863 , 2019.
+[6] Adrian Bulat, Georgios Tzimiropoulos, Jean Kossaiﬁ, and
+Maja Pantic. Improved training of binary networks for hu-
+man pose estimation and image recognition. arXiv preprint
+arXiv:1904.05868 , 2019.
+[7] Zhaowei Cai, Xiaodong He, Jian Sun, and Nuno Vasconce-
+los. Deep learning with low precision by half-wave gaus-
+sian quantization. In Proceedings of the IEEE Conference
+on Computer Vision and Pattern Recognition , pages 5918–
+5926, 2017.
+[8] Yunpeng Chen, Haoqi Fang, Bing Xu, Zhicheng Yan, Yan-
+nis Kalantidis, Marcus Rohrbach, Shuicheng Yan, and Jiashi
+Feng. Drop an octave: Reducing spatial redundancy in con-
+volutional neural networks with octave convolution. arXiv
+preprint arXiv:1904.05049 , 2019.
+[9] Jungwook Choi, Zhuo Wang, Swagath Venkataramani,
+Pierce I-Jen Chuang, Vijayalakshmi Srinivasan, and Kailash
+Gopalakrishnan. Pact: Parameterized clipping activa-
+tion for quantized neural networks. arXiv preprint
+arXiv:1805.06085 , 2018.
+[10] Franc ¸ois Chollet. Xception: Deep learning with depthwise
+separable convolutions. In Proceedings of the IEEE con-
+ference on computer vision and pattern recognition , pages
+1251–1258, 2017.
+[11] Matthieu Courbariaux, Yoshua Bengio, and Jean-Pierre
+David. Binaryconnect: Training deep neural networks with
+binary weights during propagations. In Advances in neural
+information processing systems , pages 3123–3131, 2015.
+[12] Matthieu Courbariaux, Itay Hubara, Daniel Soudry, Ran
+El-Yaniv, and Yoshua Bengio. Binarized neural networks:
+Training deep neural networks with weights and activations
+constrained to+ 1 or-1. arXiv preprint arXiv:1602.02830 ,
+2016.
+[13] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,
+and Li Fei-Fei. Imagenet: A large-scale hierarchical image
+database. In 2009 IEEE conference on computer vision and
+pattern recognition , pages 248–255. Ieee, 2009.
+[14] Zhen Dong, Zhewei Yao, Amir Gholami, Michael W Ma-
+honey, and Kurt Keutzer. Hawq: Hessian aware quantization
+of neural networks with mixed-precision. In Proceedingsof the IEEE International Conference on Computer Vision ,
+pages 293–302, 2019.
+[15] Julian Faraone, Nicholas Fraser, Michaela Blott, and
+Philip HW Leong. Syq: Learning symmetric quantization
+for efﬁcient deep neural networks. In Proceedings of the
+IEEE Conference on Computer Vision and Pattern Recogni-
+tion, pages 4300–4309, 2018.
+[16] Jonathan Frankle and Michael Carbin. The lottery ticket hy-
+pothesis: Finding sparse, trainable neural networks. arXiv
+preprint arXiv:1803.03635 , 2018.
+[17] Mohammad Ghasemzadeh, Mohammad Samragh, and Fari-
+naz Koushanfar. Rebnet: Residual binarized neural net-
+work. In 2018 IEEE 26th Annual International Sympo-
+sium on Field-Programmable Custom Computing Machines
+(FCCM) , pages 57–64. IEEE, 2018.
+[18] Suyog Gupta, Ankur Agrawal, Kailash Gopalakrishnan, and
+Pritish Narayanan. Deep learning with limited numerical
+precision. In International Conference on Machine Learn-
+ing, pages 1737–1746, 2015.
+[19] Song Han, Xingyu Liu, Huizi Mao, Jing Pu, Ardavan Pe-
+dram, Mark A Horowitz, and William J Dally. Eie: efﬁcient
+inference engine on compressed deep neural network. In
+2016 ACM/IEEE 43rd Annual International Symposium on
+Computer Architecture (ISCA) , pages 243–254. IEEE, 2016.
+[20] Song Han, Huizi Mao, and William J Dally. Deep com-
+pression: Compressing deep neural networks with pruning,
+trained quantization and huffman coding. arXiv preprint
+arXiv:1510.00149 , 2015.
+[21] Song Han, Jeff Pool, Sharan Narang, Huizi Mao, Enhao
+Gong, Shijian Tang, Erich Elsen, Peter Vajda, Manohar
+Paluri, John Tran, et al. Dsd: Dense-sparse-dense training
+for deep neural networks. arXiv preprint arXiv:1607.04381 ,
+2016.
+[22] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Delving deep into rectiﬁers: Surpassing human-level perfor-
+mance on imagenet classiﬁcation. In Proceedings of the
+IEEE international conference on computer vision , pages
+1026–1034, 2015.
+[23] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In Proceed-
+ings of the IEEE conference on computer vision and pattern
+recognition , pages 770–778, 2016.
+[24] Koen Helwegen, James Widdicombe, Lukas Geiger, Zechun
+Liu, Kwang-Ting Cheng, and Roeland Nusselder. Latent
+weights do not exist: Rethinking binarized neural network
+optimization. In Advances in neural information processing
+systems , pages 7531–7542, 2019.
+[25] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distill-
+ing the knowledge in a neural network. arXiv preprint
+arXiv:1503.02531 , 2015.
+[26] Lu Hou and James T Kwok. Loss-aware weight quantization
+of deep networks. arXiv preprint arXiv:1802.08635 , 2018.
+[27] Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry
+Kalenichenko, Weijun Wang, Tobias Weyand, Marco An-
+dreetto, and Hartwig Adam. Mobilenets: Efﬁcient convolu-
+tional neural networks for mobile vision applications. arXiv
+preprint arXiv:1704.04861 , 2017.
+9
+
+==== Page 10 ====
+[28] Itay Hubara, Matthieu Courbariaux, Daniel Soudry, Ran El-
+Yaniv, and Yoshua Bengio. Quantized neural networks:
+Training neural networks with low precision weights and
+activations. The Journal of Machine Learning Research ,
+18(1):6869–6898, 2017.
+[29] Forrest N Iandola, Song Han, Matthew W Moskewicz,
+Khalid Ashraf, William J Dally, and Kurt Keutzer.
+Squeezenet: Alexnet-level accuracy with 50x fewer pa-
+rameters and¡ 0.5 mb model size. arXiv preprint
+arXiv:1602.07360 , 2016.
+[30] Sergey Ioffe and Christian Szegedy. Batch normalization:
+Accelerating deep network training by reducing internal co-
+variate shift. arXiv preprint arXiv:1502.03167 , 2015.
+[31] Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu,
+Matthew Tang, Andrew Howard, Hartwig Adam, and Dmitry
+Kalenichenko. Quantization and training of neural networks
+for efﬁcient integer-arithmetic-only inference. In Proceed-
+ings of the IEEE Conference on Computer Vision and Pattern
+Recognition , pages 2704–2713, 2018.
+[32] Max Jaderberg, Andrea Vedaldi, and Andrew Zisserman.
+Speeding up convolutional neural networks with low rank
+expansions. arXiv preprint arXiv:1405.3866 , 2014.
+[33] Hyungjun Kim, Kyungsu Kim, Jinseok Kim, and Jae-Joon
+Kim. Binaryduo: Reducing gradient mismatch in binary ac-
+tivation network by coupling binary activations. In Interna-
+tional Conference on Learning Representations , 2020.
+[34] Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple
+layers of features from tiny images. 2009.
+[35] Fengfu Li, Bo Zhang, and Bin Liu. Ternary weight networks.
+arXiv preprint arXiv:1605.04711 , 2016.
+[36] Xiaofan Lin, Cong Zhao, and Wei Pan. Towards accurate
+binary convolutional neural network. In Advances in Neural
+Information Processing Systems , pages 345–353, 2017.
+[37] Zechun Liu, Baoyuan Wu, Wenhan Luo, Xin Yang, Wei Liu,
+and Kwang-Ting Cheng. Bi-real net: Enhancing the per-
+formance of 1-bit cnns with improved representational ca-
+pability and advanced training algorithm. In Proceedings of
+the European conference on computer vision (ECCV) , pages
+722–737, 2018.
+[38] Stuart Lloyd. Least squares quantization in pcm. IEEE trans-
+actions on information theory , 28(2):129–137, 1982.
+[39] Ningning Ma, Xiangyu Zhang, Hai-Tao Zheng, and Jian Sun.
+Shufﬂenet v2: Practical guidelines for efﬁcient cnn architec-
+ture design. In Proceedings of the European Conference on
+Computer Vision (ECCV) , pages 116–131, 2018.
+[40] Sachin Mehta, Mohammad Rastegari, Anat Caspi, Linda
+Shapiro, and Hannaneh Hajishirzi. Espnet: Efﬁcient spatial
+pyramid of dilated convolutions for semantic segmentation.
+InProceedings of the European Conference on Computer Vi-
+sion (ECCV) , pages 552–568, 2018.
+[41] Sachin Mehta, Mohammad Rastegari, Linda Shapiro, and
+Hannaneh Hajishirzi. Espnetv2: A light-weight, power ef-
+ﬁcient, and general purpose convolutional neural network.
+InProceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition , pages 9190–9200, 2019.
+[42] Asit Mishra, Eriko Nurvitadhi, Jeffrey J Cook, and Deb-
+bie Marr. Wrpn: wide reduced-precision networks. arXiv
+preprint arXiv:1709.01134 , 2017.[43] Eunhyeok Park, Sungjoo Yoo, and Peter Vajda. Value-aware
+quantization for training and inference of neural networks.
+InProceedings of the European Conference on Computer Vi-
+sion (ECCV) , pages 580–595, 2018.
+[44] Mohammad Rastegari, Vicente Ordonez, Joseph Redmon,
+and Ali Farhadi. Xnor-net: Imagenet classiﬁcation using bi-
+nary convolutional neural networks. In European Conference
+on Computer Vision , pages 525–542. Springer, 2016.
+[45] Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zh-
+moginov, and Liang-Chieh Chen. Mobilenetv2: Inverted
+residuals and linear bottlenecks. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition ,
+pages 4510–4520, 2018.
+[46] Jack W Silverstein. The spectral radii and norms of large di-
+mensional non-central random matrices. Stochastic Models ,
+10(3):525–532, 1994.
+[47] Xavier Suau, Luca Zappella, and Nicholas Apostoloff. Net-
+work compression using correlation analysis of layer re-
+sponses. 2018.
+[48] Christian Szegedy, Wei Liu, Yangqing Jia, Pierre Sermanet,
+Scott Reed, Dragomir Anguelov, Dumitru Erhan, Vincent
+Vanhoucke, and Andrew Rabinovich. Going deeper with
+convolutions. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pages 1–9, 2015.
+[49] Mingxing Tan and Quoc V Le. Efﬁcientnet: Rethinking
+model scaling for convolutional neural networks. arXiv
+preprint arXiv:1905.11946 , 2019.
+[50] Kuan Wang, Zhijian Liu, Yujun Lin, Ji Lin, and Song
+Han. Haq: Hardware-aware automated quantization with
+mixed precision. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pages 8612–8620,
+2019.
+[51] Ziwei Wang, Jiwen Lu, Chenxin Tao, Jie Zhou, and Qi Tian.
+Learning channel-wise interactions for binary convolutional
+neural networks. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition , pages 568–577,
+2019.
+[52] Bichen Wu, Yanghan Wang, Peizhao Zhang, Yuandong Tian,
+Peter Vajda, and Kurt Keutzer. Mixed precision quantiza-
+tion of convnets via differentiable neural architecture search.
+arXiv preprint arXiv:1812.00090 , 2018.
+[53] Sergey Zagoruyko and Nikos Komodakis. Wide residual net-
+works. arXiv preprint arXiv:1605.07146 , 2016.
+[54] Dongqing Zhang, Jiaolong Yang, Dongqiangzi Ye, and Gang
+Hua. Lq-nets: Learned quantization for highly accurate and
+compact deep neural networks. In Proceedings of the Euro-
+pean Conference on Computer Vision (ECCV) , pages 365–
+382, 2018.
+[55] Xiangyu Zhang, Xinyu Zhou, Mengxiao Lin, and Jian Sun.
+Shufﬂenet: An extremely efﬁcient convolutional neural net-
+work for mobile devices. In Proceedings of the IEEE Con-
+ference on Computer Vision and Pattern Recognition , pages
+6848–6856, 2018.
+[56] Shuchang Zhou, Yuxin Wu, Zekun Ni, Xinyu Zhou, He Wen,
+and Yuheng Zou. Dorefa-net: Training low bitwidth convo-
+lutional neural networks with low bitwidth gradients. arXiv
+preprint arXiv:1606.06160 , 2016.
+10
+
+==== Page 11 ====
+[57] Chenzhuo Zhu, Song Han, Huizi Mao, and William J
+Dally. Trained ternary quantization. arXiv preprint
+arXiv:1612.01064 , 2016.
+[58] Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V
+Le. Learning transferable architectures for scalable image
+recognition. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pages 8697–8710,
+2018.
+11
+

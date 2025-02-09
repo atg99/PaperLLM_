@@ -1,0 +1,1489 @@
+==== Page 1 ====
+Probing Across Time: What Does RoBERTa Know and When?
+Leo Z. Liu|Yizhong Wang|Jungo Kasai|
+Hannaneh Hajishirzi|~Noah A. Smith|~
+|Paul G. Allen School of Computer Science & Engineering,
+University of Washington, Seattle, WA, USA
+~Allen Institute for Artiﬁcial Intelligence, Seattle, WA, USA
+{zeyuliu2,yizhongw,jkasai,hannaneh,nasmith}@cs.washington.edu
+Abstract
+Models of language trained on very large cor-
+pora have been demonstrated useful for nat-
+ural language processing. As ﬁxed artifacts,
+they have become the object of intense study,
+with many researchers “probing” the extent to
+which they acquire and readily demonstrate
+linguistic abstractions, factual and common-
+sense knowledge, and reasoning abilities. Re-
+cent work applied several probes to interme-
+diate training stages to observe the develop-
+mental process of a large-scale model (Chi-
+ang et al., 2020). Following this effort, we
+systematically answer a question: for vari-
+ous types of knowledge a language model
+learns, when during (pre)training are they ac-
+quired? Using RoBERTa as a case study, we
+ﬁnd: linguistic knowledge is acquired fast, sta-
+bly, and robustly across domains. Facts and
+commonsense are slower and more domain-
+sensitive. Reasoning abilities are, in general,
+not stably acquired. As new datasets, pretrain-
+ing protocols, and probes emerge, we believe
+that probing-across-time analyses can help re-
+searchers understand the complex, intermin-
+gled learning that these models undergo and
+guide us toward more efﬁcient approaches that
+accomplish necessary learning faster.
+1 Introduction
+Current NLP approaches lean heavily on language
+models trained on very large corpora (Peters et al.,
+2018; Devlin et al., 2019; Radford et al., 2018;
+Liu et al., 2019b; Brown et al., 2020). Many re-
+searchers have sought to interpret what kinds of
+knowledge are acquired during this “pretraining”
+phase (Clark et al., 2019; Hao et al., 2019; Koval-
+eva et al., 2019; Belinkov et al., 2020). Extend-
+ing Chiang et al. (2020), we systematically con-
+duct probing across the pretraining iterations, to
+understand not just what is learned (as explored in
+numerous past analyses of ﬁxed, already-trained
+Equal contribution.models), but also when . In this work, we aim to in-
+form future work on more efﬁcient pretraining (e.g.,
+fewer iterations are needed to acquire some kinds
+of knowledge) and on understanding dependencies
+among different kinds of knowledge.
+Speciﬁcally, we apply a probing across time
+framework to the widely used RoBERTa masked
+language model (Liu et al., 2019b). We reproduce
+the pretraining of RoBERTa and apply a suite of
+probes at many checkpoint iterations across pre-
+training (§3). Our rich probe suite covers a di-
+verse range of desirable knowledge types: linguis-
+tic properties (Liu et al., 2019a), factual knowledge
+(Petroni et al., 2019), and commonsense (Zhou
+et al., 2020) and basic reasoning capabilities (Tal-
+mor et al., 2019). Our main ﬁnding is that linguistic
+information tends to be acquired fast, factual and
+commonsense knowledge slower, and reasoning
+abilities are largely unlearned.
+We next apply probing across time to instances
+of RoBERTa trained on text from varying domains
+and with varying amounts of data (§4). Our exper-
+iments show that the learning order and learning
+patterns of different types of knowledge generally
+hold regardless of the data variation. However, dif-
+ferent data choices do have an impact on the learn-
+ing speed and the ﬁnal performance. Our ﬁndings
+suggest that the inclusion of data in more diverse
+domains is more important than the quantity alone.
+Finally, we compare probes across time with re-
+search benchmark task performance across time
+(§5). We ﬁnd that most of these benchmark tasks
+(e.g., SST-2, Socher et al., 2013, and SQuAD,
+Rajpurkar et al., 2016) require a relatively small
+number of pretraining steps to achieve high perfor-
+mance, which is similar to the fast learning patterns
+shown by linguistic probes. Some other tasks that
+are designed to test more complex knowledge (e.g.,
+ReCoRD, Zhang et al., 2018 and WSC, Levesque
+et al., 2012) beneﬁt from longer pretraining time,
+aligning well with our ﬁndings for the correspond-arXiv:2104.07885v2  [cs.CL]  20 Sep 2021
+
+==== Page 2 ====
+ing type of probes.
+We expect that, as new pretrained models and
+new probes emerge, probing-across-time analyses
+can help synthesize evidence for models’ capa-
+bilities. We release our code, as well as all the
+pretraining checkpoints at https://github.com/
+leo-liuzy/probe-across-time to beneﬁt future
+research.
+2 Probing Across Time
+The great success of pretrained language mod-
+els has motivated researchers to characterize what
+kinds of knowledge they encode. Probing seeks to
+determine how much is known by the pretrained
+model, so its representations are used without ﬁne-
+tuning. Few or zero additional parameters are esti-
+mated to target the probing task so that success on
+the probing task is attributable to pretraining alone.
+Past probing work has applied probing analysis af-
+ter pretraining is complete and compares different
+models (e.g., BERT vs. GloVe). We extend probing
+to different parameter states (i.e., training check-
+points) over the same model’s pretraining trajectory.
+By observing how probe performance changes over
+time, we hope to understand not just what the pre-
+trained language model knows, but also when.
+To that end, we adopt a diverse set of probes aim-
+ing at different types of knowledge (§2.1) and apply
+those probes at different iterates of the estimated
+model across pretraining. This requires pretraining
+from scratch and checkpointing intermediate pa-
+rameter estimates (§2.3). Considering our compu-
+tational budget, we choose RoBERTa1as our case
+study because of its popularity in supporting down-
+stream probes and tasks. We leave exploration of
+different objectives and architectures, e.g., GPT-2
+(Radford et al., 2018), as future work. We also
+set up baselines as additional relative references to
+stand for the best and the worst expected results
+from pretraining (§2.2). See §A for implementation
+details and the computational cost.
+2.1 Probe Suite Construction
+Belinkov et al. (2020) categorize existing probes
+into two families. Structural probes train a
+lightweight classiﬁer that predicts a label on top of
+the model’s internal representations. Such probes
+are mostly used to test linguistic knowledge like
+parts of speech. Behavioral probes , on the other
+1In our work, RoBERTa stands for RoBERTa-base.hand, do not rely on additional parameters or train-
+ing, but use the model as it is to make predictions.
+For example, if a masked language model can pre-
+dict “Honolulu” for the input “Barack Obama was
+born in [MASK],” we can conclude that the pre-
+trained model learned Obama’s birth place.
+We adopt a rich set of probing tasks from ﬁve
+existing and publicly available probing packages
+to systematically evaluate different types of en-
+coded knowledge: LKT andBLIMPfor linguistic
+knowledge, LAMA for factual and commonsense
+knowledge, CAT for commonsense knowledge,
+and OLM PICS for reasoning knowledge. See §A
+for links to those probes. For clarity, we focus here
+on four or ﬁve probing tasks from each package and
+present the rest (which showed similar patterns) in
+§B. See Table 1 for an overview of these probing
+tasks and examples. We brieﬂy describe the goal
+and our setup of these ﬁve packages as follows.
+LKT Liu et al. (2019a) introduce a structural lin-
+guistic probe suite for testing linguistic knowledge
+and transferability ( LKT ) of contextual represen-
+tations. For all tasks in LKT , we train a linear
+classiﬁer model to predict the linguistic annotation
+of each word in a sentence. Through the perfor-
+mance of the classiﬁer, we measure how closely the
+encoded information in the word representations
+conforms to linguistic annotations from human ex-
+perts. Following Liu et al. (2019a), we use learn-
+able coefﬁcients to weigh a sum of representations
+from all the transformer layers, and compute the
+input vector to the classiﬁer. We measure the probe
+performance by accuracy or F1on the test sets.
+BLIMP Salazar et al. (2020) introduce a behav-
+ioral linguistic probe suite on the benchmark of
+linguistic minimal pairs ( BLIMP, Warstadt et al.,
+2020). This benchmark isolates speciﬁc phenom-
+ena in syntax, morphology, or semantics such as
+island effects and subject-verb agreement. As seen
+in Table 1, input sentence pairs differ only by a
+word or a short phrase, but contrast in grammatical
+acceptability. We test whether RoBERTa scores
+the grammatical sentence higher than the ungram-
+matical one. The score for a sentence is calcu-
+lated by sequentially masking one word at a time
+and averaging the log probabilities of the masked
+words. Since no additional parameters or training
+are involved, BLIMPprovides a complementary
+perspective to LKT — if probing without training
+shows the same pattern as with training, it strength-
+
+==== Page 3 ====
+Package Knowledge Task Formulation Examples
+LKT LinguisticPOS Tagging
+Token LabelingPRON AUX VERB ADV ADP DET NOUN PUNCT
+I ’m staying away from the stock .
+Syntactic ChunkingB-NP B-VP B-PP B-NP I-NP I-NP O
+Shearson works at American Express Co .
+Name Entity RecognitionO O I-ORG I-ORG I-ORG O O OO
+Bystumps Kent County Club had reached 108 .
+Syntactic Arc Predication
+Token Pair LabelingPeter and May bought a car.ROOTSubj
+Conj ConjDet77 3
+Syntactic Arc Classiﬁcation
+Peter and May bought a car.ROOTSubj
+Conj ConjObj
+Det
+BLIMP LinguisticIrregular FormsComparing
+Sentence Scores
+Expected:
+S(3)>S(7)3Aaron broke the unicycle. 7Aaron broken the unicycle.
+Determiner-Noun Agree. 3Rachelle had bought that chair 7Rachelle had bought that chairs .
+Subject-Verb Agreement 3These casseroles disgust Kayla. 7These casseroles disgusts Kayla.
+Island Effect 3Which bikes is John ﬁxing? 7Which is John ﬁxing bikes ?
+Filler Gap 3Brett knew what many waiters ﬁnd. 7Brett knew thatmany waiters ﬁnd.
+LAMAFactualGoogle RE Masked LM
+Expected:
+8w2VRoBERTanf3g;
+P(3jC)>P(wjC)Albert Einstein was born in [MASK] 3:[MASK] =1879
+T-REx Humphrey Cobb was a [MASK] and novelist 3:[MASK] =screenwriter
+SQuAD A Turing machine handles [MASK] on a strip of tape. 3:[MASK] =symbols
+Commonsense ConceptNet You can use [MASK] to bathe your dog. 3:[MASK] =shampoo
+CAT CommonsenseConjunction Acceptability
+Comparing
+Sentence Scores
+Expected:
+87;
+S(3)>S(7)3Jim yelled at Kevin because Jim was so upset. 7Jim yelled at Kevin andJim was so upset.
+Winograd 3The ﬁsh ate the worm. The ﬁshwas hungry. 7The ﬁsh ate the worm. The worm was hungry.
+Sense Making 3Money can be used for buying cars. 7Money can be used for buying stars .
+SWAG3Someone unlocks the door and they go in. Someone leads the way in .
+7Someone unlocks the door and they go in. Someone opens the door and walks out .
+7Someone unlocks the door and they go in. Someone walks out of the driveway .
+7Someone unlocks the door and they go in. Someone walks next to someone and sits on a pew.
+Argument Reasoning3People can choose not to use Google, and since all other search engines re-direct to Google ,
+Google is not a harmful monopoly.
+7People can choose not to use Google, but since other search engines do not re-direct to Google ,
+Google is not a harmful monopoly.
+OLM PICS ReasoningTaxonomy ConjunctionMultiple Choice
+Masked LM
+Expected:87;
+P(3jC)>P(7jC)A ferry and a ﬂoatplane are both a type of [MASK] . 3vehicle 7airplane 7boat
+Antonym Negation It was [MASK] hot, it was really cold. 3not7really
+Object Comparison The size of a airplane is usually much [MASK] than the size of a house. 7smaller 3larger
+Always Never A chicken [MASK] has horns. 3never7rarely7sometimes 7often7always
+Multi-Hop Composition When comparing a 23, a 38 and a 31 year old, the [MASK] is oldest. 3second 7ﬁrst7third
+Table 1: Representative tasks from selected probe packages. S()scores a sentence by sequentially masking each
+word in the sentence and averaging the log probabilities. Cdenotes the rest of the sentence, and P(jC )is the
+conditional probability distribution over the vocabulary given C.VRoBERTa is the vocabulary of RoBERTa.
+ens our observation on linguistic knowledge.
+LAMA Petroni et al. (2019) introduce a behav-
+ioral probing package that tests factual andcom-
+monsense knowledge. Each example in LAMA
+is a cloze-style question with its subject or ob-
+ject masked. By predicting the masked word
+with RoBERTa, we measure its ability to recover
+real-world facts. We only consider the examples
+whose masked words exist in the RoBERTa vocab-
+ulary and measure whether RoBERTa predicts the
+masked word with the highest probability.
+CAT Zhou et al. (2020) introduce behavioral
+commonsense probes based on a series of exist-
+ing commonsense datasets. These probes measure
+whether the pretraining model can give a higher
+score to positive examples (sentences that align
+with commonsense) than negative examples (sen-
+tences that don’t). The score of each sentence is
+computed by sequentially masking one word at a
+time and averaging the log probabilities.
+OLM PICS Talmor et al. (2019) introduce a be-havioral probe package that tests the model’s rea-
+soning abilities including object comparison, taxon-
+omy conjunction, and multi-hop composition. We
+adopt the multiple choice masked LM setup where
+the pretrained RoBERTa is required to ﬁll in the
+mask by selecting words from 2–5 candidates. Dif-
+ferent from other probing packages, Talmor et al.
+(2019) show that pretrained LMs do not get a large
+improvement over baselines on most of the prob-
+ing tasks. This suggests that these reasoning tasks
+present challenges for current pretrained models,
+but we still include this probe package because it
+offers tests with a different aim and thus different
+insights into pretraining RoBERTa.
+2.2 Baselines for Relative Performance
+Probes are not a perfect, absolute measure of en-
+coded knowledge. In particular, Hewitt and Liang
+(2019) ﬁnd that probing classiﬁers can memorize
+labeling decisions independently of the linguistic
+knowledge of the representations. Pimentel et al.
+(2020) argue that a tighter estimate of the encoded
+
+==== Page 4 ====
+knowledge can be obtained by complex probing
+models. We ask whether targeted knowledge can
+be easily extracted with few or zero additional pa-
+rameters (i.e., ease of extraction , as suggested by
+Pimentel et al., 2020). We treat the probing scores
+as relative performance; and we address their con-
+cerns by comparing RoBERTa with the the follow-
+ing baselines:
+•Random Guess randomly selects one class
+label or token from the candidate pool.
+•Random Vector + Linear Classiﬁer uses a
+random vector to represent each type, and
+trains a linear classiﬁer on the top to predict
+the label with the token vector being frozen.
+•GloVe + Linear Classiﬁer uses GloVe vec-
+tors (Pennington et al., 2014), and trains a
+linear classiﬁer on top to predict the label.
+•Original RoBERTa probes the ofﬁcially re-
+leased checkpoint2of RoBERTa base to see
+if our checkpoints are pretrained properly and
+can achieve reasonable performance.
+Moreover, our probing results on different check-
+points can illustrate the relative performance
+change during pretraining.
+2.3 Pretraining Setups
+We choose base-size RoBERTa as a case study. In
+order to conduct probing over time, we replicate the
+RoBERTa pretraining procedure and periodically
+save checkpoints for later probing. To ensure that
+probe-task relevant text is uniformly distributed
+over batches, the entire data is shufﬂed before every
+epoch. Our training setting follows closely the one
+prescribed in Liu et al. (2019b), except for the fol-
+lowing differences: 1)we use the hyperparameter
+setting with 1M update steps and a reduced batch
+size of 256, instead of 125K steps and a batch size
+of 2,048;32)we use static masking (Devlin et al.,
+2019) during data processing instead of dynamic
+masking to run the code on TPUs. These differ-
+ences can result in slightly worse performance on
+downstream tasks (Liu et al., 2019b). However,
+due to the large data size, we believe it won’t sig-
+niﬁcantly change the learning patterns we found in
+later sections.
+We save a checkpoint every 20K training steps
+and more frequently during the ﬁrst 12,800 steps,
+resulting in about 62 checkpoints for each pretrain-
+2https://github.com/pytorch/fairseq/
+blob/master/examples/roberta/README.md .
+3We chose a smaller batch size for more ﬁne-grained ob-
+servations.ing setting.4Then we probe all these checkpoints
+to estimate the knowledge encoded by the model
+at different training steps.
+Pretraining data The original RoBERTa was
+pretrained on BOOKCORPUS (4 GB, Zhu et al.,
+2015), English WIKIPEDIA (12 GB), CC-News
+(76 GB, Nagel, 2016), OPENWEBTEXT(38 GB,
+Gokaslan and Cohen, 2019), and STORIES (31 GB,
+Trinh and Le, 2018). Since we do not have access
+to their version of ﬁltered CC-N EWS, we use RE-
+ALNEWS (120 GB, Zellers et al., 2019) instead,
+which is similar, according to Liu et al. (2019b).
+This difference in training data might partly ex-
+plain the performance degradation from the orig-
+inal RoBERTa. All the other corpora remain the
+same. This leads to a total of 205 GB5unprocessed
+text, and each training epoch makes 360,851 update
+steps (3 epochs in total for the 1M update steps). In
+our later controlled experiments, we sample these
+corpora to compare domains and data sizes in §4.
+3 Learning Patterns
+In this section, we use our reproduced RoBERTa
+to ask and answer, at which stage does the model
+acquire each kind of knowledge? In addition to
+plotting probe performance across time (i.e., pa-
+rameter updates during learning; see Fig. 1), a
+useful measurement is the number of updates re-
+quired to reach x% of the maximum performance
+achieved by our model across all iterations. We de-
+note this measurement by “Learning Progress– x%”
+forx2f90;95;97g; it is indicated by the bottom
+horizontal bars in each probe’s plot in Fig. 1. We
+consider each type of knowledge in turn. All of the
+following discussion is supported by Fig. 1.
+3.1 Linguistic Learning
+The structural linguistic probes test how closely the
+information in RoBERTa representations conforms
+to annotations developed from linguistic theories.
+The behavioral probes test how sensitively the lan-
+guage model can respond to some detailed syntac-
+tic error. In most cases, RoBERTa shows great
+success in learning linguistic knowledge with high
+speed and stability, and this pattern is consistent
+both in the classiﬁer-based LKT and behavioral
+4In a pilot study, we observed that the training and valida-
+tion loss start to plateau at 50K training steps.
+5We follow Liu et al. (2019b) to report data size by gi-
+gabytes of the uncompressed text in this paper. Our entire
+pretraining data contain 46 billion tokens after tokenization.
+
+==== Page 5 ====
+0.60.70.80.9
+LKT
+(Linguistic)Ave. Performance
+0.700.750.800.850.900.95Acc.POS Tagging
+0.50.60.70.80.9F1Syntactic Chunking
+0.20.30.40.50.60.70.8F1NER
+0.700.750.800.850.90Acc.Syntactic Arc Pred.
+0.600.650.700.750.800.850.900.95Acc.Syntactic Arc Class.
+0.50.60.70.80.9
+BLiMP
+(Linguistic)Ave. Performance
+0.50.60.70.80.9Acc.Irregular Forms
+0.50.60.70.80.9Acc.Determiner-Noun Agree.
+0.50.60.70.80.9Acc.Subject-Verb Agree.
+0.50.60.70.80.9Acc.Filler-Gap
+0.50.60.70.8Acc.Island Effects
+0.0000.0250.0500.0750.1000.1250.1500.175
+LAMA
+(Factual&
+Commonsense)Ave. Performance
+0.000.010.020.030.040.05Acc.Google RE
+0.000.020.040.060.080.100.12Acc.SQuAD
+0.000.050.100.150.200.250.300.35Acc.T-REx
+0.000.050.100.15Acc.ConceptNet
+0.450.500.550.600.650.70
+CAT
+(Commonsense)Ave. Performance
+0.40.50.60.70.80.9Acc.Conjunction Acceptability
+0.480.500.520.540.560.580.600.62Acc.Winograd
+0.500.550.600.650.700.75Acc.Sense Making
+0.30.40.50.60.7Acc.SWAG
+0.490.500.510.520.530.540.55Acc.Argument
+0K 200K 400K 600K 800K 1M0.300.320.340.360.380.400.420.44
+oLMpics
+(Reasoning)Ave. Performance
+0K 200K 400K 600K 800K 1M0.250.300.350.400.450.500.55Acc.Taxonomy Conjunction
+0K 200K 400K 600K 800K 1M0.400.450.500.550.600.65Acc.Antonym Negation
+0K 200K 400K 600K 800K 1M0.450.500.550.600.65Acc.Objects Comparison
+0K 200K 400K 600K 800K 1M0.100.150.200.250.300.350.40Acc.Always Never
+0K 200K 400K 600K 800K 1M0.310.320.330.340.350.36Acc.Multi-Hop Composition
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Random Vector + Linear Clf.GloVe + Linear Clf.
+Original RoBERTaBASEOur Checkpoints
+exp. moving average curveLearning Progress-90%
+Learning Progress-95%Learning Progress-97%Figure 1: Probes across time performance from our reproduced RoBERTa. Linguistic information tends to be
+acquired fast, factual and commonsense knowledge slower, and reasoning abilities are largely unlearned. For a
+better visualization, we use exponential moving average curve with a coefﬁcient of 0:5to plot a smoothed curve.
+For each probe package, the ﬁrst column is the average performance over the 4-5 selected tasks. See complete
+plots in §B.1. “Learning Progress– x%” values are calculated with raw data, not smoothed data. The maximum
+performance of Always Never ( OLM PICS) occurs when the model is initialized.
+BLIMPprobes (see the ﬁrst two rows in Fig. 1).
+In the LKT measurements from all 62 checkpoints,
+we observe that 97% of the improvement in over-
+all performance occurs within 20% of the total
+training updates. The variation of this fast pattern
+among tasks in LKT is small and all the perfor-
+mance converges closely to the originally reported
+results. In a majority of BLIMPtests, compared to
+LKT , RoBERTa shows similar or even faster learn-
+ing speed to achieve the 97% threshold (Irregular
+Form, Determiner-Noun Agreement, and Subject-
+Verb Agreement), whereas some other tasks are
+more slowly learned. See §B.1 for more results.
+3.2 Factual and Commonsense Learning
+Overall, Fig. 1 shows slower learning speed and
+more instability in both LAMA andCAT than in
+the linguistic probes. Most of our measurements re-
+quire more than half of pretraining steps to achieve
+97% of the best performance. Compared with thehigh consistency in linguistic probes, there is more
+variation among tests. For example, the SQuAD
+and ConceptNet tests reveal the LM is steadily,
+although slowly, learning some factual and com-
+monsense knowledge. However, other tests like
+argument reasoning and Winograd show ﬂuctua-
+tion or even a decrease in performance, and some
+factual knowledge such as Google RE is not easily
+learned. We also note that there are noticeable gaps
+in the ﬁnal performance of some tasks between our
+reproduced RoBERTa and original RoBERTa. We
+suspect that this is because of the several differ-
+ences in our replication of RoBERTa (e.g., batch
+size and R EALNEWS vs. CC-N EWS, §2.3).
+3.3 Reasoning
+OLM PICS shows some drastically different pat-
+terns from the other knowledge types (Fig. 1).
+Many of the reasoning abilities are not learned
+during RoBERTa pretraining. For example, in Ob-
+
+==== Page 6 ====
+ject Comparison, our RoBERTa model is on par
+with random guessing, and the performance on Al-
+ways Never keeps decreasing overall after the ini-
+tialization. Some other tests included in §B.1 also
+show severe ﬂuctuation or similar patterns. How-
+ever, there are still signs of learning for some tasks.
+Taxonomy Conjunction shows the most promising
+sign of learning, and although to a small extent,
+RoBERTa also learns to do multi-hop reasoning.
+Another noteworthy observation is that RoBERTa’s
+performance on Antonym Negation ﬁrst increases
+rapidly, and then decreases in the rest of the ﬁrst
+half of training; however, it starts to increase again
+toward the end. This indicates that this knowledge
+is not stably stored in the model.
+4 Varying the Pretraining Corpus
+Our experiments on the pretraining trajectory in the
+previous section demonstrate that, when acquired,
+different types of knowledge are learned at different
+stages. On the other hand, previous work (Raffel
+et al., 2020; Gururangan et al., 2020) demonstrates
+that language domain and data size are important
+factors for a pretrained model’s performance in
+downstream tasks. Thus, the question arises: do
+our observations on the pretraining trajectory hold
+regardless of the training corpus? In this section,
+we ask and answer how do domains and corpus
+sizes affect the learning trajectory?
+Domains With the same setting as §3, we pre-
+train RoBERTa with three controlled domains:
+English WIKIPEDIA ,REALNEWS, and STORIES .
+We downsample REALNEWS andSTORIES to be
+roughly the same size as W IKIPEDIA (12 GB).
+The ﬁrst row of Fig. 2 compares probing perfor-
+mance across time over varying domains. On one
+hand, the general learning pattern from the previ-
+ous section persists regardless of the domain: lin-
+guistic knowledge is acquired faster than the other
+types. On the other hand, we ﬁnd that the change
+in the pretraining domain affects the ﬁnal perfor-
+mance of all knowledge types but to different ex-
+tents. LKT is generally less affected than BLIMP,
+probably due to the additional training of LKT ’s
+classiﬁer on the probing data. Although the model
+slowly acquires both factual and commonsense
+knowledge regardless of corpus domains, factual
+knowledge is much more affected by domain (in
+fact, most affected among all). LAMA especially
+shows very slow learning on the STORIES domain,
+implying that factual knowledge might be verysparse in STORIES . The fact that the included fac-
+tual tests—Google-RE, T-REx and SQuAD—are
+sourced from WIKIPEDIA might explain why the
+factual tests show RoBERTa trained on WIKIPEDIA
+learns faster than the one trained on REALNEWS.
+Though many existing works (Mostafazadeh et al.,
+2016; Bhagavatula et al., 2020; Qin et al., 2020)
+used story data to study commonsense, pretraining
+the model on STORIES still performs worst on our
+commonsesense probes (ConceptNet in LAMA
+and most probes in CAT ). On the OLM PICS probes,
+we keep observing large ﬂuctuation on different
+domains, but do see more signs of learning on
+theWIKIPEDIA andREALNEWS domains than on
+STORIES . See §B.3 for more detailed plots.
+Corpus Sizes To investigate the impact of cor-
+pus size, we experimented on downsampled En-
+glish WIKIPEDIA (4 GB), the original English
+WIKIPEDIA (12 GB), and a combination of
+WIKIPEDIA with downsampled REALNEWS and
+downsampled S TORIES (36 GB in total).
+The second row of Fig. 2 compares probing per-
+formance over varying corpus sizes. In general,
+the learning order and learning patterns of differ-
+ent types of knowledge that we discuss in §3 still
+hold for all data sizes. Comparing different data
+sizes, we ﬁnd that the biggest corpus (with more di-
+verse inclusion of domains) generally learns faster
+and results in an ultimately better RoBERTa in all
+tested knowledge. On the other hand, interestingly,
+comparing the downsampled English WIKIPEDIA
+(4 GB) and original English WIKIPEDIA (12 GB),
+simply increasing the corpus size without changing
+domains does not improve the ﬁnal probing perfor-
+mance substantially in all categories. This is even
+true for LAMA , which tests factual knowledge rel-
+evant to WIKIPEDIA . This suggests that diversity
+of data might be more important for pretraining
+than quantity. See §B.4 for more detailed plots.
+5 Experiments on Research Benchmarks
+In §3-4, we used probes to understand the knowl-
+edge learning process, but what do those observa-
+tions mean to more practical scenarios where
+people use pretrained RoBERTa with ﬁnetun-
+ing? In this section, we provide insights into this
+question by ﬁnetuning our RoBERTa checkpoints
+on eight representative research benchmarks (e.g.,
+SQuAD). We conjecture that these benchmarks re-
+quire more intermingled knowledge, whereas prob-
+ing tasks usually target one speciﬁc phenomenon or
+
+==== Page 7 ====
+0K 200K 400K 600K 800K 1M0.60.70.80.9Ave. PerformanceLKT
+0K 200K 400K 600K 800K 1M0.50.60.70.80.9BLiMP
+0K 200K 400K 600K 800K 1M0.000.050.100.15LAMA
+0K 200K 400K 600K 800K 1M0.450.500.550.600.650.70CAT
+0K 200K 400K 600K 800K 1M0.340.360.380.400.42oLMpics
+0K 200K 400K 600K 800K 1M0.60.70.80.9Ave. PerformanceLKT
+0K 200K 400K 600K 800K 1M0.50.60.70.80.9BLiMP
+0K 200K 400K 600K 800K 1M0.000.050.100.15LAMA
+0K 200K 400K 600K 800K 1M0.450.500.550.600.650.70CAT
+0K 200K 400K 600K 800K 1M0.340.360.380.400.42oLMpics
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Domains Corpus SizesRandom Guess
+Random Vector + Linear Clf.GloVe + Linear Clf.
+Original RoBERTaBASENEWS (12GB)
+STORIES (12GB)WIKI (12GB)
+Small WIKI (4GB)NEWS+WIKI+STORIES (36GB)Figure 2: Performance of probes across time, comparing pretraining domains and corpus sizes. This plot reveals
+that the learning order and patterns of different knowledge types generally hold regardless of the data variation,
+with higher impact from corpus domains. Performance for each probing package is averaged over its 4–5 selected
+tasks and smoothed with a coefﬁcient of 0:5for better visualization (same as the ﬁrst column in Fig. 1).
+type of knowledge. By comparing them to the more
+controlled probes of §2, we aim to understand how
+acquisition of probed capabilities aligns with and
+perhaps accounts for performance on benchmarks.
+Experimental setup We select 14 checkpoints
+from our pretraining to run our ﬁnetuning tasks:
+CoLA (Warstadt et al., 2019), SST-2 (Socher et al.,
+2013), MNLI (Williams et al., 2018), WNLI (WSC
+recontructed as an inference task), MRPC (Dolan
+and Brockett, 2005), SQuAD (Rajpurkar et al.,
+2016), ReCoRD (Zhang et al., 2018), and Wino-
+grad Schema Challenge (WSC, Levesque et al.
+2012). See Appendix A.2 for hyperparameters.6
+These tasks are chosen to reﬂect the diverse
+downstream use cases of pretrained language mod-
+els, including single-sentence (CoLA, SST-2) or
+sentence-pair (MNLI, WNLI, MRPC) classiﬁca-
+tion, question answering (SQuAD, ReCoRD), and
+multiple-choice classiﬁcation (WSC). Note that
+MNLI/WNLI and SQuAD/ReCoRD comprise two
+interesting contrastive pairs. Each pair shares a
+task format, with the latter tasks (i.e., WNLI and
+ReCoRD) designed to rely more on commonsense
+than the former ones. We expect more pretraining
+iterations for WNLI than MNLI and ReCoRD than
+SQuAD from the probing experiments (§3).
+Results We plot our results in Fig. 3. Different
+patterns are observed for different tasks. CoLA and
+SST-2 require noticeably fewer pretraining steps,
+6To avoid impractical hyperparamter search for the large
+number of checkpoints we have, for each ﬁnetuning task, we
+use the same hyperparameters for all experiments.achieving 97% of the best performance within
+16% and 32% of the pretraining time, respectively,
+which is even faster than LKT (20%) or BLIMP
+(36%). MNLI, WNLI, MRPC, and SQuAD are
+in a “middle” range (after linguistic knowledge,
+but before factual or commonsense knowledge),
+suggesting they are acquiring something the lin-
+guistic probes don’t test but that is learned faster
+than what RoBERTa can learn for LAMA /CAT .
+At last, ReCoRD and WSC are learned. In particu-
+lar, WSC appears to be learned slower than all the
+tested probes, suggesting that pretraining is keep-
+ing learning knowledge that is beneﬁcial to WSC
+but not tested in our probes. Note again that “learn
+the task” is relative to the best performance we
+observe by our RoBERTa on the task.
+As expected, WNLI requires longer pretrain-
+ing than MNLI and ReCoRD longer than SQuAD,
+which aligns well with our ﬁnding in §3.2 that the
+model learns commonsense slowly as pretraining
+progresses. In addition, we observe MNLI perfor-
+mance even drops towards the end of pretraining,
+implying that longer pretraining does not neces-
+sarily lead to better ﬁnetuning performance. For
+interested readers, we also include a plot of corre-
+lation among all experimental results in §B.2
+6 Related Work and Further Discussion
+Learning dynamics Early work (McClelland
+and Rumelhart, 1986) observed the dynamics in a
+feedforward neural network to assess the cognitive
+plausibility of a connectionist model. They found
+staged learning in past tense acquisition, similar to
+
+==== Page 8 ====
+0K 200K 400K 600K 800K 1M0.10.20.30.40.5Matthews corr.
+CoLA
+0K 200K 400K 600K 800K 1M0.8250.8500.8750.9000.9250.950Acc.
+SST-2
+0K 200K 400K 600K 800K 1M0.650.700.750.800.85MNLI-m Acc.
+MNLI
+0K 200K 400K 600K 800K 1M0.250.300.350.400.450.500.55Acc.
+WNLI
+0K 200K 400K 600K 800K 1M0.700.750.800.85Acc.
+MRPC
+0K 200K 400K 600K 800K 1M0.20.40.60.8F1
+SQuAD
+0K 200K 400K 600K 800K 1M0.20.30.40.50.60.70.8F1
+ReCoRD
+0K 200K 400K 600K 800K 1M0.450.500.550.60Acc.
+WSC
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Original RoBERTaBASE Our Checkpoints Fintuning Performance LKT BLiMP LAMA CAT oLMpicsFigure 3: Finetuning performance on research benchmarks using the checkpoints from our reproduced RoBERTa.
+Most of these benchmark tasks require less than half of pretraining steps to achieve high performance, while tasks
+that are designed to test more complex knowledge (e.g., ReCoRD and WSC) beneﬁt from longer pretraining time.
+We plot Learning Progress–97% of our RoBERTa in each probe package and ﬁnetuning (i.e., colored horizontal
+bars). The bottom ﬁve bars for the probes are shown for comparison. For Multi-genre NLI, we only show accuracy
+on the matched genres (same genres seen during ﬁnetuning), as we see similar curves on the unmatched genres.
+humans. More recently, Saphra and Lopez (2019)
+studied linguistic and topic learning dynamics in
+hidden states of an LSTM language model. They
+found that syntactic information is encoded at an
+early training stage, which is consistent with our
+ﬁnding despite the difference in training objective
+and network architecture. Our work, instead, uses a
+rich set of probes to examine more diverse aspects
+of language and analyzes training iterations.
+Concurrent work (Chiang et al., 2020) is the clos-
+est work to ours and uses probes to investigate the
+learning dynamics as well. However, they ﬁnd that
+linguistic knowledge and factual knowledge do not
+generally improve as pretraining proceeds, we ﬁnd
+that factual and commonsense knowledge do(§3);
+we attribute such difference to our more systematic
+choice of probes – not only adding two more cate-
+gories (i.e. commonsense and reasoning) but also
+more tasks in the linguistic and factual knowledge
+categories. For example, we found that the factual
+knowledge probed using SQuAD and ConceptNet
+data still increases as the pretraining progresses.
+However, Chiang et al. (2020) only used a sub-
+set of T-REx, which plateaus quickly according
+to our experiments. Sharing their concern of how
+data affects pretraining, we empirically investigate
+how the domain of pretraining corpus affects the
+dynamics of different types of knowledge.
+Zhang et al. (2020) investigate masked languagemodels trained on corpora of varying sizes in a
+domain . They experiment with linguistic probes
+and show that 90% of the improvement in syntac-
+tic probing performance can be achieved with a
+pretraining corpus of only about 10M words. In
+contrast, the probing performance in commonsense
+knowledge suffers from small training data. Differ-
+ent from the ﬁnal models obtained in their work, we
+consider the entire pretraining trajectories . Never-
+theless, our ﬁndings by varying corpus size (§4) are
+consistent with their conclusion and additionally
+we ﬁnd that adding more data in diverse domains
+can improve both types of knowledge. Their results
+on the relation between the corpus size and probing
+performance also support our ﬁnding that linguistic
+knowledge is generally easy to learn, while other
+types of knowledge require more efforts in term
+of both the data size and the training iterations.
+Since their experiments consist of different hyper-
+parameter settings, and the domains for some of
+our datasets (i.e., WIKIPEDIA andSTORIES ) are
+the same as theirs, we consider our observation
+complementary to theirs.
+Two views on probing Pimentel et al. (2020) de-
+velop an information-theoretic perspective that dif-
+fers from our ease-of-extraction view: contextual
+representations can not have more information than
+the original sentence because the embedding func-
+
+==== Page 9 ====
+tion is deterministic. However, this view does not
+consider how they are structured in the embedding
+space. These representations can only be taken ad-
+vantage of if they are structured in an extractable
+way. All the “knowledge” mentioned in our paper
+refers to such structured and easy-to-extract infor-
+mation. In our pilot study, we experimented with
+MLP classiﬁers in structural probes. They achieved
+much higher (almost highest in some cases) scores
+than the linear classiﬁer on even the randomly-
+initialized RoBERTa model. Though agreeing with
+Pimentel et al. (2020)’s conclusion, MLP classiﬁers
+cannot reﬂect the learning process of the targeted
+knowledge and fail to explain why RoBERTa im-
+proves in downstream tasks over time (Fig. 3).
+7 Ethical Concerns
+We estimate our carbon costs in Appendix §A. We
+recognize the possibility that changes to hyperpa-
+rameters might lead to different conclusions and
+leave it to future work to balance the costs of such
+exploration with the value of a more detailed un-
+derstanding of hyperparameter impact on learning
+over time. We note that the robustness of learning
+patterns is partly supported by results from Zhang
+et al. (2020), since they probed models trained with
+different hyperparameters and observed similar lin-
+guistic patterns as we did.
+8 Conclusion
+We have shown how probing across time reveals
+when, during pretraining iterations, a masked lan-
+guage model acquires various kinds of knowledge.
+RoBERTa, our case study model, is shown to learn
+linguistic knowledge faster than factual and com-
+monsense knowledge, but struggle to learn reason-
+ing abilities. We explored variation due to corpus
+domain and size, and related our ﬁndings to re-
+search benchmark tasks. As models evolve and
+new probes emerge, we believe our probing across
+time framework can serve as a general framework
+to inform progress on both fronts.
+Acknowledgments
+In random order, we appreciate valuable discus-
+sion and feedback from Noah’s ARK group at the
+University of Washington, Nelson Liu at Stanford
+University, Victoria Lin at Salesforce research, Roy
+Schwartz at the Hebrew University of Jerusalem,
+and the anonymous reviewers. This research is
+supported in part by the Ofﬁce of Naval Researchunder grants N00014-18-1-2826 and N00014-18-
+1-2670.
+References
+Yonatan Belinkov, Sebastian Gehrmann, and Ellie
+Pavlick. 2020. Interpretability and analysis in neu-
+ral NLP. In Proc. of ACL: Tutorial Abstracts .
+Chandra Bhagavatula, Ronan Le Bras, Chaitanya
+Malaviya, Keisuke Sakaguchi, Ari Holtzman, Han-
+nah Rashkin, Doug Downey, Wen-tau Yih, and Yejin
+Choi. 2020. Abductive commonsense reasoning. In
+Proc. of ICLR .
+Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, Sandhini Agarwal, Ariel Herbert-V oss,
+Gretchen Krueger, Tom Henighan, Rewon Child,
+Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu,
+Clemens Winter, Christopher Hesse, Mark Chen,
+Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin
+Chess, Jack Clark, Christopher Berner, Sam Mc-
+Candlish, Alec Radford, Ilya Sutskever, and Dario
+Amodei. 2020. Language models are few-shot learn-
+ers.
+Cheng-Han Chiang, Sung-Feng Huang, and Hung-yi
+Lee. 2020. Pretrained language model embryology:
+The birth of ALBERT. In Proceedings of the 2020
+Conference on Empirical Methods in Natural Lan-
+guage Processing (EMNLP) , pages 6813–6828, On-
+line. Association for Computational Linguistics.
+Kevin Clark, Urvashi Khandelwal, Omer Levy, and
+Christopher D Manning. 2019. What does BERT
+look at? an analysis of BERT’s attention. In Proc.
+of BlackboxNLP .
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2019. BERT: Pre-training of
+Deep Bidirectional Transformers for Language Un-
+derstanding. In Proc. of NAACL .
+William B. Dolan and Chris Brockett. 2005. Automati-
+cally constructing a corpus of sentential paraphrases.
+InProc. of IWP . Asian Federation of Natural Lan-
+guage Processing.
+Aaron Gokaslan and Vanya Cohen. 2019. OpenWeb-
+Text corpus. http://Skylion007.github.io/
+OpenWebTextCorpus .
+Suchin Gururangan, Ana Marasovi ´c, Swabha
+Swayamdipta, Kyle Lo, Iz Beltagy, Doug Downey,
+and Noah A. Smith. 2020. Don’t stop pretraining:
+Adapt language models to domains and tasks. In
+Proc. of ACL .
+Yaru Hao, Li Dong, Furu Wei, and Ke Xu. 2019. Visu-
+alizing and understanding the effectiveness of BERT.
+InProc. of EMNLP .
+
+==== Page 10 ====
+John Hewitt and Percy Liang. 2019. Designing and
+interpreting probes with control tasks. In Proc. of
+EMNLP . Association for Computational Linguistics.
+Olga Kovaleva, Alexey Romanov, Anna Rogers, and
+Anna Rumshisky. 2019. Revealing the dark secrets
+of bert. In Proc. of EMNLP .
+Loïc Lannelongue, Jason Grealey, and Michael Inouye.
+2020. Green algorithms: Quantifying the carbon
+emissions of computation. CoRR , abs/2007.07610.
+Hector J. Levesque, Ernest Davis, and Leora Morgen-
+stern. 2012. The Winograd schema challenge. In
+Proc. of KR&R .
+Nelson F. Liu, Matt Gardner, Yonatan Belinkov,
+Matthew E. Peters, and Noah A. Smith. 2019a. Lin-
+guistic knowledge and transferability of contextual
+representations. In Proc. of NAACL .
+Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Man-
+dar Joshi, Danqi Chen, Omer Levy, Mike Lewis,
+Luke Zettlemoyer, and Veselin Stoyanov. 2019b.
+RoBERTa: A Robustly Optimized BERT Pretrain-
+ing Approach.
+James L. McClelland and David E. Rumelhart. 1986.
+Parallel Distributed Processing , volume 2.
+Nasrin Mostafazadeh, Nathanael Chambers, Xiaodong
+He, Devi Parikh, Dhruv Batra, Lucy Vanderwende,
+Pushmeet Kohli, and James F. Allen. 2016. A cor-
+pus and cloze evaluation for deeper understanding
+of commonsense stories. In Proc. of NAACL .
+Sebastian Nagel. 2016. CC-News. http://web.
+archive.org/save/http://commoncrawl.
+org/2016/10/news-dataset-availabl .
+Jeffrey Pennington, Richard Socher, and Christopher
+Manning. 2014. GloVe: Global vectors for word
+representation. In Proc. of EMNLP .
+Matthew E. Peters, Mark Neumann, Mohit Iyyer, Matt
+Gardner, Christopher Clark, Kenton Lee, and Luke
+Zettlemoyer. 2018. Deep contextualized word repre-
+sentations. In Proc. of NAACL .
+Fabio Petroni, Tim Rocktäschel, Sebastian Riedel,
+Patrick S. H. Lewis, Anton Bakhtin, Yuxiang Wu,
+and Alexander H. Miller. 2019. Language models
+as knowledge bases? In Proc. of EMNLP .
+Tiago Pimentel, Josef Valvoda, Rowan Hall Maudslay,
+Ran Zmigrod, Adina Williams, and Ryan Cotterell.
+2020. Information-theoretic probing for linguistic
+structure. In Proc. of ACL .
+Lianhui Qin, Vered Shwartz, Peter West, Chandra Bha-
+gavatula, Jena D. Hwang, Ronan Le Bras, Antoine
+Bosselut, and Yejin Choi. 2020. Back to the future:
+Unsupervised backprop-based decoding for counter-
+factual and abductive commonsense reasoning. In
+Proc. of EMNLP .Alec Radford, Jeffrey Wu, Rewon Child, David Luan,
+Dario Amodei, and Ilya Sutskever. 2018. Language
+models are unsupervised multitask learners.
+Colin Raffel, Noam Shazeer, Adam Roberts, Katherine
+Lee, Sharan Narang, Michael Matena, Yanqi Zhou,
+W. Li, and Peter J. Liu. 2020. Exploring the limits
+of transfer learning with a uniﬁed text-to-text trans-
+former. JMLR .
+Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and
+Percy Liang. 2016. Squad: 100, 000+ questions
+for machine comprehension of text. In Proc. of
+EMNLP .
+Julian Salazar, Davis Liang, Toan Q. Nguyen, and Ka-
+trin Kirchhoff. 2020. Masked language model scor-
+ing. In Proc. of ACL .
+Naomi Saphra and Adam Lopez. 2019. Understanding
+learning dynamics of language models with SVCCA.
+InProc. of NAACL .
+Richard Socher, Alex Perelygin, Jean Wu, Jason
+Chuang, Christopher D. Manning, Andrew Y . Ng,
+and Christopher Potts. 2013. Recursive deep mod-
+els for semantic compositionality over a sentiment
+treebank. In Proc. of EMNLP .
+Alon Talmor, Yanai Elazar, Yoav Goldberg, and
+Jonathan Berant. 2019. oLMpics - on what language
+model pre-training captures. TACL .
+Trieu H. Trinh and Quoc V . Le. 2018. A simple method
+for commonsense reasoning.
+Alex Warstadt, Alicia Parrish, Haokun Liu, Anhad Mo-
+hananey, Wei Peng, Sheng-Fu Wang, and Samuel R.
+Bowman. 2020. BLiMP: The benchmark of linguis-
+tic minimal pairs for english. TACL .
+Alex Warstadt, Amanpreet Singh, and Samuel R. Bow-
+man. 2019. Neural network acceptability judgments.
+TACL .
+Adina Williams, Nikita Nangia, and Samuel R. Bow-
+man. 2018. A broad-coverage challenge corpus for
+sentence understanding through inference. In Proc.
+of NAACL .
+Rowan Zellers, Ari Holtzman, Hannah Rashkin,
+Yonatan Bisk, Ali Farhadi, Franziska Roesner, and
+Yejin Choi. 2019. Defending against neural fake
+news. In Proc. of NeurIPS .
+Sheng Zhang, Xiaodong Liu, Jingjing Liu, Jianfeng
+Gao, Kevin Duh, and Benjamin Van Durme. 2018.
+ReCoRD: Bridging the gap between human and ma-
+chine commonsense reading comprehension.
+Yian Zhang, Alex Warstadt, Haau-Sing Li, and
+Samuel R. Bowman. 2020. When do you need bil-
+lions of words of pretraining data?
+Xuhui Zhou, Yue Zhang, Leyang Cui, and Dandan
+Huang. 2020. Evaluating commonsense in pre-
+trained language models. In Proc. of AAAI .
+
+==== Page 11 ====
+Yukun Zhu, Ryan Kiros, Richard S. Zemel, Ruslan
+Salakhutdinov, Raquel Urtasun, Antonio Torralba,
+and Sanja Fidler. 2015. Aligning books and movies:
+Towards story-like visual explanations by watching
+movies and reading books. In Proc. of ICCV .A Implementation and Hyperparameters
+A.1 Pretraining
+We chose the base-size RoBERTa model (125M
+parameters) as a case study for pretraining in this
+paper due to our computational budget.
+We used the TPU implementation7of RoBERTa
+model in the ofﬁcial fairseq library.8However, be-
+cause it needs to support experiments on TPUs,
+our implementation still has some differences com-
+pared to the original RoBERTa, which leads to
+the small performance gap between our pretrained
+models and the original RoBERTa baseline. How-
+ever, we believe that these differences won’t change
+the learning patterns very much. Speciﬁcally, for
+the static masking, since our data size is large, the
+whole pretraining (for reproducing RoBERTa) took
+less than 3 passes over the data. Therefore, us-
+ing dynamic masking likely would not make much
+difference, especially considering that most of the
+probing performance becomes stable even before
+the ﬁrst epoch ends.
+The detailed pretraining hyperparameters are
+listed in Table 2. Each pretraining was run us-
+ing 8 TPU-v3 cores, and 1M steps took around 15
+days. To increase awareness about the potential en-
+vironmental impact of our large-scale pretraining,
+we use a tool from Lannelongue et al. (2020)9to
+estimate the energy and carbon cost of our experi-
+ments. As a rough estimate, each pretraining (on
+one corpus) consumes about 684.02 kWh energy
+and has 173.19 kg CO2e carbon footprint. There-
+fore, in total, our pretraining experiments consume
+4104.12 kWh energy and have 1039.14 kg CO2e
+carbon footprint.
+A.2 Probing and Finetuning
+Probing We ran our probing on checkpoints re-
+ported in Table 3. All the probing packages used
+in our paper are publicly available. We use LKT
+(Liu et al., 2019a)10andBLIMP(Warstadt et al.,
+2020)11for probing linguistic knowledge; LAMA
+(Petroni et al., 2019)12for factual and common-
+7https://cloud.google.com/tpu/docs/
+tutorials/roberta-pytorch
+8https://github.com/pytorch/fairseq
+9http://www.green-algorithms.org/
+10https://github.com/nelson-liu/
+contextual-repr-analysis
+11https://github.com/awslabs/
+mlm-scoring
+12https://cloud.google.com/tpu/docs/
+tutorials/roberta-pytorch
+
+==== Page 12 ====
+sense knowledge; CAT (Zhou et al., 2020)13for
+commonsense knowledge; and OLM PICS (Talmor
+et al., 2019)14for reasoning ability. As noted be-
+fore, LKT is the only probe package that requires
+additional training. All experiments in LKT are
+seeded and strictly follow the hyperparameters and
+training setup used in Liu et al. (2019a).
+We estimate the total cost of probing: 165.54 kg
+CO2e carbon footprint and 345.26 kWh energy
+(Lannelongue et al., 2020).
+Finetuning For convenience and reproduciblility,
+we also use public package to conduct ﬁnetuning.
+We use jiant15for ReCoRD and WSC; and Hug-
+gingface for the rest. Due to the large amount of
+training involved, we choose 14 intermediate check-
+points. In addition, it is infeasible to ﬁnd optimal
+hyperparamerters for each individual checkpoint;
+to be as fair as we can, we use the same set of hyper-
+paramters (see Table 4) for running each ﬁnetuning
+task on all our checkpoints and original RoBERTa.
+This might explain the sub-optimal performance
+from the original RoBERTa in Fig. 3.
+We estimated that ﬁntuning emits 54.98 kg CO2e
+carbon footprint and consumes 121.64 kWh energy
+(Lannelongue et al., 2020).
+Hardware We run our probing and ﬁnetuning ex-
+periments on Intel Core i9-9820X CPU @ 3.30GHz
+and GTX 2080 Ti.
+B Additional Probing Results
+B.1 Complete Results for Learning Patterns
+Here we show plots from all probing tasks we
+tested. Overall, the selected graphs in Fig. 1 are
+representative. See complete results of BLIMPin
+Fig. 5, showing fast learning speed; CAT in Fig. 6
+showing slower learning speed; and OLM PICS in
+Fig. 7 shows a sign of “not learning” in many tests
+and “learning” only in a few tests.
+B.2 Correlation Plot
+In Fig. 4, we show a plot of correlation among
+all experimental results run on our replicated
+RoBERTa (§3 and §5). Although successful probes
+usually correlate with each other, we note that low
+correlation with successful probes (e.g., linguistic
+probes) doesn’t necessarily imply failure. One such
+example is Ellipsis in BLIMP, which shows great
+13https://github.com/XuhuiZhou/CATS
+14https://github.com/alontalmor/oLMpics
+15https://github.com/nyu-mll/jiantsuccess in Fig. 5, yet has low correlation with other
+successful probes.
+B.3 Complete Results for Varying Pretrain
+Corpus Domain
+In this section, we complement the domain results
+from Fig. 2. Note that the average performance
+shown here is calculated with all tested tasks in
+each probe package, whereas Fig. 2 only includes
+the same tasks as Fig. 1 for illustration purposes.
+See complete results of LKT in Fig. 8 and
+BLIMPin Fig. 9 showing relatively small domain
+impact; LAMA in Fig. 10 shows arguably the
+largest impact; CAT in Figure 11 showing notice-
+able impact on some tasks; we see large variation
+of the impact from the domain OLM PICS in Fig. 12.
+Note again that STORIES usually gives the slowest
+learning speed and worst ﬁnal performance from
+teste probes.
+B.4 Complete Results for Varying Pretrain
+Corpus Size
+In this section, we complement the corpus size
+results from Fig. 2. Note that the average perfor-
+mance shown here is calculated with all included
+tasks in each probe package, whereas Fig. 2’s use
+the same tasks as Fig. 1 for illustration purpose. See
+complete results of LKT in Fig. 13; BLIMPin Fig.
+14;LAMA in Fig. 15; CAT in Fig. 16; OLM PICS
+in Fig. 17. To reiterate our conclusion from §4,
+the biggest corpus (with more diverse inclusion of
+domains) generally learns faster and results in an
+ultimately better RoBERTa in all tested knowledge;
+in contrast, we don’t observe this when we simply
+change from downsampled English WIKIPEDIA (4
+GB) to original English W IKIPEDIA (12 GB).
+
+==== Page 13 ====
+LKT-ner
+LKT-syn_arc_class
+LKT-chunking
+LKT-syn_arc_pred
+LKT-pos
+BLiMP-npi_licensing
+BLiMP-control_raising
+BLiMP-quantifiers
+BLiMP-island_effects
+BLiMP-irregular_forms
+BLiMP-binding
+BLiMP-argument_structure
+BLiMP-subject_verb_agreement
+BLiMP-anaphor_agreement
+BLiMP-ellipsis
+BLiMP-filler_gap
+BLiMP-determiner
+LAMA-TREx-1-1
+LAMA-TREx-N-1
+LAMA-TREx-N-M
+LAMA-Google_RE-date_of_birth
+LAMA-Google_RE-place_of_birth
+LAMA-Google_RE-place_of_death
+LAMA-SQuAD-test
+LAMA-ConceptNet-test
+CAT-wsc
+CAT-sm
+CAT-smr
+CAT-ca
+CAT-hella_swag
+CAT-arct_2
+CAT-swag
+CAT-arct_1
+oLMpics-multi_hop_composition
+oLMpics-encyclopedic_composition
+oLMpics-objects_comparison
+oLMpics-taxonomy_conjunction
+oLMpics-always_never
+oLMpics-antonym_negation
+oLMpics-age_comparison
+oLMpics-property_conjunction
+CoLA
+SST-2
+WNLI
+WSC
+MRPC
+MNLI
+ReCoRD
+SQuADLKT-ner
+LKT-syn_arc_class
+LKT-chunking
+LKT-syn_arc_pred
+LKT-pos
+BLiMP-npi_licensing
+BLiMP-control_raising
+BLiMP-quantifiers
+BLiMP-island_effects
+BLiMP-irregular_forms
+BLiMP-binding
+BLiMP-argument_structure
+BLiMP-subject_verb_agreement
+BLiMP-anaphor_agreement
+BLiMP-ellipsis
+BLiMP-filler_gap
+BLiMP-determiner
+LAMA-TREx-1-1
+LAMA-TREx-N-1
+LAMA-TREx-N-M
+LAMA-Google_RE-date_of_birth
+LAMA-Google_RE-place_of_birth
+LAMA-Google_RE-place_of_death
+LAMA-SQuAD-test
+LAMA-ConceptNet-test
+CAT-wsc
+CAT-sm
+CAT-smr
+CAT-ca
+CAT-hella_swag
+CAT-arct_2
+CAT-swag
+CAT-arct_1
+oLMpics-multi_hop_composition
+oLMpics-encyclopedic_composition
+oLMpics-objects_comparison
+oLMpics-taxonomy_conjunction
+oLMpics-always_never
+oLMpics-antonym_negation
+oLMpics-age_comparison
+oLMpics-property_conjunction
+CoLA
+SST-2
+WNLI
+WSC
+MRPC
+MNLI
+ReCoRD
+SQuAD1.00
+0.87 1.00
+0.91 0.91 1.00
+0.89 0.80 0.80 1.00
+0.82 0.91 0.87 0.80 1.00
+0.45 0.49 0.45 0.47 0.54 1.00
+0.78 0.78 0.78 0.67 0.69 0.45 1.00
+0.82 0.91 0.87 0.71 0.87 0.49 0.82 1.00
+0.85 0.89 0.89 0.74 0.80 0.38 0.80 0.85 1.00
+0.64 0.55 0.64 0.66 0.55 0.22 0.51 0.51 0.53 1.00
+0.78 0.82 0.82 0.71 0.87 0.54 0.65 0.82 0.76 0.51 1.00
+0.82 0.82 0.82 0.71 0.82 0.45 0.87 0.91 0.76 0.55 0.78 1.00
+0.71 0.71 0.67 0.74 0.71 0.56 0.71 0.67 0.65 0.44 0.63 0.63 1.00
+0.66 0.71 0.66 0.60 0.64 0.40 0.75 0.77 0.64 0.39 0.69 0.77 0.64 1.00
+0.35 0.44 0.40 0.33 0.42 0.35 0.49 0.53 0.38 0.43 0.35 0.53 0.27 0.57 1.00
+0.82 0.78 0.82 0.71 0.74 0.32 0.74 0.74 0.76 0.55 0.74 0.78 0.63 0.71 0.40 1.00
+0.86 0.82 0.82 0.88 0.86 0.55 0.75 0.73 0.75 0.61 0.73 0.75 0.84 0.57 0.30 0.75 1.00
+0.91 0.95 0.95 0.80 0.91 0.44 0.77 0.91 0.88 0.59 0.86 0.86 0.69 0.70 0.43 0.82 0.81 1.00
+0.88 0.88 0.88 0.77 0.80 0.42 0.84 0.88 0.86 0.57 0.75 0.84 0.71 0.77 0.46 0.84 0.79 0.89 1.00
+0.93 0.88 0.93 0.86 0.88 0.46 0.75 0.84 0.86 0.61 0.84 0.80 0.71 0.63 0.37 0.80 0.83 0.93 0.87 1.00
+0.68 0.66 0.68 0.61 0.59 0.52 0.63 0.66 0.61 0.44 0.63 0.63 0.70 0.67 0.35 0.54 0.63 0.68 0.64 0.61 1.00
+0.40 0.54 0.45 0.34 0.54 0.60 0.42 0.54 0.45 0.08 0.49 0.45 0.45 0.57 0.53 0.54 0.39 0.49 0.52 0.43 0.44 1.00
+0.45 0.56 0.52 0.47 0.56 0.66 0.49 0.56 0.52 0.23 0.61 0.52 0.59 0.56 0.42 0.33 0.49 0.52 0.45 0.50 0.70 0.57 1.00
+0.89 0.80 0.87 0.83 0.80 0.51 0.74 0.76 0.78 0.66 0.85 0.78 0.76 0.64 0.30 0.78 0.85 0.85 0.83 0.88 0.69 0.34 0.55 1.00
+0.96 0.91 0.96 0.85 0.87 0.41 0.82 0.87 0.89 0.64 0.82 0.87 0.71 0.71 0.40 0.87 0.86 0.95 0.93 0.93 0.68 0.45 0.47 0.89 1.00
+0.65 0.51 0.56 0.63 0.60 0.54 0.72 0.58 0.56 0.46 0.60 0.67 0.60 0.57 0.35 0.51 0.66 0.55 0.57 0.62 0.45 0.28 0.46 0.69 0.60 1.00
+0.84 0.82 0.82 0.73 0.82 0.49 0.75 0.86 0.75 0.48 0.86 0.88 0.64 0.74 0.43 0.71 0.70 0.86 0.77 0.83 0.65 0.39 0.60 0.82 0.84 0.69 1.00
+0.74 0.78 0.78 0.63 0.78 0.32 0.69 0.82 0.71 0.42 0.78 0.82 0.58 0.69 0.40 0.69 0.64 0.84 0.73 0.77 0.59 0.45 0.54 0.69 0.78 0.49 0.82 1.00
+0.91 0.82 0.86 0.80 0.77 0.35 0.75 0.77 0.80 0.54 0.73 0.80 0.66 0.63 0.32 0.77 0.77 0.88 0.86 0.90 0.63 0.39 0.46 0.82 0.91 0.57 0.81 0.84 1.00
+0.82 0.78 0.78 0.80 0.69 0.45 0.78 0.78 0.76 0.51 0.65 0.74 0.71 0.66 0.35 0.69 0.77 0.80 0.86 0.82 0.61 0.40 0.43 0.74 0.82 0.60 0.71 0.69 0.86 1.00
+0.80 0.71 0.80 0.74 0.67 0.38 0.71 0.71 0.69 0.53 0.67 0.76 0.69 0.64 0.29 0.67 0.75 0.75 0.73 0.73 0.70 0.25 0.52 0.80 0.80 0.56 0.77 0.67 0.73 0.67 1.00
+0.88 0.95 0.93 0.77 0.86 0.44 0.80 0.91 0.91 0.57 0.82 0.82 0.73 0.70 0.43 0.80 0.79 0.97 0.92 0.92 0.67 0.51 0.53 0.84 0.93 0.53 0.81 0.82 0.88 0.84 0.73 1.00
+0.66 0.57 0.66 0.66 0.52 0.26 0.57 0.57 0.54 0.65 0.54 0.61 0.59 0.51 0.20 0.52 0.60 0.63 0.60 0.60 0.57 0.11 0.41 0.70 0.66 0.50 0.65 0.57 0.63 0.59 0.77 0.63 1.00
+0.38 0.38 0.35 0.42 0.38 0.10 0.38 0.38 0.45 0.30 0.35 0.38 0.35 0.42 0.28 0.38 0.39 0.37 0.37 0.37 0.20 0.14 0.24 0.36 0.38 0.53 0.39 0.24 0.28 0.35 0.31 0.35 0.19 1.00
+0.09 0.13 0.09 0.07 0.09 -0.13 0.22 0.22 0.11 0.26 0.09 0.22 0.02 0.35 0.39 0.09 -0.01 0.12 0.19 0.06 0.17 0.12 0.12 0.01 0.13 0.15 0.15 0.18 0.10 0.13 0.02 0.12 0.07 0.28 1.00
+0.17 0.17 0.17 0.17 0.27 0.10 0.13 0.20 0.20 0.12 0.27 0.20 0.15 0.16 0.16 0.17 0.19 0.23 0.14 0.23 0.05 0.05 0.13 0.26 0.17 0.38 0.23 0.17 0.19 0.15 0.08 0.21 0.06 0.54 -0.09 1.00
+0.62 0.69 0.64 0.69 0.73 0.46 0.55 0.69 0.57 0.48 0.73 0.69 0.64 0.63 0.34 0.51 0.61 0.70 0.59 0.68 0.56 0.39 0.66 0.71 0.64 0.60 0.77 0.73 0.66 0.60 0.60 0.68 0.63 0.39 0.21 0.22 1.00
+-0.24 -0.29 -0.20 -0.31 -0.24 -0.07 -0.20 -0.29 -0.27 -0.14 -0.24 -0.29 -0.18 -0.32 -0.10 -0.20 -0.19 -0.23 -0.26 -0.21 -0.15 -0.10 -0.19 -0.12 -0.24 -0.17 -0.30 -0.24 -0.21 -0.24 -0.22 -0.23 -0.22 -0.47 -0.28 -0.09 -0.32 1.00
+0.10 0.10 0.14 0.08 0.10 0.16 0.19 0.14 0.03 0.42 0.05 0.19 0.12 0.20 0.49 0.19 0.11 0.15 0.18 0.09 0.27 0.25 0.01 0.09 0.14 0.07 0.07 0.10 0.13 0.19 0.03 0.13 0.21 -0.17 0.25 -0.15 0.09 0.11 1.00
+0.37 0.37 0.35 0.32 0.37 0.15 0.37 0.37 0.37 0.03 0.37 0.37 0.43 0.46 0.13 0.51 0.38 0.39 0.42 0.39 0.29 0.44 0.36 0.38 0.37 0.35 0.38 0.51 0.46 0.40 0.43 0.40 0.22 0.26 0.04 0.21 0.38 0.00 -0.15 1.00
+0.27 0.31 0.31 0.20 0.31 -0.07 0.18 0.35 0.33 0.26 0.40 0.31 0.11 0.39 0.19 0.33 0.17 0.34 0.28 0.28 0.24 0.12 0.14 0.24 0.31 0.19 0.34 0.31 0.21 0.18 0.24 0.30 0.20 0.49 0.21 0.37 0.26 -0.39 0.02 0.17 1.00
+0.67 0.58 0.63 0.56 0.54 0.38 0.80 0.63 0.60 0.40 0.54 0.71 0.65 0.73 0.51 0.71 0.64 0.62 0.69 0.60 0.59 0.49 0.49 0.67 0.67 0.69 0.64 0.54 0.60 0.58 0.65 0.60 0.50 0.38 0.18 0.17 0.46 -0.04 0.21 0.51 0.20 1.00
+0.64 0.75 0.66 0.66 0.73 0.64 0.75 0.78 0.64 0.36 0.62 0.73 0.78 0.76 0.47 0.55 0.72 0.70 0.70 0.63 0.62 0.57 0.65 0.59 0.69 0.64 0.69 0.62 0.60 0.73 0.62 0.70 0.49 0.43 0.23 0.18 0.68 -0.32 0.12 0.36 0.18 0.62 1.00
+0.68 0.63 0.66 0.68 0.63 0.28 0.63 0.63 0.63 0.55 0.63 0.68 0.52 0.52 0.29 0.59 0.60 0.70 0.62 0.70 0.49 0.23 0.40 0.70 0.68 0.67 0.68 0.70 0.75 0.66 0.56 0.68 0.60 0.39 0.20 0.30 0.73 -0.18 0.12 0.41 0.25 0.52 0.48 1.00
+0.62 0.60 0.64 0.51 0.55 0.15 0.46 0.55 0.57 0.41 0.60 0.51 0.39 0.43 0.11 0.60 0.50 0.66 0.59 0.66 0.37 0.27 0.20 0.55 0.64 0.32 0.52 0.60 0.61 0.53 0.57 0.66 0.51 0.23 -0.03 0.14 0.41 -0.23 0.03 0.45 0.50 0.35 0.33 0.44 1.00
+0.83 0.81 0.83 0.77 0.81 0.50 0.74 0.77 0.81 0.60 0.83 0.77 0.68 0.60 0.34 0.74 0.80 0.85 0.76 0.85 0.66 0.38 0.55 0.90 0.83 0.68 0.78 0.72 0.78 0.70 0.72 0.82 0.58 0.35 0.07 0.25 0.72 -0.09 0.08 0.41 0.25 0.68 0.58 0.76 0.51 1.00
+0.78 0.69 0.69 0.71 0.74 0.58 0.65 0.74 0.63 0.46 0.78 0.78 0.67 0.69 0.35 0.60 0.69 0.73 0.66 0.75 0.63 0.40 0.68 0.80 0.74 0.72 0.88 0.69 0.71 0.60 0.71 0.69 0.59 0.38 0.16 0.22 0.80 -0.29 -0.03 0.37 0.22 0.63 0.71 0.61 0.39 0.74 1.00
+0.89 0.85 0.89 0.78 0.80 0.34 0.80 0.80 0.87 0.57 0.76 0.80 0.69 0.64 0.33 0.80 0.80 0.91 0.88 0.88 0.68 0.45 0.47 0.85 0.93 0.58 0.77 0.80 0.93 0.85 0.74 0.91 0.63 0.31 0.16 0.15 0.66 -0.18 0.16 0.43 0.24 0.65 0.62 0.75 0.62 0.86 0.67 1.00
+0.96 0.91 0.96 0.85 0.87 0.41 0.82 0.87 0.89 0.64 0.82 0.87 0.71 0.71 0.40 0.87 0.86 0.95 0.93 0.93 0.68 0.45 0.47 0.89 1.00 0.60 0.84 0.78 0.91 0.82 0.80 0.93 0.66 0.38 0.13 0.17 0.64 -0.24 0.14 0.37 0.31 0.67 0.69 0.68 0.64 0.83 0.74 0.93 1.00
+0.25
+ 0.00 0.25 0.50 0.75 1.00Figure 4: Plot of Kendall Tau correlation among all experiments included. We calculate based on results from
+the 14 checkpoints used in Fig. 3
+Name Values
+Architecture RoBERTa-base
+Masking Static
+Update steps 1M
+Batch size 256
+Max length 512
+Warmup steps 10K
+Peak Learning rate 0.0005
+Learning rate scheduler Polynomial Decay
+Dropout rate 0.1
+Attention dropout rate 0.1
+Weight Decay rate 0.01
+Optimizer Adam (s= (0:9;0:98),= 1e 6)
+Table 2: Conﬁgurations for pretraining RoBERTa.
+
+==== Page 14 ====
+Domain No. of Checkpoints
+NEWS+WIKI+STORIES (36GB) 65
+NEWS (12GB) 56
+STORIES (12GB) 52
+WIKI (12GB) 71
+Small WIKI (4GB) 52
+Reproduced 62
+Table 3: Numbers of saved checkpoints during pretraining RoBERTa on different domains. “Reproduced” denotes
+our replication of model in (Liu et al., 2019b), detailed in §2.3. The rest corresponds to corpora experimented on
+basis of domains and corpus sizes, detailed in §4.
+CoLA SST-2 MRPC WNLI MNLI SQuAD WSC ReCoRD
+Batch size 32 32 32 32 32 12 32 32
+Epoch 3 3 3 3 3 2 10 2
+Learning rate 2e-5 2e-5 2e-5 2e-5 2e-5 3e-5 1e-5 1e-5
+Table 4: Important hyperparamters for ﬁnetuning experiments in §5. Experiments are seeded for reproducibility.
+
+==== Page 15 ====
+0.500.550.600.650.700.750.800.85Acc.Ave. Performance
+0.50.60.70.80.9Acc.Subj-Verb Agreement
+0.350.400.450.500.550.600.650.700.75Acc.Quantifier
+0.40.50.60.70.80.9Acc.Ellipsis
+0.500.550.600.650.700.750.80Acc.Control/Raising
+0.40.50.60.70.8Acc.Binding
+0.500.550.600.650.700.750.800.85Acc.Argument Structure
+0.40.50.60.70.80.91.0Acc.Anaphor Agreement
+0.40.50.60.70.8Acc.NPI Licensing
+0.50.60.70.80.9Acc.Determiner-Noun Agreement
+0.50.60.70.80.9Acc.Irregular Forms
+0.50.60.70.80.9Acc.Filler-Gap
+0K 200K 400K 600K 800K 1M0.450.500.550.600.650.700.750.80Acc.Island Effects
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEOur Checkpoints
+exp. moving average curveLearning Progress-90%
+Learning Progress-95%Learning Progress-97%Figure 5: Complete results of BLIMP (Linguistics) in Figure 1, plotted in the same format.
+
+==== Page 16 ====
+0.400.450.500.550.60Acc.Ave. Performance
+0.2750.3000.3250.3500.3750.4000.425Acc.Sense Making with Reasoning
+0.250.300.350.40Acc.HellaSWAG
+0.490.500.510.520.530.540.55Acc.Argument 2
+0.440.460.480.500.520.54Acc.Argument 1
+0.30.40.50.60.7Acc.SWAG
+0K 200K 400K 600K 800K 1M0.500.550.600.650.700.75Acc.Sense Making
+0K 200K 400K 600K 800K 1M0.480.500.520.540.560.580.600.62Acc.Winograd
+0K 200K 400K 600K 800K 1M0.40.50.60.70.80.9Acc.Conjunction Acceptability
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEOur Checkpoints
+exp. moving average curveLearning Progress-90%
+Learning Progress-95%Learning Progress-97%Figure 6: The complete results of CAT (Commonsense) in Figure 1, plotted in the same format.
+0.340.360.380.400.42Acc.Ave. Performance
+0.280.300.320.340.360.380.40Acc.Encyclopedic Composition
+0.2500.2750.3000.3250.3500.3750.400Acc.Property Conjunction
+0.500.550.600.65Acc.Age Comparison
+0.310.320.330.340.350.36Acc.Multi-Hop Composition
+0.100.150.200.250.300.350.40Acc.Always Never
+0K 200K 400K 600K 800K 1M0.450.500.550.600.65Acc.Objects Comparison
+0K 200K 400K 600K 800K 1M0.400.450.500.550.600.65Acc.Antonym Negation
+0K 200K 400K 600K 800K 1M0.250.300.350.400.450.500.55Acc.Taxonomy Conjunction
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEOur Checkpoints
+exp. moving average curveLearning Progress-90%
+Learning Progress-95%Learning Progress-97%
+Figure 7: Complete results of OLM PICS (Reasoning) in Figure 1, plotted in the same format.
+
+==== Page 17 ====
+0.60.70.80.9Ave. Performance
+0.70.80.9Acc.POS Tagging
+0.50.60.70.80.9F1Syntactic Chunking
+0K 250K 500K 750K 1M0.20.40.60.8F1NER
+0K 250K 500K 750K 1M0.700.750.800.850.90Acc.Syntactic Arc Pred.
+0K 250K 500K 750K 1M0.60.70.80.9Acc.Syntactic Arc Class.
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Vector + Linear Clf.
+GloVe + Linear Clf.Original RoBERTaBASE
+WIKI (12GB)STORIES (12GB)
+NEWS (12GB)Figure 8: Complete results of LKT (Linguistics) on different domains . Following Fig. 1, every line in plots
+are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated from all
+included tasks in this plot.
+
+==== Page 18 ====
+0.50.60.70.8Ave. Performance
+0.50.60.70.8Acc.Island Effects
+0.50.60.70.80.9Acc.Filler-Gap
+0.40.50.60.70.80.9Acc.Irregular Forms
+0.50.60.70.80.9Acc.Determiner-Noun Agreement
+0.40.50.60.70.8Acc.NPI Licensing
+0.40.50.60.70.80.91.0Acc.Anaphor Agreement
+0.50.60.70.8Acc.Argument Structure
+0.50.60.70.8Acc.Binding
+0.50.60.70.8Acc.Control/Raising
+0.40.50.60.70.80.9Acc.Ellipsis
+0.40.50.60.70.8Acc.Quantifier
+0K 200K 400K 600K 800K 1M0.50.60.70.80.9Acc.Subj-Verb Agreement
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEWIKI (12GB)
+STORIES (12GB)NEWS (12GB)Figure 9: Complete results of BLIMP (Linguistics) on different domains . Following Fig. 1, every line in plots
+are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated from all
+included tasks in this plot.
+
+==== Page 19 ====
+0.000.050.100.15Ave. Performance
+0.000.020.040.06Acc.Google RE
+0.000.050.10Acc.SQuAD
+0K 200K 400K 600K 800K 1M0.00.10.20.3Acc.T-REx
+0K 200K 400K 600K 800K 1M0.000.050.100.15Acc.ConceptNet
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEWIKI (12GB)
+STORIES (12GB)NEWS (12GB)Figure 10: Complete results of LAMA (Factual & Commonsense) on different domains . Following Fig. 1,
+every line in plots are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is
+calculated from all included tasks in this plot.
+0.400.450.500.550.60Ave. Performance
+0.40.60.8Acc.Conjunction Acceptability
+0.500.550.60Acc.Winograd
+0.500.550.600.650.700.75Acc.Sense Making
+0.30.40.50.60.7Acc.SWAG
+0.420.440.460.480.50Acc.Argument 1
+0K 250K 500K 750K 1M0.490.500.510.520.530.54Acc.Argument 2
+0K 250K 500K 750K 1M0.250.300.350.40Acc.HellaSWAG
+0K 250K 500K 750K 1M0.300.350.40Acc.Sense Making with Reasoning
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEWIKI (12GB)
+STORIES (12GB)NEWS (12GB)
+Figure 11: Complete results of CAT (Commonsense) on different domains . Following Fig. 1, every line in plots
+are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated from all
+included tasks in this plot.
+
+==== Page 20 ====
+0.360.380.400.42Ave. Performance
+0.30.40.5Acc.Taxonomy Conjunction
+0.500.550.60Acc.Antonym Negation
+0.450.500.550.600.65Acc.Objects Comparison
+0.10.20.30.4Acc.Always Never
+0.300.320.340.36Acc.Multi-Hop Composition
+0K 250K 500K 750K 1M0.4750.5000.5250.5500.575Acc.Age Comparison
+0K 250K 500K 750K 1M0.280.300.320.340.36Acc.Property Conjunction
+0K 250K 500K 750K 1M0.300.320.340.36Acc.Encyclopedic Composition
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASEWIKI (12GB)
+STORIES (12GB)NEWS (12GB)Figure 12: Complete results of OLM PICS (Reasoning) on different domains . Following Fig. 1, every line in
+plots are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated
+from all included tasks in this plot.
+0.60.70.80.9Ave. Performance
+0.70.80.9Acc.POS Tagging
+0.50.60.70.80.9F1Syntactic Chunking
+0K 250K 500K 750K 1M0.20.40.60.8F1NER
+0K 250K 500K 750K 1M0.700.750.800.850.90Acc.Syntactic Arc Pred.
+0K 250K 500K 750K 1M0.60.70.80.9Acc.Syntactic Arc Class.
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Vector + Linear Clf.
+GloVe + Linear Clf.Original RoBERTaBASE
+Small WIKI (4GB)WIKI (12GB)
+NEWS+WIKI+STORIES (36GB)
+Figure 13: Complete results of LKT (Linguistics) on different corpus sizes . Following Fig. 1, every line in plots
+are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated from all
+included tasks in this plot.
+
+==== Page 21 ====
+0.50.60.70.8Ave. Performance
+0.50.60.70.8Acc.Island Effects
+0.50.60.70.80.9Acc.Filler-Gap
+0.40.50.60.70.80.9Acc.Irregular Forms
+0.50.60.70.80.9Acc.Determiner-Noun Agreement
+0.40.50.60.70.8Acc.NPI Licensing
+0.40.50.60.70.80.91.0Acc.Anaphor Agreement
+0.50.60.70.8Acc.Argument Structure
+0.50.60.7Acc.Binding
+0.50.60.70.8Acc.Control/Raising
+0.40.50.60.70.80.9Acc.Ellipsis
+0.40.50.60.7Acc.Quantifier
+0K 200K 400K 600K 800K 1M0.50.60.70.80.9Acc.Subj-Verb Agreement
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASESmall WIKI (4GB)
+WIKI (12GB)NEWS+WIKI+STORIES (36GB)Figure 14: Complete results of BLIMP (Linguistics) on different corpus sizes . Following Fig. 1, every line
+in plots are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated
+from all included tasks in this plot.
+
+==== Page 22 ====
+0.000.050.100.15Ave. Performance
+0.000.020.040.060.08Acc.Google RE
+0.000.050.10Acc.SQuAD
+0K 200K 400K 600K 800K 1M0.00.10.20.3Acc.T-REx
+0K 200K 400K 600K 800K 1M0.000.050.100.15Acc.ConceptNet
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASESmall WIKI (4GB)
+WIKI (12GB)NEWS+WIKI+STORIES (36GB)Figure 15: Complete results of LAMA (Factual & Commonsense) on different domains . Following Fig. 1,
+every line in plots are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is
+calculated from all included tasks in this plot.
+0.400.450.500.550.60Ave. Performance
+0.40.60.8Acc.Conjunction Acceptability
+0.500.550.60Acc.Winograd
+0.500.550.600.650.700.75Acc.Sense Making
+0.30.40.50.60.7Acc.SWAG
+0.460.480.500.520.54Acc.Argument 1
+0K 250K 500K 750K 1M0.500.520.54Acc.Argument 2
+0K 250K 500K 750K 1M0.250.300.350.40Acc.HellaSWAG
+0K 250K 500K 750K 1M0.300.350.40Acc.Sense Making with Reasoning
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASESmall WIKI (4GB)
+WIKI (12GB)NEWS+WIKI+STORIES (36GB)
+Figure 16: Complete results of CAT (Commonsense) on different corpus sizes . Following Fig. 1, every line
+in plots are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated
+from all included tasks in this plot.
+
+==== Page 23 ====
+0.360.380.400.42Ave. Performance
+0.30.40.5Acc.Taxonomy Conjunction
+0.450.500.550.60Acc.Antonym Negation
+0.450.500.550.600.65Acc.Objects Comparison
+0.10.20.30.4Acc.Always Never
+0.320.330.340.35Acc.Multi-Hop Composition
+0K 250K 500K 750K 1M0.4750.5000.5250.5500.575Acc.Age Comparison
+0K 250K 500K 750K 1M0.280.300.320.340.36Acc.Property Conjunction
+0K 250K 500K 750K 1M0.300.320.340.36Acc.Encyclopedic Composition
+0.0 0.2 0.4 0.6 0.8 1.0
+Number of Pretraining Steps0.00.20.40.60.81.0Random Guess
+Original RoBERTaBASESmall WIKI (4GB)
+WIKI (12GB)NEWS+WIKI+STORIES (36GB)Figure 17: Complete results of OLM PICS (Reasoning) on different corpus sizes . Following Fig. 1, every line
+in plots are smoothed using exponential moving average with coefﬁcient 0.5. Average performance is calculated
+from all included tasks in this plot.
+

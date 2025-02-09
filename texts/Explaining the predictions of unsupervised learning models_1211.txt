@@ -1,0 +1,867 @@
+==== Page 1 ====
+Explaining the Predictions
+of Unsupervised Learning Models
+Gr´egoire Montavon1,2(B), Jacob Kauﬀmann1, Wojciech Samek2,3,
+and Klaus-Robert M¨ uller1,2,4,5
+1ML Group, Department of Electrical Engineering and Computer Science,
+Technische Universit¨ at Berlin, Berlin, Germany
+gregoire.montavon@tu-berlin.de
+2BIFOLD – Berlin Institute for Foundations of Learning and Data,
+Berlin, Germany
+3Department of Artiﬁcial Intelligence, Fraunhofer Heinrich Hertz Institute,
+Berlin, Germany
+4Department of Artiﬁcial Intelligence, Korea University, Seoul, Korea
+5Max Planck Institut f¨ ur Informatik, Saarbr¨ ucken, Germany
+Abstract. Unsupervised learning is a subﬁeld of machine learning that
+focuses on learning the structure of data without making use of labels.
+This implies a diﬀerent set of learning algorithms than those used for
+supervised learning, and consequently, also prevents a direct transposi-tion of Explainable AI (XAI) methods from the supervised to the less
+studied unsupervised setting. In this chapter, we review our recently pro-
+posed ‘neuralization-propagation’ (NEON) approach for bringing XAIto workhorses of unsupervised learning such as kernel density estima-
+tion and k-means clustering. NEON ﬁrst converts (without retraining)
+the unsupervised model into a functionally equivalent neural network sothat, in a second step, supervised XAI techniques such as layer-wise rel-
+evance propagation (LRP) can be used. The approach is showcased on
+two application examples: (1) analysis of spending behavior in wholesalecustomer data and (2) analysis of visual features in industrial and scene
+images.
+Keywords: Explainable AI
+·Unsupervised learning ·Neural networks
+1 Introduction
+Supervised learning has been in the spotlight of machine learning research and
+applications for the last decade, with deep neural networks achieving record-breaking classiﬁcation accuracy and enabling new machine learning applications
+[5,15,23]. The success of deep neural networks can be attributed to their ability
+to implement with their multiple layers, complex nonlinear functions in a com-pact manner [ 32]. Recently, a signiﬁcant amount of work has been dedicated to
+make deep neural network models more transparent [ 13,24,40,41], for example,
+c/circlecopyrtThe Author(s) 2022
+A. Holzinger et al. (Eds.): xxAI 2020, LNAI 13200, pp. 117–138, 2022.https://doi.org/10.1007/978-3-031-04083-2
+_7
+
+==== Page 2 ====
+118 G. Montavon et al.
+by proposing algorithms that identify which input features are responsible for a
+given classiﬁcation outcome. Methods such as layer-wise relevance propagation(LRP) [ 3], guided backprop [ 47], and Grad-CAM [ 42], have been shown capable
+of quickly and robustly computing these explanations.
+Unsupervised learning is substantially diﬀerent from supervised learning in
+that there is no ground-truth supervised signal to match. Consequently, non-
+neural network models such as kernel density estimation or k-means clustering,
+where the user controls the scale and the level of abstraction through a particularchoice of kernel or feature representation, have remained highly popular. Despite
+the predominance of unsupervised machine learning in a variety of applications
+(e.g. [9,22]), research on explaining unsupervised models has remained relatively
+sparse [ 18,19,25,28,30] compared to their supervised counterparts. Paradoxi-
+cally, it might in fact be unsupervised models that most strongly require inter-
+pretability. Unsupervised models are indeed notoriously hard to quantitatively
+validate [ 51], and the main purpose of applying these models is often to better
+understand the data in the ﬁrst place [ 9,17].
+In this chapter, we review the ‘neuralization-propagation’ (NEON) approach
+we have developed in the papers [ 18–20] to make the predictions of unsupervised
+models, e.g. cluster membership or anomaly score, explainable. NEON proceedsin two steps: (1) the decision function of the unsupervised model is reformulated
+(without retraining) as a functionally equivalent neural network (i.e. it is ‘neu-
+ralized’); (2) the extracted neural network structure is then leveraged by theLRP method to produce an explanation of the model prediction. We review the
+application of NEON to kernel density estimation for outlier detection and k-
+means clustering, as presented originally in [ 18–20]. We also extend the reviewed
+work with a new contribution: explanation of inlier detection, and we use the
+framework of random features [ 36] for that purpose.
+The NEON approach is showcased on several practical examples, in particu-
+lar, the analysis of wholesale customer data, image-based industrial inspection,
+and analysis of scene images. The ﬁrst scenario covers the application of the
+method directly to the raw input features, whereas the second scenario illus-
+trates how the framework can be applied to unsupervised models built on some
+intermediate layer of representation of a neural network.
+2 A Brief Review of Explainable AI
+The ﬁeld of Explainable AI (XAI) has produced a wealth of explanation tech-niques and types of explanation. They address the heterogeneity of ML models
+found in applications and the heterogeneity of questions the user may formulate
+about the model and its predictions. An explanation may take the form of a sim-ple decision tree (or other intrinsically interpretable model) that approximates
+the model’s input-output relation [ 10,29]. Alternatively, an explanation may be
+a prototype for the concept represented at the output of the model, speciﬁcally,an input example to which the model reacts most strongly [ 34,45]. Lastly, an
+explanation may highlight what input features are the most important for the
+model’s predictions [ 3,4,7].
+
+==== Page 3 ====
+Explaining Unsupervised Learning Models 119
+In the following, we focus on a well-studied problem of XAI, which is how
+to attribute the prediction of an individual data point, to the input features[3,4,29,37,45,48,50]. Let us denote by X=I
+1×···×I dthe input space formed
+by the concatenation of dinput features (e.g. words, pixels, or sensor measure-
+ments). We assume a learned model f:X→ R(supervised or unsupervised),
+mapping each data point in Xto a real-valued score measuring the evidence
+for a class or some other predicted quantity. The problem of attribution can be
+abstracted as producing for the given function fa mapping Ef:X→ Rdthat
+associates to each input example a vector of scores representing the (positive or
+negative) contribution of each feature. Often, one requires attribution techniques
+to implement a conservation (or completeness) property, where for all x∈X
+we have 1/latticetopEf(x)=f(x) i.e. for every data point the sum of explanation scores
+over the input features should match the function value.
+2.1 Approaches to Attribution
+A ﬁrst approach, occlusion-based , consists of testing the function to explain
+against various occlusions of the input features [ 53,54]. An important method of
+this family (and which was originally developed in the context of game theory)
+is the Shapley value [ 29,43,48]. The Shapley value identiﬁes a unique attribu-
+tion that satisﬁes some predeﬁned set of axioms of an explanation, including
+the conservation property stated above. While the approach has strong theoret-
+ical underpinnings, computing the explanation however requires an exponential
+number of function evaluations (an evaluation for every subset of input features).
+This makes the Shapley value in its basic form intractable for any problem withmore than a few input dimensions.
+Another approach, gradient-based , leverages the gradient of the function, so
+that a mapping of the function value onto the multiple input dimensions isreadily obtained [ 45,50]. The method of integrated gradients [ 50], in particular,
+attributes the prediction to input features by integrating the gradient along a
+path connecting some reference point (e.g. the origin) to the data point. Themethod requires somewhere between ten and a hundred function evaluations,
+and satisﬁes the aforementioned conservation property. The main advantage of
+gradient-based methods is that, by leveraging the gradient information in addi-tion to the function value, one no longer has to perturb each input feature
+individually to produce an explanation.
+A further approach, surrogate-based , consists of learning a simple local surro-
+gate model of the function which is as accurate as possible, and whose structure
+makes explanation fast and unambiguous [ 29,37]. For example, when approx-
+imating the function locally with a linear model, e.g. g(x)=/summationtext
+d
+i=1xiwi,t h e
+output of that linear model can be easily decomposed to the input features by
+taking the individual summands. While explanation itself is fast to compute,
+training the surrogate model incurs a signiﬁcant additional cost, and furthercare must be taken to ensure that the surrogate model implements the same
+decision strategy as the original model, in particular, that it uses the same input
+features.
+
+==== Page 4 ====
+120 G. Montavon et al.
+A last approach, propagation-based , assumes that the prediction has been
+produced by a neural network, and leverages the neural network structure bycasting the problem of explanation as performing a backward pass in the net-
+work [ 3,42,47]. The propagation approach is embodied by the Layer-wise Rel-
+evance Propagation (LRP) method [ 3,31]. The backward pass implemented by
+LRP consists of a sequence of conservative propagation steps where each step
+is implemented by a propagation rule. Let jandkbe indices for neurons at
+layer landl+ 1 respectively, and assume that the function output f(x)h a s
+been propagated from the top-layer to layer l+1. We denote the resulting attri-
+bution onto these neurons as the vector of ‘relevance scores’ ( R
+k)k. LRP then
+deﬁnes ‘messages’ Rj←kthat redistribute the relevance Rkto neurons in the layer
+below. These messages typically have the structure Rj←k=[zjk//summationtext
+jzjk]·Rk,
+where zjkmodels the contribution of neuron jto activating neuron k.T h e
+overall relevance of neuron jis then obtained by computing Rj=/summationtext
+kRj←k.
+It is easy to show that application of LRP from one layer to the layer below
+is conservative. Consequently, the explanation formed by iterating the LRPpropagation from the top layer to the input layer is therefore also conserva-
+tive, i.e./summationtext
+iRi=···=/summationtext
+jRj=/summationtext
+kRk=···=f(x). As a result, explana-
+tions satisfying the conservation property can be obtained within a single for-ward/backward pass, instead of multiple function evaluations, as it was the case
+for the approaches described above. The runtime advantage of LRP facilitates
+explanation of large models and datasets (e.g. GPU implementations of LRPcan achieve hundreds of image classiﬁcation explanations per second [ 1,40]).
+2.2 Neuralization-Propagation
+Propagation-based explanation techniques such as LRP have a computational
+advantage over approaches based on multiple function evaluations. However,
+they assume a preexisting neural network structure associated to the prediction
+function. Unsupervised learning models such as kernel density estimation or k-
+means, are a priori not neural networks. However, the fact that these models are
+not given as neural networks does not preclude the existence of a neural networkthat implements the same function. If such a network exists (neural network
+equivalents of some unsupervised models will be presented in Sects. 3and4), we
+can quickly and robustly compute explanations by applying the following twosteps:
+Step 1: The unsupervised model is ‘ neuralized ’, that is, rewritten (without
+retraining) as a functionally equivalent neural network.
+Step 2: The LRP method is applied to the resulting neural network, in order
+to produce an explanation of the prediction of the original model.
+These two steps are illustrated in Fig. 1. In practice, for the second step to
+work well, some restrictions must be imposed on the type of neurons composing
+the network. In particular neurons should have a clear directionality in their
+input space to ensure that meaningful propagation to the lower layer can be
+
+==== Page 5 ====
+Explaining Unsupervised Learning Models 121
+Fig. 1. Overview of the neuralization-propagation (NEON) approach to explain the
+predictions of an unsupervised model. As a ﬁrst step, the unsupervised model is trans-formed without retraining into a functionally equivalent neural network. As a second
+step, the LRP procedure is applied to identify, with help of the neural network struc-
+ture, by what amount each input feature has contributed to a given prediction.
+achieved. (We will see in Sects. 3and4, that this requirement does not always
+hold.) Hence, the ‘neuralized model’ must be designed under the double con-
+straint of (1) replicating the decision function of the unsupervised model exactly,and (2) being composed of neurons that enable a meaningful redistribution from
+the output to the input features.
+3 Kernel Density Estimation
+Kernel density estimation (KDE) [ 35] is one of the most common methods for
+unsupervised learning. The KDE model (or variations of it) has been used, inparticular, for anomaly detection [ 21,26,38]. It assumes an unlabeled dataset
+D=(u
+1,...,uN), and a kernel, typically the Gaussian kernel K(x,x/prime)=
+exp(−γ/bardblx−x/prime/bardbl2). The KDE model predicts a new data point xby computing:
+˜p(x)=1
+NN/summationdisplay
+k=1exp(−γ/bardblx−uk/bardbl2). (1)
+The function ˜ p(x) can be interpreted as an (unnormalized) probability density
+function. From this score, one can predict inlierness or outlierness of a data point.
+For example, one can say that xis more anomalous than x/primeif the inequality
+˜p(x)<˜p(x/prime) holds. In the following, we consider the task of neuralizing the KDE
+model so that its inlier/outlier predictions can be explained.
+3.1 Explaining Outlierness
+A ﬁrst question to ask is why a particular example xis predicted by KDE to be an
+outlier , more speciﬁcally, what features of this example contribute to outlierness.
+As a ﬁrst step, we consider what is a suitable measure of outlierness. The function
+˜p(x) produced by KDE decreases with outlierness, and also saturates to zero even
+
+==== Page 6 ====
+122 G. Montavon et al.
+though outlierness continues to grow. A better measure of outlierness is given
+by [19]:
+o(x)/defines−1
+γlog ˜p(x),
+Unlike the function ˜ p(x), the function o(x) increases as the probability decreases.
+It also does not saturate as xbecomes more distant from the dataset. We now
+focus on neuralizing the outlier score o(x). We ﬁnd that o(x) can be expressed
+as the two-layer neural network:
+hk=/bardblx−uk/bardbl2(layer 1)
+o(x)=L M E−γ
+k{hk} (layer 2)
+where LMEα
+k{hk}=1
+αlog/parenleftbig1
+N/summationtextN
+k=1exp(αhk)/parenrightbig
+is a generalized log-mean-exp
+pooling. The ﬁrst layer computes the square distance of the new example from
+each point in the dataset. The second layer can be interpreted as a soft min-
+pooling. The structure of the outlier computation is shown for a one-dimensional
+toy example in Fig. 2.
+Fig. 2. Neuralized view of kernel density estimation for outlier prediction. The outlier
+function can be represented as a soft min-pooling over square distances. These distances
+also provide directionality in input space.
+This structure is particularly amenable to explanation. In particular, redis-
+tribution of o(x) in the intermediate layer can be achieved by a soft argmin
+operation, e.g.
+Rk=exp(−βhk)/summationtext
+kexp(−βhk)·o(x),
+where βis a hyperparameter to be selected. Then, propagation on the input
+features can leverage the geometry of the distance function, by computing
+Ri=/summationdisplay
+k[x−uk]2
+i
+/epsilon1+/bardblx−uk/bardbl2Rk.
+The hyperparameter /epsilon1in the denominator is a stabilization term that ‘dissipates’
+some of the relevance when xandukcoincide.
+
+==== Page 7 ====
+Explaining Unsupervised Learning Models 123
+Referring back to Sect. 2.1we want to stress that computing the relevance
+of input features with LRP has the same computational complexity as a singleforward pass, and does not require to train an explainable surrogate model.
+3.2 Explaining Inlierness: Direct Approach
+In Sect. 3.1, we have focused on explaining what makes a given example an out-
+lier. An equally important question to ask is why a given example xis predicted
+by the KDE model to be an inlier. Inlierness is naturally modeled by the KDE
+output ˜ p(x). Hence we can deﬁne the measure of inlierness as i(x)/defines˜p(x). An
+inspection of Eq. ( 1) suggests the following two-layer neural network:
+hk=e x p ( −γ/bardblx−uk/bardbl2) (layer 1)
+i(x)=1
+N/summationtextN
+k=1hk (layer 2)
+The ﬁrst layer performs a mapping on Gaussian functions at diﬀerent locations,
+and the second layer performs an average pooling. We now consider the task of
+propagation. A natural way of redistributing in the top layer is in proportion to
+the activations. This gives us the scores
+Rk=hk/summationtext
+khki(x).
+A decomposition of Rkon the input features is however diﬃcult. Because the
+relevance Rkcan be rewritten as a product:
+Rk=1
+Nd/productdisplay
+i=1exp(−γ(xi−uik)2)
+and observing that the contribution Rkcan be made nearly zero by perturbing
+any of the input features signiﬁcantly, we can conclude that every input feature
+contributes equally to Rkand should therefore be attributed an equal share of
+it. Application of this strategy for every neuron kwould result in an uniform
+redistribution of the score i(x) to the input features. The explanation would
+therefore be qualitatively always the same, regardless of the data point xand
+the overall shape of the inlier function i(x). While uniform attribution may be
+a good baseline, we usually strive for a more informative explanation.
+3.3 Explaining Inlierness: Random Features Approach
+To overcome the limitations of the approach above, we explore a second app-
+roach to explaining inlierness, where the neuralization is based on a feature maprepresentation of the KDE model. For this, we ﬁrst recall that any kernel-based
+model also admits a formulation in terms of the feature map Φ(x) associated to
+
+==== Page 8 ====
+124 G. Montavon et al.
+the kernel, i.e. K(x,x/prime)=/angbracketleftΦ(x),Φ(x/prime)/angbracketright. In particular Eq. ( 1) can be equivalently
+rewritten as:
+˜p(x)=/angbracketleftBig
+Φ(x),1
+NN/summationdisplay
+k=1Φ(uk)/angbracketrightBig
+, (2)
+i.e. the product in feature space of the current example and the dataset mean.
+Here, we ﬁrst recall that there is no explicit ﬁnite-dimensional feature map asso-ciated to the Gaussian kernel. However, such feature map can be approximated
+using the framework of random features [ 36]. In particular, for a Gaussian kernel,
+features can be sampled as
+/hatwideΦ(x)=√
+2
+H/parenleftbig
+cos(ω/latticetop
+jx+bj)/parenrightbigH
+j=1, (3)
+withωj∼N(μ,σ2I)a n d bj∼U(0,2π), and where the mean and scale param-
+eters of the Gaussian are μ=0andσ=√2γ. The dot product /angbracketleft/hatwideΦ(x),/hatwideΦ(x/prime)/angbracketright
+converges to the Gaussian kernel as more and more features are being drawn.
+In practice, we settle for a ﬁxed number Hof features. Injecting the random
+features in Eq. ( 2) yields the two-layer architecture:
+hj=√
+2c o s/parenleftbig
+ω/latticetop
+jx+bj/parenrightbig
+·μj (layer 1)
+/hatwidei(x)=1
+H/summationtextH
+j=1hj (layer 2)
+where μj=1
+N/summationtextN
+k=1√
+2c o s(ω/latticetop
+juk+bj) and with ( ωj,bj)jdrawn from the distri-
+bution given above. This architecture produces at its output an approximation of
+the true inlierness score i(x) which becomes increasingly accurate as Hbecomes
+large. Here, the ﬁrst layer is a detection layer with a cosine nonlinearity, and
+the second layer performs average pooling. The structure of the neural network
+computation is illustrated on our one-dimensional example in Fig. 3.
+Fig. 3. Kernel density estimation approximated with random features (four of them
+are depicted in the ﬁgure). Unlike the Gaussian kernel, random features have a clear
+directionality in input space, thereby enabling a feature-wise explanation.
+This structure of the inlierness computation is more amenable to explanation.
+In the top layer, the pooling operation can be attributed based on the summands.
+In order words, we can apply
+
+==== Page 9 ====
+Explaining Unsupervised Learning Models 125
+Rj=hj/summationtext
+jhj/hatwidei(x)
+for the ﬁrst step of redistribution of /hatwidei(x). More importantly, in the ﬁrst layer,
+the random features have now a clear directionality (given by the vectors ( ωj)j),
+which we can use for attribution on the input features. In particular, we can apply
+the propagation rule:
+Ri=/summationdisplay
+j[ωj]2
+i
+/bardblωj/bardbl2·Rj.
+Compared to the direct approach of Sect. 3.2, the explanation produced here
+assigns diﬀerent scores for each input feature. Moreover, while the estimate ofinlierness /hatwidei(x) converges to the true KDE inlierness score i(x) as more random
+features are being drawn, we observe similar convergence for the explanation
+associated to the inlier prediction.
+4 K-Means Clustering
+Another important class of unsupervised models is clustering. K-means is a pop-
+ular algorithm for identifying clusters in the data. The k-means model represents
+each cluster cwith a centroid μc∈Rdcorresponding to the mean of the cluster
+members. It assigns data onto clusters by ﬁrst computing the distance between
+the data point and each cluster, e.g.
+dc(x)=/bardblx−μc/bardbl (4)
+and chooses the cluster with the lowest distance dc(x). Once the data has been
+clustered, it is often the case that we would like to gain understanding of why a
+given data point has been assigned to a particular cluster, either for validating
+a given clustering model or for getting novel insights on the cluster structure of
+the data.
+4.1 Explaining Cluster Assignments
+As a starting point for applying our explanation framework, we need to identify
+a function fc(x) that represents well the assignment onto a particular cluster c,
+e.g. a function that is larger than zero when the data point is assigned to a givencluster, and less than zero otherwise.
+The distance function d
+c(x) on which the clustering algorithm is based is how-
+ever not directly suitable for the purpose of explanation. Indeed, dc(x) tends to
+be inversely related to cluster membership, and it also does not take into account
+how far the data point is from other clusters. In [ 18], it is proposed to contrast
+the assigned cluster with the competing clusters. In particular, k-means clustermembership can be modeled as the diﬀerence of (squared) distances between the
+nearest competing cluster and the assigned cluster c:
+f
+c(x) = min
+k/negationslash=c/braceleftbig
+d2
+k(x)/bracerightbig
+−d2
+c(x) (5)
+
+==== Page 10 ====
+126 G. Montavon et al.
+The paper [ 18] shows that this contrastive strategy results in a two-layer neural
+network. In particular, Eq. ( 5) can be rewritten as the two-layer neural network:
+hk=w/latticetop
+kx+bk (layer 1)
+fc(x) = min
+k/negationslash=c/braceleftbig
+hk/bracerightbig
+(layer 2)
+where wk=2 (μc−μk)a n d bk=/bardblμk/bardbl2−/bardblμc/bardbl2. The ﬁrst layer is a linear layer
+that depends on the centroid locations and provides a clear directionality in inputspace. The second layer is a hard min-pooling. Once the neural network structure
+of cluster membership has been extracted, we can proceed with explanation
+techniques such as LRP by ﬁrst reverse-propagating cluster evidence in the top
+layer (contrasting the given cluster with all cluster competitors) and then further
+propagating in the layer below. In particular, we ﬁrst apply the soft argminredistribution
+R
+k=exp(−βhk)/summationtext
+k/negationslash=cexp(−βhk)·fc(x)
+where βis a hyperparameter to be selected. An advantage of the soft argmin
+over its hard counterpart is that this does not create an abrupt transitionbetween nearest competing clusters, which would in turn cause nearly identical
+data points with the same cluster decision to result in a substantially diﬀerent
+explanation. Finally, the last step of redistribution on the input features can beachieved by leveraging the orientation of linear functions in the ﬁrst layer, and
+applying the redistribution rule:
+R
+i=/summationdisplay
+k/negationslash=c[wk]2
+i
+/bardblwk/bardbl2Rk.
+Overall, these two redistribution steps provide us with a way of meaningfully
+attributing the cluster evidence onto the input features.
+5 Experiments
+We showcase the neuralization approaches presented above on two examples
+with two types of data: standard vector data representing wholesale customer
+spending behavior, and image data, more speciﬁcally, industrial inspection andscene images.
+5.1 Wholesale Customer Analysis
+Our ﬁrst use case is the analysis of a wholesale customer dataset [ 11]. The
+dataset consists of 440 instances representing diﬀerent customers, and for each
+instance, the annual consumption of the customer in monetary units (m.u.) for
+
+==== Page 11 ====
+Explaining Unsupervised Learning Models 127
+the categories ‘fresh’, ‘milk’, ‘grocery’, ‘frozen’, ‘detergents/paper’, ‘delicatessen’
+is given. Two additional geographic features are also part of this dataset, howeverwe do not include them in our experiment. We will place our focus on two
+particular data points with feature values shown in the table below:
+Table 1. Excerpt of the Wholesale Customer Dataset [ 11] where we show feature
+values, expressed in monetary units (m.u.), for two instances as well as the averagevalues over the whole dataset.
+Index Fresh Milk Grocery Frozen Detergents/
+PaperDelicatessen
+338 9351 m.u 1347m.u 2611m.u 8170m.u 442 m.u 868 m.u.
+339 3m . u 333 m.u 7201m.u 15601m.u 15 m.u 550 m.u.
+AVG 12000m.u. 5796m.u. 7951m.u. 3072m.u. 2881 m.u. 1525 m.u.
+Instance 338 has rather typical levels of spending across categories, in general
+slightly lower than average, but with high spending on frozen products. Instance
+339 has more extreme spending with almost no spending on fresh products anddetergents and very high spending on frozen products.
+To get further insights into the data, we construct a KDE model on the
+whole data and apply our analysis to the selected instances. Each input featureis ﬁrst mapped to the logarithm and standardized (mean 0 and variance 1). We
+choose the kernel parameter γ= 1. We use a leave-one-out approach where the
+data used to build the KDE model is the whole data except the instance to bepredicted and analyzed. The number of random features is set to H= 2500 such
+that the computational complexity of the inlier model stays within one order of
+magnitude to the original kernel model. Predictions on the whole dataset andanalysis for the selected instances is shown in Fig. 4.
+Instance 338 is predicted to be an inlier, which is consistent with our initial
+observation that the levels of spending across categories are on the lower end butremain usual. We can characterize this instance as a typical small customer. We
+also note that the feature ‘frozen’ contributes less to inlierness according to our
+analysis, probably due to the spending on that category being unusually high
+for a typical small customer.
+Instance 339 has an inlierness score almost zero, which is consistent with the
+observation in Table 1that spending behavior is extremal for multiple product
+categories. The decomposition of an inlierness score of almost zero on the dif-
+ferent categories is rather uninformative, hence, for this customer, we look atwhat explains outlierness (bottom of Fig. 4). We observe as expected that cat-
+egories where spending behavior diverges for this instance are indeed strongly
+represented in the explanation of outlierness, with ‘fresh’, ‘milk’, ‘frozen’ and‘detergents/paper’ contributing almost all evidence for outlierness. Surprisingly,
+we observe that extremely low spending on ‘fresh’ is underrepresented in the
+outlierness score, compared to other categories such as ‘milk’ or ‘frozen’ where
+
+==== Page 12 ====
+128 G. Montavon et al.
+Fig. 4. Explanation of diﬀerent predictions on the Wholesale Customers Dataset. The
+dataset is represented on the left as a t-SNE plot (perplexity 100) and each data point
+is color-coded according to its predicted inlierness and outlierness. On the right, expla-
+nation of inlierness and outlierness in terms of input features for two selected instances.Large bars in the plot correspond to strongly contributing features. For explanation
+of inlierness, error bars are computed over 100 trials of newly drawn random features.
+(Color ﬁgure online)
+spending is less extreme. This apparent contradiction will be resolved by a cluster
+analysis.
+Using the same logarithmic mapping and standardization step as for the KDE
+model, we now train a k-means model on the data and set the number of clusters
+to 6. Training is repeated 10 times with diﬀerent centroid initializations, and weretain the model that has reached the lowest k-means objective. The outcome
+of the clustering is shown in Fig. 5(left).
+We observe that Instance 338 falls somewhere at the border between the
+green and red clusters, whereas Instance 339 is well into the yellow cluster at the
+bottom. The decomposition of cluster evidence for these two instances is shown
+on the right. Because Instance 338 is at the border between two clusters, there
+is no evidence of membership to one or another cluster, and the decomposition
+of such (lack of) evidence results in an explanation that is zero for all categories.The decomposition of the cluster evidence for Instance 339, however, reveals
+that its cluster membership is mainly due to a singular spending pattern on the
+category ‘fresh’. To shed further light into this decision, we look at the cluster
+
+==== Page 13 ====
+Explaining Unsupervised Learning Models 129
+Fig. 5. On the left, a t-SNE representation of the Wholesale Customers Dataset, color-
+coded by cluster membership according to our k-means model, and where opacity
+represents evidence for the assigned cluster, i.e. how deep into its cluster the datapoint is. On the right, explanation of cluster assignments for two selected instances.
+(Color ﬁgure online)
+to which this instance has been assigned, in particular, the average spending of
+cluster members on each category. This information is shown in Table 2.
+Table 2. Average spending per category in the cluster to which Instance 339 has been
+assigned.
+Cluster Fresh Milk Grocery Frozen Detergents/
+PaperDelicatessen
+Yellow 616m.u. 3176m.u. 6965m.u. 1523m.u. 1414m.u. 135 m.u.
+We observe that this cluster is characterized by low spending on fresh prod-
+ucts and delicatessen. It may be a cluster of small retailers that, unlike super-
+markets, do not have substantial refrigeration capacity. Hence, the very low level
+of spending of Instance 339 on ‘fresh’ products puts it well into that cluster, andit also explains why the outlierness of Instance 339 is not attributed to ‘fresh’ but
+to other features (cf. Fig. 4). In particular, what distinguishes Instance 339 from
+its cluster is a very high level of spending on frozen products, and this is alsothe category that contributes the most to outlierness of this instance according
+to our analysis of the KDE model.
+Traditionally, cluster membership has been characterized by more basic
+approaches such as population statistics of individual features (e.g. [ 8]). Figure 6
+shows such analysis for Instances 338 and 339 of the Wholesale Customer
+Dataset. Although similar observations to the ones above can be made fromthis simple statistical analysis, e.g. the feature ‘frozen’ appears to contradict
+
+==== Page 14 ====
+130 G. Montavon et al.
+Fig. 6. Population statistics of individual features for the 6 clusters. The black cross
+in Cluster 2 is Instance 338, the black cross in Cluster 4 is Instance 339. Features are
+mapped to the logarithm and standardized.
+the membership of Instance 339 to Cluster 4, it is not clear from this simple
+analysis what makes Instance 339 a member of Cluster 4 in the ﬁrst place. Forexample, while the feature ‘grocery’ of Instance 339 is within the inter quartile
+range (IQR) of Cluster 4 and can therefore be considered typical of that cluster,
+other clusters have similar IQRs for that feature. Moreover, Instance 339 fallssigniﬁcantly outside Cluster 4’s IQR for other features. In comparison, our LRP
+approach more directly and reliably explains the cluster membership and outlier-
+ness of the considered instances. Furthermore, population statistics of individual
+features may be misleading on non-linear models (such as kernel clustering) and
+does not scale to high-dimensional data, such as image data.
+Overall, our analysis allows to identify on a single-instance basis features that
+contribute to various properties relating this instance to the rest of the data, such
+as inlierness/outlierness and cluster membership. As our analysis has revealed,the insights that are obtained go well beyond a traditional data analysis based
+on looking at population statistics for individual features, or a simple inspection
+of unsupervised learning outcomes.
+5.2 Image Analysis
+Our next experiment looks at explanation of inlierness, outlierness, and cluster
+membership for image data. Unlike the example above, relevant image statisticsare better expressed at a more abstract level than directly on the pixels. A
+popular approach consists of using a pretrained neural model (e.g. the VGG-16
+network [ 46]), and use the activations produced at a certain layer as input.
+We ﬁrst consider the problem of anomaly detection for industrial inspection
+and use for this an image of the MVTecAD dataset [ 6], speciﬁcally, an image
+of wood where an anomalous horizontal scratch can be observed. The image is
+s h o w ni nF i g . 7(left). We feed that image to a pretrained VGG-16 network and
+collect the activations at the output of Block 5 (i.e. at the output of the featureextractor). We consider each spatial location at the output of that block as a
+data point and build a KDE model (with γ=0.05) on the resulting dataset.
+
+==== Page 15 ====
+Explaining Unsupervised Learning Models 131
+We then apply our analysis to attribute the predicted inlierness/outlierness to
+the activations of Block 5. In practice, we need to consider the fact that anyattribution on a deactivated neuron cannot be redistributed further to input
+pixels as there is no pattern in pixel space to attach to. Hence, the propagation
+procedure must be carefully implemented to address this constraint, possibly byonly redistributing a limited share of the model output. The details are given in
+Appendix A. As a last step, we take relevance scores computed at the output of
+Block 5 and pursue the relevance propagation procedure in the VGG-16 networkusing standard LRP rules until the pixels are reached. Explanations obtained for
+inlierness and outlierness of the wood image of interest are shown in Fig. 7.
+Fig. 7. Exemplary image from the MVTec AD dataset along with the explanation
+of an inlier/outlier prediction of a KDE model built at the output of the VGG-16
+feature extractor. Red color indicates positively contributing pixels, blue color indicatesnegatively contributing pixels, and gray indicates irrelevant pixels. (Color ﬁgure online)
+It can be observed that pixels associated to regular wood stripes are the main
+contributors to inlierness. Instead, the horizontal scratch on the wood panel is
+a contributing factor for outlierness. Hence, with our explanation method, wecan precisely identify, on a pixel-wise basis what are the factors that contribute
+for/against predicted inlierness and outlierness.
+We now consider some image of the SUN 2010 database [ 52], an indoor scene
+containing diﬀerent pieces of furniture and home appliances. We consider the
+same VGG-16 network as in the experiment above and build a dataset by col-lecting activations at each spatial location of the output of Block 5. We then
+apply the k-means algorithm on this dataset with the number of clusters hard-
+coded to 5. Once the clustering model has been built, we rescale each clustercentroid to ﬁxed norm. We then apply our analysis attribute the cluster mem-
+bership scores to the activations at the output of Block 5. As for the industrial
+inspection example above, we must adjust the LRP rules so that deactivated neu-rons are not attributed relevance. The details of the LRP procedure are given in
+Appendix A. Obtained relevance scores are then propagated further to the input
+pixels using standard LRP rules. Resulting explanations are shown in Fig. 8.
+
+==== Page 16 ====
+132 G. Montavon et al.
+Fig. 8. Exemplary image and explanation of cluster assignments of a k-means model
+built at the output of the VGG-16 feature extractor. Red, blue and gray indicate pos-
+itively contributing, negatively contributing, and irrelevant pixels respectively. (Color
+ﬁgure online)
+We observe that diﬀerent clusters identify distinct concepts. For example, one
+cluster focuses on the microwave oven and the surro unding cupboards, a second
+cluster represents the bottom part of the bar chairs, a third cluster captures the
+kitchen’s background with a particular focus on a painting on the wall, the fourth
+cluster captures various objects on the table and in the background, and a lastcluster focuses on the top-part of the chairs. While the clustering representation
+extracts distinct human-recognizable image features, it also shows some limits
+of the given representation, for example, the concept ‘bar chair’ is split in twodistinct concepts (the bottom and top part of the chair respectively), whereas
+the clutter attached to Cluster 4 is not fully disentangled from the surrounding
+chairs and cupboards.
+Overall, our experiments on image data demonstrate that neuralization of
+unsupervised learning models can be naturally integrated with existing proce-
+dures for explaining deep neural networks. This enables an application of our
+method to a broad range of practical problems where unsupervised modeling is
+better tackled at a certain level of abstraction and not directly in input space.
+
+==== Page 17 ====
+Explaining Unsupervised Learning Models 133
+6 Conclusion and Outlook
+In this paper, we have considered the problem of explaining the predictions of
+unsupervised models, in particular, we have reviewed and extended the neu-
+ralization/propagation approach of [ 18,19] which consists of rewriting, without
+retraining, the unsupervised model as a functionally equivalent neural network,
+and applying LRP in a second step. On two models of interest, kernel density
+estimation and k-means, we have highlighted a variety of techniques that can beused for neuralization. This includes the identiﬁcation of log-mean-exp pooling
+structures, the use of random features, and the transformation of a diﬀerence of
+(squared) distances into a linear layer. The capacity of our approach to delivermeaningful explanations was highlighted on two examples covering simple tab-
+ular data and images including their mapping on some layer of a convolutional
+network.
+While our approach delivers good quality explanations at low computational
+cost, there are however still a number of open questions that remain to beaddressed to further solidify the neuralization-propagation approach, and the
+explanation of unsupervised models in general.
+A ﬁrst question concerns the applicability of our method to a broader range
+of practical scenarios. We have highlighted how neuralized models can be built
+not only in input space but also on some layer of a deep neural network, thereby
+bringing explanations to much more complex unsupervised models. However,there is a higher diversity of unsupervised learning algorithms that are encoun-
+tered in practice, including energy-based models [ 16], spectral methods [ 33,44],
+linkage clustering [ 12], non-Euclidean methods [ 27], or prototype-based anomaly
+detection [ 14]. An important future work will therefore be to extend the pro-
+posed framework to handle this heterogeneity of unsupervised machine learning
+approaches.
+Another question is that of validation. There are many possible LRP prop-
+agation rules that one can deﬁne in practice, as well as potentially multiple
+neural network reformulations of the same unsupervised model. This creates a
+need for reliable techniques to evaluate the quality of diﬀerent explanation meth-
+ods. While techniques to evaluate explanation quality have been proposed andsuccessfully applied in the context of supervised learning (e.g. based on feature
+removal [ 39]), further care needs to be taken in the unsupervised scenario, in
+particular, to avoid that the outcome of the evaluation is spuriously aﬀectedby such feature removals. As an example, removing some feature responsible
+for some predicted anomaly may unintentionally cause some new artefact to be
+created in the data. That would in turn increase the anomaly score instead oflowering it as it was originally intended [ 19].
+In addition to further extending and validating the neuralization-propagation
+approach, one needs to ask how to develop these explanation techniques beyondtheir usage as a simple visualization or data exploration tool. For example, it
+remains to demonstrate whether these explanation techniques, in combination
+with user feedback, can be used to systematically verify and improve the unsu-
+
+==== Page 18 ====
+134 G. Montavon et al.
+pervised model at hand (e.g. as recently demonstrated for supervised models
+[2,49]). Some initial steps have already been taken in this direction [ 20,38].
+Acknowledgements. This work was supported by the German Ministry for Educa-
+tion and Research under Grant 01IS14013A-E, Grant 01GQ1115, Grant 01GQ0850,
+as BIFOLD (ref. 01IS18025A and ref. 01IS18037A) and Patho234 (ref. 031LO207),
+the European Union’s Horizon 2020 programme (grant no. 965221), and the GermanResearch Foundation (DFG) as Math+: Berlin Mathematics Research Center (EXC
+2046/1, project-ID: 390685689). This work was supported in part by the Institute
+of Information & Communications Technology Planning & Evaluation (IITP) grantsfunded by the Korea Government under Grant 2017-0-00451 (Development of BCI
+Based Brain and Cognitive Computing Technology for Recognizing User’s Intentions
+using Deep Learning) and Grant 2019-0-00079 (Artiﬁcial Intelligence Graduate SchoolProgram, Korea University).
+A Attribution on CNN Activations
+Propagation rules mentioned in Sects. 3and4are not suited for identifying
+relevant neurons at some layer of a neural network when the goal is to propagate
+the relevance further down the layers of the neural network, e.g. to obtain a pixel-
+wise explanation. What we need to ensure in such scenario is that all relevant
+information is expressed in terms of activated neurons as they are the only ones
+for which the associated relevance can be grounded to a speciﬁc pattern in the
+pixel space. One possible approach is to decompose the relevance propagation
+into a propagating term and a non-propagating (or ‘dissipating’) one, whichleads to a partial (although still useful) explanation. In the following, we describe
+the approaches we have taken to achieve our extension of explanations to deep
+models.
+A.1 Attributing Outlierness
+The activations in the ﬁrst layer of the neuralized outlier model is
+h
+k=/bardbla−uk/bardbl2
+and the relevance that arrives on the corresponding neuron is given by Rk=
+pkLME−γ
+k/prime{hk/prime}withpk=exp(−βh k)/summationtext
+k/primeexp(−βhk/prime). Relevance associated to neuron kcan
+be expressed as:
+Rk=pk·a/latticetop(a−uk)
+/bracehtipupleft /bracehtipdownright/bracehtipdownleft /bracehtipupright
+Rdot
+k+pk·(u/latticetop
+k(uk−a)+L M E−γ
+k/prime{hk/prime−hk})
+/bracehtipupleft /bracehtipdownright/bracehtipdownleft /bracehtipupright
+Rres
+k
+where we have used the commutativity of the LME function and the distribu-
+tivity of the squared norm to decompose the relevance in two terms, one that
+
+==== Page 19 ====
+Explaining Unsupervised Learning Models 135
+can be meaningfully redistributed on the activations, and one that cannot be
+redistributed. Redistribution in the ﬁrst layer can then proceed as:
+Ri=/summationdisplay
+kai·(ai−uik)/summationtext
+iai·(ai−uik)Rdot
+k
+It is easy to demonstrate from this equation that any neuron with ai= 0 (i.e.
+deactivated) will not be attributed any relevance.
+A.2 Attributing Inlierness
+Neurons in the ﬁrst layer of the inlierness model based on random features, have
+activations given by:
+hj=√
+2c o s(ω/latticetop
+ja+bj)·μj
+and relevance scores Rj=hj/H. Using a simple trigonometric identity, we can
+rewrite the relevance scores in terms of unphased sine and cosine functions as:
+Rj=/parenleftbig
+−sin(ω/latticetop
+ja)sin(bj)·cj/parenrightbig
+/bracehtipupleft /bracehtipdownright/bracehtipdownleft /bracehtipupright
+Rsin
+j+c o s ( ω/latticetop
+ja)cos(bj)·cj
+/bracehtipupleft /bracehtipdownright/bracehtipdownleft /bracehtipupright
+Rcos
+j
+where cj=1
+H√
+2μj. We propose the redistribution rule:
+Ri=/summationdisplay
+jaiωij/summationtext
+iaiωijRsin
+j+/summationdisplay
+jaiωij
+/epsilon1j+/summationtext
+iaiωijRcos
+j
+where /epsilon1jis a term set to be of same sign as the denominator, and that addresses
+the case where a positive Rcos
+jcomes with a near-zero response ω/latticetop
+ja, by ‘dissi-
+pating’ some of the relevance Rcos
+j.
+A.3 Attributing Cluster Membership
+The activation in the ﬁrst layer of the neuralized cluster membership model is:
+hk=w/latticetop
+ka+bk
+and the relevance score is given by Rk=pkmink/prime/negationslash=c{hk/prime}with pk=
+exp(−βh k)/summationtext
+k/primeexp(−βhk/prime). Similar to the outlier case, we decompose the relevance score
+as:
+Rk=pk·a/latticetopwk/bracehtipupleft/bracehtipdownright/bracehtipdownleft/bracehtipupright
+Rdot
+k+pk·(bk+ min
+k/prime/negationslash=c{hk/prime−hk}
+/bracehtipupleft /bracehtipdownright/bracehtipdownleft /bracehtipupright
+Rres
+k)
+and only consider the ﬁrst term for propagation. Speciﬁcally, we apply the prop-
+agation rule:
+Ri=/summationdisplay
+kaiwik/summationtext
+iaiwikRdot
+k
+where it can again be shown that only activated neurons are attributed relevance.
+
+==== Page 20 ====
+136 G. Montavon et al.
+References
+1. Alber, M., et al.: iNNvestigate neural networks! J. Mach. Learn. Res. 20, 93:1–93:8
+(2019)
+2. Anders, C.J., Weber, L., Neumann, D., Samek, W., M¨ uller, K.-R., Lapuschkin,
+S.: Finding and removing Clever Hans: using explanation methods to debug and
+improve deep models. Inf. Fusion 77, 261–295 (2022)
+3. Bach, S., Binder, A., Montavon, G., Klauschen, F., M¨ uller, K.-R., Samek, W.: On
+pixel-wise explanations for non-linear classiﬁer decisions by layer-wise relevance
+propagation. PLoS ONE 10(7), e0130140 (2015)
+4. Baehrens, D., Schroeter, T., Harmeling, S., Kawanabe, M., Hansen, K., M¨ uller,
+K.-R.: How to explain individual classiﬁcation decisions. J. Mach. Learn. Res. 11,
+1803–1831 (2010)
+5. Bahdanau, D., Cho, K., Bengio, Y.: Neural machine translation by jointly learning
+to align and translate. In: ICLR (2015)
+6. Bergmann, P., Batzner, K., Fauser, M., Sattlegger, D., Steger, C.: The Mvtec
+anomaly detection dataset: a comprehensive real-world dataset for unsupervised
+anomaly detection. Int. J. Comput. Vis. 129(4), 1038–1059 (2021). https://doi.
+org/10.1007/s11263-020-01400-4
+7. Blum, A., Langley, P.: Selection of relevant features and examples in machine
+learning. Artif. Intell. 97(1–2), 245–271 (1997)
+8. Chapfuwa, P., Li, C., Mehta, N., Carin, L., Henao, R.: Survival cluster analysis.
+In: Ghassemi, M. (ed.) ACM Conference on Health, Inference, and Learning, pp.
+60–68. ACM (2020)
+9. Ciriello, G., Miller, M.L., Aksoy, B.A., Senbabaoglu, Y., Schultz, N., Sander, C.:
+Emerging landscape of oncogenic signatures across human cancers. Nat. Genet.
+45(10), 1127–1133 (2013)
+10. Craven, M.V., Shavlik, J.W.: Extracting tree-structured representations of trained
+networks. In: NIPS, pp. 24–30. MIT Press (1995)
+11. de Abreu, N.G.C.F.M.: An´ alise do perﬁl do cliente recheio e desenvolvimento de
+um sistema promocional. Master’s thesis, Instituto Universit´ ario de Lisboa (2011)
+12. Gower, J.C., Ross, G.J.S.: Minimum spanning trees and single linkage cluster anal-
+ysis. Appl. Stat. 18(1), 54 (1969)
+13. Guidotti, R., Monreale, A., Ruggieri, S., Turini, F., Giannotti, F., Pedreschi, D.:
+A survey of methods for explaining black box models. ACM Comput. Surv. 51(5),
+93:1–93:42 (2019)
+14. Harmeling, S., Dornhege, G., Tax, D., Meinecke, F., M¨ uller, K.-R.: From outliers
+to prototypes: ordering data. Neurocomputing 69(13–15), 1608–1618 (2006)
+15. He, K., Zhang, X., Ren, S., Sun, J.: Deep residual learning for image recognition.
+In: CVPR, pp. 770–778. IEEE Computer Society (2016)
+16. Hinton, G.E.: Training products of experts by minimizing contrastive divergence.
+Neural Comput. 14(8), 1771–1800 (2002)
+17. Kau, A.K., Tang, Y.E., Ghose, S.: Typology of online shoppers. J. Consum. Mark.
+20(2), 139–156 (2003)
+18. Kauﬀmann, J.R., Esders, M., Montavon, G., Samek, W., M¨ uller, K.-R.: From clus-
+tering to cluster explanations via neural networks. CoRR, abs/1906.07633 (2019)
+19. Kauﬀmann, J.R., M¨ uller, K.-R., Montavon, G.: Towards explaining anomalies: a
+deep Taylor decomposition of one-class models. Pattern Recognit. 101, 107198
+(2020)
+20. Kauﬀmann, J.R., Ruﬀ, L., Montavon, G., M¨ uller, K.-R.: The Clever Hans eﬀect in
+anomaly detection. CoRR, abs/2006.10609 (2020)
+
+==== Page 21 ====
+Explaining Unsupervised Learning Models 137
+21. Kim, J., Scott, C.D.: Robust kernel density estimation. J. Mach. Learn. Res. 13,
+2529–2565 (2012)
+22. Koren, Y., Bell, R.M., Volinsky, C.: Matrix factorization techniques for recom-
+mender systems. Computer 42(8), 30–37 (2009)
+23. Krizhevsky, A., Sutskever, I., Hinton, G.E.: ImageNet classiﬁcation with deep con-
+volutional neural networks. In: NIPS, pp. 1106–1114 (2012)
+24. Lapuschkin, S., W¨ aldchen, S., Binder, A., Montavon, G., Samek, W., M¨ uller, K.-
+R.: Unmasking Clever Hans predictors and assessing what machines really learn.
+Nat. Commun. 10(1096), 1–8 (2019)
+25. Laskov, P., Rieck, K., Sch¨ afer, C., M¨ uller, K.-R.: Visualization of anomaly detection
+using prediction sensitivity. In: Sicherheit, volume P-62 of LNI, pp. 197–208. GI(2005)
+26. Latecki, L.J., Lazarevic, A., Pokrajac, D.: Outlier detection with kernel density
+functions. In: Perner, P. (ed.) MLDM 2007. LNCS (LNAI), vol. 4571, pp. 61–75.Springer, Heidelberg (2007). https://doi.org/10.1007/978-3-540-73499-4
+6
+27. Liu, F.T., Ting, K.M., Zhou, Z.: Isolation forest. In: Proceedings of the 8th IEEE
+International Conference on Data Mining, pp. 413–422. IEEE Computer Society(2008)
+28. Liu, N., Shin, D., Hu, X.: Contextual outlier interpretation. In: IJCAI, pp. 2461–
+2467. ijcai.org (2018)
+29. Lundberg, S.M., Lee, S.: A uniﬁed approach to interpreting model predictions. In:
+Advances in Neural Information Processing Systems, vol. 30, pp. 4765–4774 (2017)
+30. Micenkov´ a, B., Ng, R.T., Dang, X., Assent, I.: Explaining outliers by subspace
+separability. In: ICDM, pp. 518–527. IEEE Computer Society (2013)
+31. Montavon, G., Binder, A., Lapuschkin, S., Samek, W., M¨ uller, K.-R.: Layer-wise
+relevance propagation: an overview. In: Samek, W., Montavon, G., Vedaldi, A.,Hansen, L.K., M¨ uller, K.-R. (eds.) Explainable AI: Interpreting, Explaining and
+Visualizing Deep Learning. LNCS (LNAI), vol. 11700, pp. 193–209. Springer, Cham
+(2019). https://doi.org/10.1007/978-3-030-28954-6
+10
+32. Mont´ ufar, G.F., Pascanu, R., Cho, K., Bengio, Y.: On the number of linear regions
+of deep neural networks. In: NIPS, pp. 2924–2932 (2014)
+33. Ng, A.Y., Jordan, M.I., Weiss, Y.: On spectral clustering: analysis and an algo-
+rithm. In: NIPS, pp. 849–856. MIT Press (2001)
+34. Nguyen, A., Dosovitskiy, A., Yosinski, J., Brox, T., Clune, J.: Synthesizing the
+preferred inputs for neurons in neural networks via deep generator networks. In:NIPS, pp. 3387–3395 (2016)
+35. Parzen, E.: On estimation of a probability density function and mode. Ann. Math.
+Stat. 33(3), 1065–1076 (1962)
+36. Rahimi, A., Recht, B.: Random features for large-scale kernel machines. In: NIPS,
+pp. 1177–1184 (2007)
+37. Ribeiro, M.T., Singh, S., Guestrin, C.: “Why should I trust you?”: Explaining the
+predictions of any classiﬁer. In: KDD, pp. 1135–1144. ACM (2016)
+38. Ruﬀ, L., et al.: A unifying review of deep and shallow anomaly detection. Proc.
+IEEE 109(5), 756–795 (2021)
+39. Samek, W., Binder, A., Montavon, G., Lapuschkin, S., M¨ uller, K.-R.: Evaluating
+the visualization of what a deep neural network has learned. IEEE Trans. NeuralN e t w .L e a r n .S y s t . 28(11), 2660–2673 (2017)
+40. Samek, W., Montavon, G., Lapuschkin, S., Anders, C.J., M¨ uller, K.-R.: Explaining
+deep neural networks and beyond: a review of methods and applications. Proc.IEEE 109(3), 247–278 (2021)
+
+==== Page 22 ====
+138 G. Montavon et al.
+41. Samek, W., Montavon, G., Vedaldi, A., Hansen, L.K., M¨ uller, K.-R. (eds.): Explain-
+able AI: Interpreting, Explaining and Visualizing Deep Learning. LNCS (LNAI),
+vol. 11700. Springer, Cham (2019). https://doi.org/10.1007/978-3-030-28954-6
+42. Selvaraju, R.R., Cogswell, M., Das, A., Vedantam, R., Parikh, D., Batra, D.: Grad-
+cam: visual explanations from deep networks via gradient-based localization. Int.J. Comput. Vis. 128(2), 336–359 (2020)
+43. Shapley, L.S.: 17. A value for n-person games. In: Contributions to the Theory of
+Games (AM-28), vol. II. Princeton University Press (1953)
+44. Shi, J., Malik, J.: Normalized cuts and image segmentation. IEEE Trans. Pattern
+Anal. Mach. Intell. 22(8), 888–905 (2000)
+45. Simonyan, K., Vedaldi, A., Zisserman, A.: Deep inside convolutional networks:
+visualising image classiﬁcation models and saliency maps. In: ICLR (WorkshopPoster) (2014)
+46. Simonyan, K., Zisserman, A.: Very deep convolutional networks for large-scale
+image recognition. In: ICLR (2015)
+47. Springenberg, J.T., Dosovitskiy, A., Brox, T., Riedmiller, M.: Striving for simplic-
+ity: the all convolutional net. In: ICLR (Workshop) (2015)
+48. Strumbelj, E., Kononenko, I.: An eﬃcient explanation of individual classiﬁcations
+using game theory. J. Mach. Learn. Res. 11, 1–18 (2010)
+49. Sun, J., Lapuschkin, S., Samek, W., Binder, A.: Explain and improve: LRP-
+inference ﬁne tuning for image captioning models. Inf. Fusion 77, 233–246 (2022)
+50. Sundararajan, M., Taly, A., Yan, Q.: Axiomatic attribution for deep networks. In:
+ICML, Proceedings of Machine Learning Research, vol. 70, pp. 3319–3328. PMLR(2017)
+51. von Luxburg, U., Williamson, R.C., Guyon, I.: Clustering: science or art? In:
+ICML Unsupervised and Transfer Learning, JMLR Proceedings, vol. 27, pp. 65–80.
+JMLR.org (2012)
+52. Xiao, J., Ehinger, K.A., Hays, J., Torralba, A., Oliva, A.: SUN database: exploring
+a large collection of scene categories. Int. J. Comput. Vis. 119(1), 3–22 (2016)
+53. Zeiler, M.D., Fergus, R.: Visualizing and understanding convolutional networks.
+In: Fleet, D., Pajdla, T., Schiele, B., Tuytelaars, T. (eds.) ECCV 2014. LNCS,
+vol. 8689, pp. 818–833. Springer, Cham (2014). https://doi.org/10.1007/978-3-319-
+10590-1
+53
+54. Zintgraf, L.M., Cohen, T.S., Adel, T., Welling, M.: Visualizing deep neural network
+decisions: prediction diﬀerence analysis. In: ICLR (Poster). OpenReview.net (2017)
+Open Access This chapter is licensed under the terms of the Creative Commons
+Attribution 4.0 International License ( http://creativecommons.org/licenses/by/4.0/ ),
+which permits use, sharing, adaptation, distribution and reproduction in any medium
+or format, as long as you give appropriate credit to the original author(s) and thesource, provide a link to the Creative Commons license and indicate if changes were
+made.
+The images or other third party material in this chapter are included in the
+chapter’s Creative Commons license, unless indicated otherwise in a credit line to the
+material. If material is not included in the chapter’s Creative Commons license and
+your intended use is not permitted by statutory regulation or exceeds the permitteduse, you will need to obtain permission directly from the copyright holder.
+

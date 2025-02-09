@@ -1,0 +1,511 @@
+==== Page 1 ====
+SPEECH-LANGUAGE PRE-TRAINING FOR END-TO-END SPOKEN LANGUAGE
+UNDERSTANDING
+Yao Qian1, Ximo Bian2, Yu Shi1, Naoyuki Kanda1, Leo Shen1, Zhen Xiao1and Michael Zeng1
+1Microsoft Cognitive Services Research Group, USA,2Beijing Institute of Technology, China
+ABSTRACT
+End-to-end (E2E) spoken language understanding (SLU) can in-
+fer semantics directly from speech signal without cascading an
+automatic speech recognizer (ASR) with a natural language under-
+standing (NLU) module. However, paired utterance recordings and
+corresponding semantics may not always be available or sufﬁcient
+to train an E2E SLU model in a real production environment. In
+this paper, we propose to unify a well-optimized E2E ASR encoder
+(speech) and a pre-trained language model encoder (language) into
+a transformer decoder. The uniﬁed speech-language pre-trained
+model (SLP) is continually enhanced on limited labeled data from
+a target domain by using a conditional masked language model
+(MLM) objective, and thus can effectively generate a sequence of
+intent, slot type, and slot value for given input speech in the infer-
+ence. The experimental results on two public corpora show that
+our approach to E2E SLU is superior to the conventional cascaded
+method. It also outperforms the present state-of-the-art approaches
+to E2E SLU with much less paired data.
+Index Terms —spoken language understanding, end-to-end ap-
+proach, pre-training, transfer learning, self-supervised learning
+1. INTRODUCTION
+The conventional SLU generally contains two components: the au-
+tomatic speech recognizer (ASR) to decode the input speech into
+recognized text and the natural language understanding (NLU) mod-
+ule to transform the ASR hypothesis into a concept or semantic la-
+bel that can drive subsequent responses in a task-oriented spoken
+dialog system (SDS). These two components are optimized with dif-
+ferent criteria. Nowadays, the performance of ASR has been sig-
+niﬁcantly improved by using a huge amount of training data with a
+deep learning architecture. Transfer learning based on transformer-
+based LMs like BERT [1] or GPT [2] has also largely boosted the
+accuracy of NLU. This cascaded process is beneﬁcial in reusing the
+well-optimized modules to accelerate the development of the SLU
+system. However, the cascaded process could propagate errors that
+occurred in the current module to the following modules and results
+in generating inappropriate responses or even causing the task fail-
+ure.
+In recent few years, an end-to-end (E2E) modeling approach has
+been widely applied to speech recognition, language recognition,
+etc. It enables us to utilize as little a prior knowledge as possible
+and train a single model for the whole target system, skipping the in-
+termediate modules in conventional pipeline designs. ASR-free E2E
+SLU has also been exploited in [3, 4, 5, 6, 7, 8], where either the raw
+waveforms or the acoustic features (e.g., ﬁlterbank features) are di-
+rectly used as the inputs of SLU to infer semantic meanings. In [5],
+Work done while the second author was an intern at Microsoft.multiple E2E SLU approaches, i.e., direct model, joint model, multi-
+task model, and multi-stage model, have been proposed to jointly
+optimize the ASR and NLU components in a manner of sequence-
+to-sequence mapping. On the other hand, the performance of the
+end-to-end approach is always suffering from a dearth of data, i.e.,
+it is difﬁcult to obtain large amounts of paired speech utterances and
+corresponding semantic labels from real production environments
+when we are developing new SDS applications from scratch.
+Substantial work has shown that transfer learning with a pre-
+trained model requires much less task-speciﬁc data than conven-
+tional methods. It is also extended to cross-modal learning, e.g.,
+VLP [9] and SpeechBERT [10] proposed to build two-modality joint
+embeddings for image captioning, spoken question answering, etc.
+There are many studies to use either speech model or language model
+as a pre-trained model to address the issue of insufﬁcient data for
+SLU but few tries to leverage both and jointly optimize them on
+the paired data. BERT or GPT is leveraged as the pre-trained lan-
+guage model [11, 12]. The speech model is pre-trained by using
+ASR task [6, 8, 13], i.e., to predict phonemes, sub-words or words, or
+by self-supervised learning on the unlabeled speech data [14]. Lan-
+guage embeddings were assumed to have better representation for
+lexical semantics than speech embeddings, so a loss function, e.g.,
+mean squared error (MSE), L1 norm, or triplet loss, is employed
+to make speech embeddings closer to language embeddings in the
+stage of jointly training semantic representations across these two
+modalities [13, 14]. This kind of alignment for speech and language
+embeddings could be applied at the sentence level or token level.
+Sentence-level alignment is more feasible than that of token-level
+since obtaining accurate boundaries of sub-word for speech embed-
+ding sequence is nontrivial. Consequently, most of the studies focus
+on sentence-level SLU, i.e., domain/intent classiﬁcation, or using a
+ﬁxed dimension vector of logits corresponding to the different se-
+mantic labels.
+In this paper, we exploit leveraging transfer learning based on
+well-trained encoders from both speech and language for sentence-
+level and word-level SLU, i.e., intent classiﬁcation and slot ﬁlling.
+The proposed approach can compensate for insufﬁcient paired train-
+ing data in the SLU tasks and avoid train a model from scratch so
+that the resultant model has a better generalization capability. The
+major contribution of this paper is two-fold:
+1. We unify two encoders from speech and language separately
+into a decoder, continually pre-train it by using a conditional
+masked language model (MLM) objective, and ﬁnetune it to
+generate a sequence of intent, slot type, and slot value.
+2. Slot ﬁlling, conventionally regarded as a classiﬁcation or tag-
+ging problem on the word/token level, is formulated as a con-
+ditional sequence to sequence generation problem, given the
+contextual embeddings of input speech. The effectiveness of
+this approach is demonstrated by a comparison with the con-arXiv:2102.06283v1  [cs.CL]  11 Feb 2021
+
+==== Page 2 ====
+ventional method on public datasets.
+2. RELATED WORK
+Inspired by the transfer Learning with a uniﬁed text-to-text trans-
+former (T5) [15] where the input and output are always text strings
+for NLP tasks, ﬁne-tuning a pre-trained causal LM (e.g., GPT), for
+NLP tasks like natural language understanding, natural language
+generation, or end-to-end task completion have been explored for
+dialog systems [16, 17, 18, 19]. However, most of them aim at pro-
+cessing the user’s written responses or the human transcriptions of
+spoken responses. Speech to semantics mapping was also deﬁned
+as a sequence-to-sequence problem in [5, 20], but it lacks a mecha-
+nism to leverage pre-trained models from either speech or language
+to further improve the performance of E2E SLU. Speech synthesis is
+thus explored to generate large training data from multiple artiﬁcial
+speakers to cover the shortage of paired data in E2E SLU [13, 20].
+The most similar work to ours has been presented in [13, 21],
+where it initializes the speech-to-intent (S2I) model with an ASR
+model and improves it by leveraging BERT and text-to-speech aug-
+mented S2I data. The signiﬁcant difference between ours and theirs
+is that they employ sentence-level embedding from both speech and
+language to jointly classify intent, while we use an attention-based
+autoregressive generation model jointly trained by using frame-level
+speech embedding and token level text embedding to generate mul-
+tiple intents and slots/values given an utterance input. It is difﬁcult
+to use their approach to handle more complicated SLU tasks, e.g.,
+slot ﬁlling in the ATIS dataset, since a classiﬁcation layer with a
+ﬁxed-length output is impossible to cover various slots/values across
+utterances.
+3. SPEECH-LANGUAGE PRE-TRAINING FOR SLU
+Our proposed model architecture for speech-language pre-training
+is depicted in Figure 1. The model inputs include speech embed-
+ding sequence, X, masked text token sequence, Y, and three spe-
+cial tokens. Speech embeddings are extracted from the encoder of
+an attention-based encoder-decoder ASR model. We tokenize the
+texts into subword units by WordPiece [22], and add the correspond-
+ing token embeddings with position embeddings. Three special to-
+kens: [BOS], [SEP], and [EOS] indicate the start of speech input,
+the boundary between the speech input and the text input, and the
+end of text input, separately. These three delimiter tokens only give
+the model weak information about which segment (i.e., speech in-
+put or text input) each embedding belongs to. We add the segment
+embeddings to both speech embeddings and text embeddings.
+3.1. Pre-training
+We initialize the parameters of the model with pre-trained BERT
+and continually pre-train it with the speech and the corresponding
+transcriptions from the target dataset. The parameters of the model
+are updated by using a cloze task with a conditional masked language
+modeling (C-MLM) objective. It aims to predict the masked token
+ym
+ninY= (y1;::;yN), conditioned on a sequence of input X. It
+is usually trained by Maximum Likelihood Estimation (MLE), or
+equivalently, minimizing the cross-entropy loss as follows:
+L() = X
+mlogP(ym
+tjy1:t 1;X) (1)
+where the conditional probability is calculated by using an attention
+mechanism in transformer-based network architecture.
+Fig. 1 . A schematic diagram of our approach to speech-language
+pre-training for E2E SLU.
+We randomly select some tokens in the input and replace each of
+them with a special token [Mask] or a random token or the original
+token, and then predict the masked tokens by feeding the output vec-
+tors from the transformer network into a softmax classiﬁer. We mask
+one token or a bigram/trigram at random. For the prediction, the to-
+kens in the speech part can attend to each other, while the tokens in
+the text part can only attend to the left-side context (including all the
+tokens in the speech part) and itself. It is different from what BERT
+uses, i.e., all tokens are allowed to be attended in the prediction.
+A self-attention mask matrix, as deﬁned in [23],
+Mij=
+0; allow to attend
+ 1; prevent from attending(2)
+is applied to control which contextual tokens can be attended to. The
+l-th self-attention output, Al, is computed as:
+Al=softmax (QK>
+pdk+M)V (3)
+where we use a single attention head in the self-attention module to
+simplify the description. V,QandKare the intermediate variables
+as deﬁned in [24] for representing values, queries, and keys, respec-
+tively.dkis the dimension of the keys.
+Our continual pre-training approach can be regarded as turn-
+ing the BERT initialized encoder, which has learned better text rep-
+resentations by encoding contextual information from both direc-
+tions, into an autoregressive decoder that satisﬁes the property of
+sequence-to-sequence generation in the inference stage.
+3.2. Fine-tuning for SLU
+We ﬁne-tune the pre-trained speech-language model by using the
+same objective as that of pre-training but with the speech and the an-
+notated semantic labels from the target dataset. Unlike the conven-
+tional slot IOB labels (i.e., tagging inside, outside, beginning words
+in a slot type ) assigned to every word in the utterance, sequence
+representation, such as [intent] & [slot1 type] [slot1 value] & [slot2
+type] [slot2 value] & ..., is employed to represent the intents and the
+slots/values for the whole utterance.
+3.3. Inference
+In the inference stage, we ﬁrst encode the speech embeddings along
+with the special [BOS] and [SEP] tokens and then use a greedy sam-
+pling approach or a beam search to generate text token-by-token.
+
+==== Page 3 ====
+Table 1 . Number of audio ﬁles in training, validation and test sets,
+and the number of intents and slots
+# Training Validation Testing Intents Slots
+FSC 23,132 3,118 3,793 31
+ATIS 4,439 500 893 21 79
+The generation starts with appending a [MASK] token to the input
+sequence, replaces it with a sampled token, and repeats the process
+till the [EOS] token is chosen. Given speech embeddings, the pre-
+trained speech-language model can directly generate the correspond-
+ing transcription and the ﬁne-tuned model can produce the matching
+semantic label sequence. The model can also generate ASR tran-
+scription and SLU semantic labels sequentially if the input text token
+in Figure 1 is the concatenation of transcription and semantic labels
+during the training.
+4. EXPERIMENTS AND RESULTS
+4.1. Datasets
+We evaluate our approach of speech-language pre-training to E2E
+SLU on two public SLU datasets: Fluent Speech Commands (FSC)
+[6] and Air Travel Information System (ATIS) [25].
+FSC dataset was recorded by 77 speakers for a smart home or
+virtual assistant. There are 248 distinct sentences. Each sentence,
+e.g.,fturn on the lights in the kitchen g, was spoken by multiple
+speakers in both training set and validation/test sets. Each audio ﬁle
+is labeled with three slots, e.g., faction: “active”, object: “lights”,
+location: “kitchen” g. We follow the usage suggested in [6], i.e.,
+combining slot values as the intent of utterance and using 31 distinct
+intents in total.
+ATIS pilot corpus is the most commonly used dataset for SLU
+research. It comprises the acoustic speech data for a query, the
+transcriptions of that query, and the corresponding semantic frames,
+i.e., an intent and slots ﬁlled with phrases. For example, Query:
+fWhat ﬂights are available from Pittsburgh to Baltimore on Thurs-
+day morningg; Intent:fﬂight infog; Slots:ffrom city : “Pitts-
+burgh”, tocity : “Baltimore”, depart date : “Thursday”,
+depart time : “morning”g
+The statistics of these two datasets are shown in Table 1, where
+lists the number of audio ﬁles in training, validation and test sets,
+and the number of intents and slots. We use the same data division
+as [6] and [26, 16] for FSC and ATIS datasets, respectively. Some
+utterances have multiple intents in ATIS corpus, so we employed 21
+intents rather than 18 intents in some papers, where only one intent
+was forcedly assigned to an utterance. Slot labels in the IOB format
+(120 labels in total) and human transcriptions have been widely used
+in the studies (e.g., [16]) for ATIS corpus. We ﬁnd 39 utterances
+have the transcriptions, but the audio ﬁles are missing. We use total
+of 4,439 training utterances and the corresponding 79 original slot
+types in this study.
+4.2. Experimental setup
+The experiments are conﬁgured as follows:
+E2E with speech-language pre-training (E2E SLP) This is our
+approach described in Section 3. We construct mode with the ar-
+chitecture shown in Figure 1. The model parameters are initializedby using the English uncased BERT-Base model, which is a multi-
+layer bidirectional transformer encoder consisting of 12 layers, 768
+hidden states, and 12 heads, and is trained on BooksCorpus (800M
+words) and English Wikipedia (2,500M words).
+The input to the model is a concatenation of text embeddings,
+speech embeddings, and three special tokens: [BOS], [SEP], and
+[EOS]. Text embeddings are the sums of WordPiece embeddings
+with a 30,000 token vocabulary, positional embeddings, and segment
+embeddings. Speech embeddings are extracted from the outputs
+of the encoder of an attention-based encoder-decoder (AED) ASR
+model, which comprises of 6 layers of 1,024-dim bidirectional long
+short-term memory (BLSTM) for the encoder, 2 layers of 1,024-dim
+unidirectional LSTM for the decoder, and a conventional location-
+aware content-based attention [27] with a single head in between the
+encoder and the decoder. Layer normalization [28] was applied after
+every BLSTM in the encoder but not after every LSTM in the de-
+coder. The input feature is a sequence of 80-dim log Mel ﬁlter bank
+with a stride of 10 milliseconds (ms). Three of them are stacked
+together to form a 240-dim super-frame. We feed into the encoder
+on top of the stacked features. 4,000 WordPiece tokens are used as
+the output targets. This model was trained on 75 thousand hours of
+Microsoft anonymized training data. A linear layer is applied to the
+speech embeddings for converting 1,024-dim to 768-dim in order to
+keep the same dimension as those of text embeddings.
+Adam optimizer, 64 batch size, and 1e-4 learning rate are used
+for both pre-training and ﬁne-tuning. We trim long utterance and pad
+short utterances to 30 words for the text embeddings and 500 frames
+for the speech embeddings. During the training, 15% of input text
+tokens are masked and replaced with the special token [Mask], the
+random token, or the original token with the probabilities of 80%,
+10%, and 10%, separately. One or two/three successive tokens are
+masked at random with the chances of 80% and 20%, respectively.
+A beam search with beam size 4 is used in the inference stage.
+E2E Joint Modeling Similar to the AED-based ASR model, the
+approach of E2E joint modeling to SLU also employs an encoder-
+attention-decoder architecture and trains the model in an end-to-end
+manner. We use the same architecture and input acoustic features
+as those of the above AED-based ASR model to train E2E SLU.
+The output of this model is the concatenation of transcription and
+its corresponding semantics rather than just the transcription, i.e.,
+the decoder produces the transcription followed by intent, slot types,
+and slot values. We test this approach by using only the FSC corpus.
+The training data in ATIS is too insufﬁcient to deliver a decent E2E
+model.
+Cascaded ASR+NLU It is a conventional approach to SLU. We
+ﬁrst use ASR described in the above section to recognize the spoken
+input into text and then ﬁne-tune the pre-trained BERT model with
+the ASR transcriptions of training utterances. The objective of the
+ﬁne-tuning is to jointly optimize model parameters for intent clas-
+siﬁcation and slot ﬁlling [16]. This approach can leverage BERT
+to improve the generalization capability of NLU models and achieve
+the state-of-the-art performance on the human transcriptions of ATIS
+corpus. The same English uncased BERT-Base model as that em-
+ployed in our approach is used for ﬁne-tuning. The hyperparameters
+are also set as those in [16].
+4.3. Results and discussion
+Word error rate (WER) is used to evaluate the performance of ASR.
+The performance metrics for semantic labeling are intent accuracy
+(Intent-Acc), slot precision (Slot-Pre), slot recall (Slot-Rec), and slot
+F1 (Slot-F1). Table 2 shows the performance of different systems.
+
+==== Page 4 ====
+Table 2 . Performance(%) of different systems
+Systems FSC ATIS
+Approaches Conﬁgurations WER Intent-Acc WER Intent-Acc Slot-Pre Slot-Rec Slot-F1
+E2E Joint ASR[SLU 0.86 99.13
+E2E SLP one-step ( SLU ) 98.58 94.96 89.21 85.58 87.36
+E2E SLP one-step ( ASR[SLU ) 0.42 99.71 14.47 95.30 86.71 82.20 84.40
+E2E SLP two-step ( ASR;SLU ) 0.42 99.71 8.68 96.30 91.13 90.76 90.95
+Cascaded Ref !BERT 100.0 97.65 95.89 96.30 96.10
+Cascaded ASR !BERT 2.82 96.84 14.82 95.18 86.53 81.86 84.13
+Cascaded SLP ASR !BERT 0.42 99.47 8.68 95.52 90.46 89.78 90.12
+The slots/values of each utterance are combined as the intent of the
+utterance in the FSC corpus, so there are no results related to the
+slots in Table 2. Meanwhile, the results of E2E joint modeling for
+ATIS corpus are also blank due to the inadequate training data for
+building an E2E SLU model.
+The E2E joint modeling approach to SLU achieves the intent
+accuracy of 99.13% on the FSC testing set. This is the best perfor-
+mance we have seen by building a model from scratch, i.e., using
+only training data of FSC without any helps from the pre-trained
+models.
+We apply two strategies in building E2E SLP modes. Two-step
+means that we ﬁrstly pre-train SLP with paired speech and the corre-
+sponding transcriptions, and then ﬁne-tune the resultant model with
+paired speech and the semantic labels. One-step indicates that we
+just ﬁne-tune the SLP model. The output targets can be semantic la-
+bels, i.e., one-step ( SLU ), or the concatenation of transcriptions and
+semantic labels, i.e., one-step ( ASR[SLU ). The experimental re-
+sults in Table 2 show that the performance of one-step ( ASR[SLU )
+is equivalent to that of two-step ( ASR;SLU ) for the FSC corpus but
+two-step signiﬁcantly outperforms one-step for the ATIS corpus. We
+think 1) the size of training data in FSC is much larger than that in
+ATIS so that both strategies can converge to the same performance;
+2) the concatenations of transcriptions and semantic labels in ATIS
+corpus are much longer than those in FSC corpus. It may cause per-
+formance degradation for sequence generation.
+Three kinds of transcription: 1) The ground-truth transcription
+(Ref!BERT) as a upper-bound reference; 2) ASR transcription
+(ASR!BERT) by using the AED-based ASR system mentioned
+in Section 4.2; 3) ASR transcription from pre-trained SLP model
+(SLP ASR!BERT), are fed into the BERT model to build cascaded
+SLU system. The pre-trained SLP model can reduce ASR WER
+from 2.82%, 14.82% to 0.42%, 8.68% for FSC and ATIS, respec-
+tively. The reﬁned ASR hypotheses are critical for improving the
+performance of intent prediction and slot ﬁling, e.g., the slot-F1
+for ATIS is signiﬁcantly improved from 84.13% to 90.12%. In the
+pre-training stage, we continually train the SLP model with the
+speech embeddings from the encoder of the AED-based ASR model
+and the tokenized transcription by using FSC or ATIS dataset. This
+procedure can be thought of as domain adaptation for the acoustic
+model (AM) and language model (LM) in the point of view of ASR
+customization. LM represented by the decoder in the AED-based
+ASR model is replaced by BERT based LM and further adapted
+with the training transcriptions of FSC or ATIS. It brings most of the
+WER reductions for the generated hypotheses.By comparing the performance of different systems shown in
+Table 2, we ﬁnd that our proposed approach achieves the best per-
+formance in terms of all evaluation metrics for both corpora. In the
+previous studies, E2E SLU is difﬁcult to beat the cascaded SLU,
+which can leverage large module-speciﬁc data to optimize individ-
+ual modules. Our approach can unify well-optimized modules into a
+single model and further optimize the model with a uniﬁed objective
+of SLU.
+Fig. 2 . The number of training samples from FSC corpus vs. the
+intent accuracy by using the approach of E2E SLP one-step ( ASR[
+SLU )
+The size of training data in the FSC corpus is relatively larger
+than other commonly used SLU corpora. We investigate whether
+we can reduce the number of utterances for transfer learning with
+the pre-trained SLP. The Figure 2 illustrates the intent accuracy
+along with the number of training samples by using our proposed
+approach, i.e., E2E SLP one-step ( ASR[SLU ). It shows that us-
+ing only 3,000 samples by a random selection from the training set
+can reach a similar performance to that of using all 23,132 training
+samples.
+5. CONCLUSIONS
+The cascaded SLU can leverage ASR and NLU modules optimized
+with a large amount of module-speciﬁc training data and deliver a
+decent performance. It is a challenge for E2E SLU to beat it due to a
+lack of labeled data. We propose to leverage the pre-trained speech
+embeddings from ASR and the semantic representations from BERT
+and jointly optimize them for E2E SLU. We have demonstrated the
+effectiveness of our approach on FSC and ATIS datasets in this study.
+In the future, we will extend our method to multi-domain and multi-
+lingual SLU corpora and evaluate its generalization capability.
+
+==== Page 5 ====
+6. REFERENCES
+[1] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina
+Toutanova, “BERT: pre-training of deep bidirectional
+transformers for language understanding,” CoRR , vol.
+abs/1810.04805, 2018.
+[2] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario
+Amodei, and Ilya Sutskever, “Language models are unsuper-
+vised multitask learners,” OpenAI Blog , vol. 1, no. 8, pp. 9,
+2019.
+[3] Yao Qian, Rutuja Ubale, Vikram Ramanaryanan, Patrick
+Lange, David Suendermann-Oeft, Keelan Evanini, and Eugene
+Tsuprun, “Exploring ASR-free end-to-end modeling to im-
+prove spoken language understanding in a cloud-based dialog
+system,” in ASRU , 2017, pp. 569–576.
+[4] Yuan-Ping Chen, Ryan Price, and Srinivas Bangalore, “Spo-
+ken language understanding without speech recognition,” in
+ICASSP , 2018, pp. 6189–6193.
+[5] Parisa Haghani, Arun Narayanan, Michiel Bacchiani, Galen
+Chuang, Neeraj Gaur, Pedro Moreno, Rohit Prabhavalkar,
+Zhongdi Qu, and Austin Waters, “From audio to semantics:
+Approaches to end-to-end spoken language understanding,” in
+SLT, 2018, pp. 720–726.
+[6] Loren Lugosch, Mirco Ravanelli, Patrick Ignoto, Vikrant Singh
+Tomar, and Yoshua Bengio, “Speech model pre-training for
+end-to-end spoken language understanding,” arXiv preprint
+arXiv:1904.03670 , 2019.
+[7] Dmitriy Serdyuk, Yongqiang Wang, Christian Fuegen, Anuj
+Kumar, Baiyang Liu, and Yoshua Bengio, “Towards end-to-
+end spoken language understanding,” in ICASSP , 2018, pp.
+5754–5758.
+[8] P. Wang, L. Wei, Y . Cao, J. Xie, and Z. Nie, “Large-scale
+unsupervised pre-training for end-to-end spoken language un-
+derstanding,” in ICASSP , 2020, pp. 7999–8003.
+[9] Luowei Zhou, Hamid Palangi, Lei Zhang, Houdong Hu, Ja-
+son J. Corso, and Jianfeng Gao, “Uniﬁed vision-language
+pre-training for image captioning and VQA,” arXiv preprint
+arXiv:1909.11059 , 2019.
+[10] Yung-Sung Chuang, Chi-Liang Liu, Hung-Yi Lee, and Lin
+shan Lee, “Speechbert: An audio-and-text jointly learned lan-
+guage model for end-to-end spoken question answering,” arXiv
+preprint arXiv:1910.11559 , 2020.
+[11] Chao-Wei Huang and Yun-Nung Chen, “Learning spoken lan-
+guage representations with neural lattice language modeling,”
+inProceedings of the 58th Annual Meeting of the Association
+for Computational Linguistics , 2020, pp. 3764–3769.
+[12] Yao Qian, Yu Shi, and Michael Zeng, “Discriminative trans-
+fer learning for optimizing ASR and semantic labeling in task-
+oriented spoken dialog,” in To be appeared in Interspeech ,
+2020.
+[13] Y . Huang, H. Kuo, S. Thomas, Z. Kons, K. Audhkhasi,
+B. Kingsbury, R. Hoory, and M. Picheny, “Leveraging un-
+paired text data for training end-to-end speech-to-intent sys-
+tems,” in ICASSP , 2020, pp. 7984–7988.
+[14] Yu-An Chung, Chenguang Zhu, and Michael Zeng, “Semi-
+supervised speech-language joint pre-training for spoken lan-
+guage understanding,” arXiv preprint arXiv:2010.02295 , 2020.[15] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee,
+Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and
+Peter J Liu, “Exploring the limits of transfer learning
+with a uniﬁed text-to-text transformer,” arXiv preprint
+arXiv:1910.10683 , 2019.
+[16] Qian Chen, Zhu Zhuo, and Wen Wang, “BERT for joint in-
+tent classiﬁcation and slot ﬁlling,” CoRR , vol. abs/1902.10909,
+2019.
+[17] Baolin Peng, Chenguang Zhu, Chunyuan Li, Xiujun Li, Jin-
+chao Li, Michael Zeng, and Jianfeng Gao, “Few-shot natural
+language generation for task-oriented dialog,” arXiv preprint
+arXiv:2002.12328 , 2020.
+[18] Chien-Sheng Wu, Andrea Madotto, Ehsan Hosseini-Asl,
+Caiming Xiong, Richard Socher, and Pascale Fung, “Trans-
+ferable multi-domain state generator for task-oriented dialogue
+systems,” arXiv preprint arXiv:1905.08743 , 2019.
+[19] Paweł Budzianowski and Ivan Vuli ´c, “Hello, it’s gpt-2–
+how can i help you? towards the use of pretrained language
+models for task-oriented dialogue systems,” arXiv preprint
+arXiv:1907.05774 , 2019.
+[20] L. Lugosch, B. H. Meyer, D. Nowrouzezahrai, and M. Ra-
+vanelli, “Using speech synthesis to train end-to-end spoken
+language understanding models,” in ICASSP , 2020, pp. 8499–
+8503.
+[21] Pavel Denisov and Ngoc Thang Vu, “Pretrained semantic
+speech embeddings for end-to-end spoken language under-
+standing via cross-modal teacher-student learning,” arXiv
+preprint arXiv:2007.01836 , 2020.
+[22] Yonghui Wu and et al., “Google’s neural machine translation
+system: Bridging the gap between human and machine trans-
+lation,” CoRR , vol. abs/1609.08144, 2016.
+[23] Li Dong, Nan Yang, Wenhui Wang, Furu Wei, Xiaodong Liu,
+Yu Wang, Jianfeng Gao, Ming Zhou, and Hsiao-Wuen Hon,
+“Uniﬁed language model pre-training for natural language un-
+derstanding and generation,” in Advances in Neural Informa-
+tion Processing Systems 32 , pp. 13063–13075. 2019.
+[24] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Illia
+Polosukhin, “Attention is all you need,” in Advances in Neural
+Information Processing Systems 30 , pp. 5998–6008. 2017.
+[25] C. HEMPHILL, “The ATIS spoken language systems pilot cor-
+pus,” DARPA Speech and Natural Language Workshop , 1990.
+[26] Chih-Wen Goo, Guang Gao, Yun-Kai Hsu, Chih-Li Huo,
+Tsung-Chieh Chen, Keng-Wei Hsu, and Yun-Nung Chen,
+“Slot-gated modeling for joint slot ﬁlling and intent predic-
+tion,” in Proceedings of the 2018 Conference of the North
+American Chapter of the Association for Computational Lin-
+guistics: Human Language Technologies, Volume 2 (Short Pa-
+pers) , 2018, pp. 753–757.
+[27] Jan K Chorowski, Dzmitry Bahdanau, Dmitriy Serdyuk,
+Kyunghyun Cho, and Yoshua Bengio, “Attention-based mod-
+els for speech recognition,” in Advances in Neural Information
+Processing Systems 28 , pp. 577–585. 2015.
+[28] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E. Hin-
+ton, “Layer normalization,” arXiv preprint arXiv:1607.06450 ,
+2016.
+

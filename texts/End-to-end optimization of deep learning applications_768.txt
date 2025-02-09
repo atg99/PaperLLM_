@@ -1,0 +1,809 @@
+==== Page 1 ====
+End-to-End Optimization of Deep Learning Applications
+Atefeh Sohrabizadeh∗
+University of California, Los Angeles
+Los Angeles, California
+atefehsz@cs.ucla.eduJie Wang∗
+University of California, Los Angeles
+Los Angeles, California
+jiewang@cs.ucla.eduJason Cong
+University of California, Los Angeles
+Los Angeles, California
+cong@cs.ucla.edu
+ABSTRACT
+The irregularity of recent Convolutional Neural Network (CNN)
+models such as less data reuse and parallelism due to the exten-
+sive network pruning and simplification creates new challenges
+for FPGA acceleration. Furthermore, without proper optimization,
+there could be significant overheads when integrating FPGAs into
+existing machine learning frameworks like TensorFlow. Such a
+problem is mostly overlooked by previous studies. However, our
+study shows that a naive FPGA integration into TensorFlow could
+leadtoupto8 .45×performancedegradation.Toaddressthechal-
+lenges mentioned above, we propose several SW/HW co-design
+approachestoperformtheend-to-endoptimizationofdeeplearn-
+ing applications. We present a flexible and composable architec-
+ture called FlexCNN. It can deliver high computation efficiency for
+different types of convolution layers using techniques including
+dynamic tiling and data layout optimization. FlexCNN is further
+integratedintotheTensorFlowframeworkwithafully-pipelined
+software-hardware integration flow. This alleviates the high over-
+headsofTensorFlow-FPGAhandshakeandothernon-CNNprocess-ing stages. We use OpenPose, a popular CNN-based application for
+humanposerecognition,asacasestudy.Experimentalresultsshow
+that with the FlexCNN architecture optimizations, we can achieve
+2.3×performance improvement. The pipelined integration stack
+leadstoafurther5 ×speedup.Overall,theSW/HWco-optimization
+producesaspeedupof11.5 ×andresultsinanend-to-endperfor-
+manceof23.8FPSforOpenPosewithfloating-pointprecision,which
+isthehighestperformancereportedforthisapplicationonFPGA
+in the literature.
+KEYWORDS
+FPGA, CNN, OpenPose, TensorFlow, tiling, integration
+ACM Reference Format:
+AtefehSohrabizadeh,JieWang,andJasonCong.2020.End-to-EndOptimiza-
+tion of Deep Learning Applications. In Proceedings of the 2020 ACM/SIGDA
+International Symposium on Field-Programmable Gate Arrays (FPGA ’20),
+February 23–25, 2020, Seaside, CA, USA. ACM, New York, NY, USA, 7 pages.
+https://doi.org/10.1145/3373087.3375321
+∗Indicates the co-authors for this work.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+forprofitorcommercialadvantageandthatcopiesbearthisnoticeandthefullcitation
+on the first page. Copyrights for components of this work owned by others than ACM
+mustbehonored.Abstractingwithcreditispermitted.Tocopyotherwise,orrepublish,
+topostonserversortoredistributetolists,requirespriorspecificpermissionand/ora
+fee. Request permissions from permissions@acm.org.
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+© 2020 Association for Computing Machinery.
+ACM ISBN 978-1-4503-7099-8/20/02...$15.00
+https://doi.org/10.1145/3373087.3375321
+Figure1:Performancecomparisonofdesignsusinguniform
+anddynamictilingfactorsforthefirst24convolutionallay-ers in the CNN network in Figure 3.
+1 INTRODUCTION
+ConvolutionalNeuralNetworks(CNNs)arewidelyusedinmany
+machine learning (ML) applications and have evolved quickly over
+theyears.ThereisagrowinginterestinFPGAforacceleratingCNN
+computation due to its high energy efficiency and performance
+(e.g., [2,3,10,14,16,18,21,23,26–28]). Furthermore, the recent
+advancementinCNNmodelsandFPGA-basedCNNacceleration
+has brought several new challenges.
+Challenge1:PerformancedisparityofdifferentCNNlay-
+ers:Real-world deep learning (DL) applications may have complex
+networkarchitectures.Inaddition,manystate-of-the-artefficient
+networks such as MobileNetV1 [ 11] use depth-wise separable con-
+volutions (DSC) introduced in [ 19] to decrease the computation
+cost. MobileNetV2 [ 17] introduced residual bottleneck block (RBB)
+to further reduce the computation complexity. These layers reduce
+the computation cost but keep the same feature map size; this can
+makethelayermorecommunication-boundandreducethecom-
+putation efficiency. Apart from this irregularity, different layers of
+a CNN have different characteristics in terms of their input and
+output number of channels, feature map size, and kernel size. This
+changesthecomputationtocommunication(CTC)ratiofromlayer
+tolayer.Therefore,itisimportanttohandletheselayersdifferently
+given the performance disparity across these layers. We found that
+tilingfactorscanplayanimportantroleintheperformance.Zhang
+et al. [26] showed that the CTC ratio of a single convolution layer
+varieswith differenttiling factors.Yang etal.[ 25]highlighted the
+importanceofchoosingpropertilingfactorsforthedatareuseinthe
+nearandfastermemory(on-chipstorageforFPGAs)fortheoverall
+latency and energy efficiency. These studies lead us to consider us-
+ingdifferenttilingfactorsacrossthenetwork.Figure1depictshow
+different tiling factors can affect the performance for each layer in
+one CNN network example as shown in Figure 3. We compare the
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+133
+
+
+==== Page 2 ====
+Figure2:RuntimebreakdownofanFPGA-basedCNNaccel-
+eration pipeline in TensorFlow.
+performanceofusingasinglesetoftilingfactors(uniformtiling)to
+usingdifferenttilingfactorsforeachlayer(dynamictiling).Forthe
+uniformtiling,wechosethetilingfactorthatreducesthelatency
+of theentire network. Forthe dynamic tiling,we focused oneach
+layer and selected the best tiling factor accordingly. Experimental
+resultsshowthatdynamictilingcanspeeduptheperformanceof
+the whole network by 1 .7×.
+Challenge 2: Integration overheads of using FPGA in ML
+frameworks: When processing a CNN application in modern ML
+framework such as TensorFlow [ 1], the complete stack consists
+of reading the input, computing the CNN, processing the result,
+and displaying and writing the result. Previous works have only
+focused on optimizing the CNN kernel on FPGA (e.g., [ 2,3,10,
+14,21,23,26,28]). This is due to the fact that CNN computation
+is the most time-consuming step of the whole stack. Hence the
+rest of the overheads are ignored. While several works [ 10,16]
+have focused on accelerator generation from TensorFlow-described
+networks, they did not address the challenges of integrating an
+accelerator into TensorFlow. By integrating our accelerator with
+TensorFlow, we are able to directly run networks from TensorFlow
+on an FPGA.Integrating FPGA into TensorFlow introduces anew
+setofoverheads:communicationbetweenTensorFlowandFPGA
+and the communication between the host and the FPGA kernel
+itself.Figure2showsthebreakdownoftheend-to-endruntimefor
+processing an 384 ×384 RGB image using the network in Figure 3.
+These steps are listed and described in Section 4. The time for
+CNN processing, using our accelerator denoted as the kernel, only
+takes11.8%ofthetotalruntime.Thisemphasizestheneedforan
+end-to-endSW/HWco-optimization.Our experimentsshowthat
+this optimization can increase the end-to-end performance of this
+network from 4.8FPS to 23.8FPS, leading to a 5× speedup.
+Tosolvethechallengesabove,inthiswork,weproposeanFPGA-
+based CNN accelerator named FlexCNN. It employs dynamic tiling
+and data layout transformation to adapt to the performance dispar-
+ity of different CNN layers. The accelerator is further integrated
+intotheTensorFlowframework.Tomitigatethelargeintegration
+overheads, we propose a two-level software pipeline to overlap the
+overheads with the computation.
+We use OpenPose [ 4] as a driving application to test FlexCNN’s
+performance.Toourknowledge,thereisonlyonepriorwork[ 2]
+thathasimplementedOpenPoseonFPGA.ItsCNNkernelprocesses
+an image in 42.6ms. Whereas, FlexCNN can process an image in
+24.7ms, leading to 1 .7×speedup.
+In summary, the key contributions of this paper are:Back-bone Stages 1-6CStandard Convolution
+DDSCBRBB
+UUp-sample
+3x3
+C3x3
+D3x3
+D3x3
+D3x3
+D1x1
+D1x1
+D
+3x3
+D3x3
+D3x3
+D1x1
+D1x1
+D3x3
+B2x2
+U3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B3x3
+B
+Figure 3: OpenPose-V2 network topology.
+•A flexible and composable accelerator architecture, called
+FlexCNN,supportingdynamictilinganddatalayouttrans-
+formation to improve computation efficiency for running
+CNNs.
+•A TensorFlow to FPGA runtime environment for running
+CNN on FPGA from TensorFlow and an optimized soft-
+ware/hardware pipeline to mitigate the integration over-
+heads.
+•AfullyautomatedcompilationsystemfortheFlexCNNar-
+chitecture.
+•The fastest FPGA accelerator to run OpenPose. FlexCNNyieldsa2.3
+×speedupfromsupportingdynamictilingand
+optimized data layout. Besides, our framework achieves 5×
+speedupfromsoftware/hardwarepipelining,resultinginafinalperformanceof23.8FPS.Inaddition,FlexCNNis3
+.8×
+more energy efficient than GPU.
+2 APPLICATION DRIVER
+2.1 OpenPose
+OpenPose[ 4]isthewinneroftheCOCO2016KeypointsChallenge
+that can detect 2D poses of multiple people in an image. OpenPose
+network first extracts the features of the input image using the
+first 10 layers of VGG-19 [ 20]. This is the backbone of the network.
+Thesefeaturemapsaretheinputstoatwo-branchnetwork.Thefirst
+branch detects confidence maps, representing body part locations,
+andthesecondbranchdetectspartaffinityfields,asetof2Dvectors
+showing the location and orientation of the limbs. The results of
+thesetwobranchesareconcatenatedwiththefeaturemapsfrom
+the backbone network and form the input for the next stage. After
+several iterations, these branches produce final predictions.
+Thisnetworkis interestingtoussinceit hasanirregulararchi-
+tecturecomparedto modernCNN-basedDLapplications.Instead
+of just a linear forward path where each layer consumes the result
+ofitspreviouslayer,ithasconcatenationlayersthatneedextradata
+movement.Moreover,to reduce thecomputation complexityof the
+network, we use a modified version of OpenPose [ 13] that replaces
+thebackbonewithamodificationofMobileNetV2[ 17]andemploys
+DSC [19] for the rest of the network, followingthe trend in the ML
+community. Figure 3 depicts the network topology of this version,
+we call this network OpenPose-V2. Due to the space limitation, we
+onlyshowtheconvolutionallayers.Eachconvolutionisfollowed
+by ReLU and batch normalization layers.
+2.2 New Building Blocks
+2.2.1 Depthwise Separable Convolution. In a standard convolution
+layer (conv), the feature maps are filtered and combined in one
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+134
+
+==== Page 3 ====
+Loader
+LoaderDepth Conv
+ReLU(6) Standard Conv
+ReLU(6)
+Add
+Pool
+ Upsample
+WriterInter. Results
+S
+Figure 4: Accelerator overview.
+Table 1: Design parameters and explanations.
+Design Parameters Explanation
+Th(k),Tw(k),Tn(k),Tm(k)Tiling factors for H,W,N, andMfor layer k
+SIMD SIMD lanes for all modules
+SA_ROW ,SA_COL Rows and columns of the systolic array kernel
+step. The DSC splits this step into two phases. The first phase,
+depthwise convolution (DW), does the filtering, and the second
+phase,pointwiseconvolution(PW),combinestheproducedfiltered
+feature maps using 1 ×1 kernels.
+Aconvlayertakes Nfeaturemapsastheinput,eachofsize H×W.
+Ituses M×N×K×Kkernels,toproduceMchannelsfortheoutput.
+Thetotalcomputationcostforthislayeris M×N×H×W×K×K.
+However,aDSCuses N×K×KkernelsforDWand M×N×1×1
+kernelsforPW.Byapplyingthischange,theamountofcomputation
+is reduced by a factor of1
+M+1
+K2[11].
+2.2.2 Residual Bottleneck Block. Google introduced RBB in Mo-
+bileNetV2 [ 17] to reduce the computation cost. It consists of a 1x1
+conv followed by a 3x3 DW and then another 1x1 conv, each of
+which is followed by ReLU and a batch normalization layer. The
+1x1convolutionsareusedfordimensionreductionorrestoration.
+Thenatureofthisblockallowsustoreducethenumberofinput
+andoutputchannels.Thisreducesthecomputationintensityand
+makes the network more efficient.
+3 THE FLEXCNN ARCHITECTURE
+The basic layers in different CNNs are convolution, DW, ReLU,
+bias/batch normalization, downsampling/pooling, upsampling, and
+add. The rest of the building blocks are a combination of these
+layers. Thus the FlexCNN architecture has these components as
+building blocks and uses them to compose different parts of the
+network. This strategy can improve the hardware utilization on
+FPGA.
+Figure 4 depicts the detailed architecture of the FlexCNN. It
+implements the dataflow architecture to process the network layer
+bylayer.Eachlayercanloaduptotwosetsofinputfeaturemaps,
+those from the current layer and the previous layer. Loading thefeature maps from the previous layer is required for supporting
+convolutional layers like RBB where the results of the current and
+previous layers need to be added together.
+Theloadedfeaturemapswillpassthroughmodulesincludingthe
+depth-wise convolution module ( Depth Conv ), ReLU(6)1module,
+standard convolution module (Standard Conv ), ReLU(6) module,
+add module, max-pooling module (Pool ), and bi-linear upsampling
+module ( Upsample ). The final results will be written out to DRAM
+viaWriter. The operations in batch normalization layer and bias
+1ReLU6 outputs the minimum of the value 6 and a normal ReLU.layer are fused into ReLU(6) modules. Each of the convolutional
+operationsmaybefollowedbyanyoftheReLU(6)ornormalization
+layers. Hence, we put the ReLU(6) module after both the Depth
+Conv and Standard Conv modules.
+ForStandardConv,thesystolicarray(SA)architectureisused.
+It is generated using the SA compiler in [ 8]. It can compute a stan-
+dard convolutionlayer with anygiven kernel size.Weimplement
+line-buffer-based streaming architectures for Depth Conv, ReLU(6),
+Add, Pool, and Upsample modules using a similar stencil-based ar-
+chitecture asin [ 7]. Allthese modules areparameterized by factors
+as shown in Table 1, which will be explored by the design space
+exploration(DSE)enginecoveredinsection3.1.1,fortheoptimal
+performance.
+Note that all the modules can be bypassed if not being used
+foraspecificlayer.WeapplydoublebufferinginboththeLoader
+modules and the Writer module. Furthermore, if the outputs of the
+whole layer can fit into the on-chip buffer, the data will be pushed
+into on-chip buffers and directly fetched by the Loader to save the
+off-chip communication time.
+3.1 Dynamic Tiling
+Tilingisappliedwhenprocessingthenetworkforimprovingthe
+data localityand minimizing the communication. Table 1summa-
+rizesthetilingfactorsemployedinFlexCNN.Whenthetilingfactors
+are notsub-multiples of thetiled dimensions, redundantcomputa-
+tionisintroducedwhichdegradestheperformanceofthedesign.
+AsexplainedinSection1,inanormalCNNnetwork,thetypesand
+configurations of different layers vary from each other. Therefore,
+theoptimaltilingfactorswillbedifferentfromeachotheraswell.
+We have observed that using uniform tiling factor for the whole
+networkwillleadtoupto1.7 ×performanceslowdowncomparedto
+the ideal case using different tiling factors across layers. Therefore,
+in this work, we apply the dynamic tiling by re-configuring thetiling factors of the accelerators on-the-fly for different layers to
+maximizetheperformance.Thiswillbringthehardwareoverheads
+tosupportthedynamictiling.However,suchoverheadsarenegligi-
+blecomparedtotheperformanceimprovement.Section6evaluates
+the impacts of this technique in detail.
+Previous works such as [ 18,22,28] have also emphasized the
+need fordifferenttiling factorsacross layers.Our architecturedis-
+tinguishesfromthepreviousworkbychangingallthetilingfactors
+acrosseachlayerdynamically,whereaspreviousworkonlyadjusted
+part of the tiling factors or used several accelerators, each with dis-
+tinct uniform tiling factors on-chip. Eq. 1 shows the restriction on
+the tiling factors.
+Tw(k)=c1×SA_COL
+Tm(k)=c2×SA_ROW
+Tn(k)=c3×SIMD
+Tm(k)=Tn(k+1)(1)
+In FlexCNN, the width and output channels of the feature maps
+are mapped to columns and rows of the SA respectively. As a re-
+sult,foreachlayer, Tw(k)andTm(k)shouldbemultiplesoftheir
+respective SA dimension. The reduction of multiple input channels
+iscomputedinparallelinsideeachPEoftheSA,whichisdefined
+astheSIMDlane.Thisimpliesthat Tn(k)shouldbeamultipleof
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+135
+
+==== Page 4 ====
+Figure 5: Architecture support for dynamic tiling in the
+DepthConvmodulefora 3×3kernelwithTwofsize6/8/10.
+Stage 1 
+Intermediate 
+ResultsStage 2-6 
+Intermediate 
+ResultsStage 1, 3, 5  
+Concat 
+OutputsBackbone 
+Intermediate 
+ResultsBackbone 
+Concat 
+OutputsStage 2, 4, 6  
+Concat 
+OutputsDRAM address
+A B C
+Figure 6: Data organization for OpenPose.
+SIMD lane. Th(k)can be any arbitrary value. As mentioned before,
+the computation in depth conv module can be seen as a stencil
+kernel. Figure 5 depicts the 3 ×3 stencil window connected by line
+buffers. We realize dynamic tiling by connecting consecutive rows
+ofthelinebufferviaaMUX,enablingdatafeedingfromdifferent
+locations.
+3.1.1 DesignSpaceExploration. Giventhenetwork,theaccelerator
+architecture,andtheFPGA’sresourcesinformation,wewillperformthedesignspaceexplorationtoselecttheoptimaldesignparameters
+that maximize the performance on the target FPGA. Table 1 lists
+the design parameters to be determined.
+Twoanalyticalmodels resource_est() andlatency_est() arebuilt
+forestimatingtheresourceusageandlatencyofdesigns.Currently,
+theresourcemodelestimatesblockRAM(BRAM)andDSPusage
+that are usually the bottleneck of designs. The DSE process will
+sweepthroughthedesignspacewithallfeasiblecombinationsof
+design parameters. For each design parameter list, the resource
+usage is examined first. Designs that over-utilize the resource will
+be pruned away. Then, we follow a greedy algorithm to select the
+optimal tiling factors that minimize the latency layer by layer. The
+DSE process finishes within minutes on a standard workstation.
+3.2 Data Layout Optimization
+Datalayout optimizationsareapplied toreducethe numberofac-
+cesses to DRAM and increase the effective DRAM bandwidth. The
+first optimizationis on theconcatenation layers. ACNN network
+maycontainblocksthatconcatenatetheresultsofseverallayers.As
+showninFigure3,aftereachstageintheOpenPose-V2network,re-
+sultsfromtwobrancheswillbeconcatenatedwiththefirstoutputs
+from the backbone network. This then serves as the inputs for the
+followingstages.Figure6presentstheoptimizeddataorganization
+of the network.
+Theoutputsofthebackbone(region B)andeachstage(region
+A, C) are placed close to each other as shown in Figure 6. To be
+more specific, the outputs of Stage 1 will be written to region A.
+The regions A and B will serve as the inputs of Stage 2. In Stage 2,
+theoutputswillbewrittentoregionC.TheregionsBandCwill
+serveastheinputsofStage3similarly.Theoutputsofeachstage
+are written to regions A and C in a round-robin fashion. With this
+layout,theoutputsofstagebranchesareconcatenatedon-the-fly,
+eliminating unnecessary off-chip DRAM movements.
+TofurtherimprovetheeffectiveDRAMbandwidth,wechange
+the data layout of the feature maps from N(k)×H(k)×W(k)
+Tw(k)×Read 
+Image (1)Resize & 
+Pack (2)Process 
+Graph (3-8)
+Write 
+Results (10)Display 
+Results (10)Process 
+Results (9)
+Figure 7: First level of pipeline.
+Tw(k)toN(k)
+Tn(k)×H(k)×W(k)
+Tw(k)×Tn(k)×Tw(k). This allows us
+toincreasetheburstlengthfrom Tw(k)toTn(k)×Tw(k).ADSC
+layer can easily become communication-bound because of its low
+computationtocommunication(CTC)ratiosinceitismostlyusing
+1×1 convolution kernels. In this case, when the kernel size of the
+next layer is 1 ×1, since there is no overlapped region between
+differenttiles,wefurtherchangethedatalayouttoN(k)
+Tn(k)×H(k)
+Th(k)×
+W(k)
+Tw(k)×Tn(k)×Tw(k)×Th(k).Itfurtherincreasestheburstlength
+for these layers to Tn(k)×Th(k)×Tw(k). For other kernel sizes,
+padding is applied because a tile of Tn(k)×Tw(k)×Th(k)does
+not have all the data needed for the computation. We need to have
+(p−1)and((p−1)×Th(k)+(p−1)2)extra DRAM accesses with
+burst length of Tn(k)×Tw(k)andTn(k)respectively to fetch all
+the data ( pdenoting the kernel size). This increases the number
+of DRAM accesses with a burst length of Tn(k), which further
+increasesthecommunicationtimeandpreventsusfromapplying
+this data layout.
+4 TENSORFLOW INTEGRATION
+WechoseTensorFlowasourMLframeworksinceitisbeingwidely
+usedforinferenceintheMLcommunity(e.g.[ 12,15]).Toinvoke
+FPGA from TensorFlow, we redefine the nodes in the original com-
+putation graph. All computation nodes of CNN are merged intoone node that is implemented by FPGA. The rest of the graph is
+still processed on the CPU.
+When FPGA is connected to TensorFlow, the whole integration
+stackconsistsofthefollowingsteps:1)readingtheinputsofCNN,2)
+pre-processing include stages like image resizing, 3) re-organizing
+theinitialdatalayoutsinCPUmemory,4)transferringdatafrom
+CPUtoFPGAdevicememory,5)computationonFPGA,6)fetching
+the results back via PCIe, 7) reformatting and passing it to Ten-
+sorFlow, 8) non-CNN computation stages on CPU, 9) processing
+the results (e.g., estimating the human poses based on the attained
+results and drawing them for OpenPose network), and 10) writing
+out and displaying the results.
+Figure 2 shows the breakdown of these stages in the OpenPose
+application for an 384 ×384 RGB input. Among the whole pipeline,
+whichtakes208.8ms,theFPGAcomputationinStep5onlyrequires
+11.8%ofthetotaltime.Theintegrationoverheadshaveledto8 .45×
+performanceslowdown.Toreducetheseoverheadswehaveapplied
+an optimized software/hardware pipelining.
+A two-level pipelining is applied on the whole integration stack
+that enables the simultaneous processing of the aforementioned
+steps.ThefirstleveloverlapsTensorFlow’soverheads(steps1,2,
+9,10)withtherestofthesteps.ThesecondoneoverlapsFPGA’s
+computation with data movement steps (steps 3, 4, 6, 7).
+Figure 7 illustrates the first level of pipeline, which is applied at
+theTensorFlowlevel.Thenumbersinthefigureshowtherelated
+step number. Steps 1, 2, 9, and 10 and the rest of the steps are
+assignedtodifferentprocessesconnectedbyqueue.Therefore,steps
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+136
+
+==== Page 5 ====
+Reformat 
+Input (3)DMA Load 
+(4)Kernel 
+Comp. (5)DMA Read 
+(6)Reformat 
+Output (7)
+Reformat 
+Input (3)DMA Load 
+(4)Kernel 
+Comp. (5)DMA Read 
+(6)Reformat 
+Output (7)
+Reformat 
+Input (3)DMA Load 
+(4)Kernel 
+Comp. (5)DMA Read 
+(6)Reformat 
+Output (7)
+…FPGA 
+Node
+……Non-CNN 
+Comp. (8 )
+Non-CNN 
+Comp. (8 )
+Figure 8: The overview of the Process Graph stage.
+Images Results
+IntegratorInstruction 
+GeneratorDSE
+Engine
+AcceleratorNetwork 
+ConfigFPGA 
+Resources
+HW
+Config
+Network 
+Inst.Compilation
+System
+Figure 9: Compilation system overview.
+1, 2, 9, and 10 are overlapped with FPGA-related steps. The overall
+performance is determined by the stage with the longest latency.
+To further improve the performance, we fully pipeline the com-
+municationandcomputationofFPGA,whichconsistsofstep3to7.
+Thisbuildsthesecondlevelofpipeline.Toallowpipelining,abatch
+of images are sent to FPGA. For a certain batch size, the additional
+latency incurred by batch processing is dissolved when the first
+level of the pipeline is applied. After the FPGA finishes processing
+thebatch,theresultsarepassedbacktoTensorFlowandthenon-
+CNN computations are done in parallel for all the images. Figure 8
+depicts the redefined graph that we use to achieve such a pipeline.
+With this optimization, the data movement steps are overlapped
+with kernel computation and the latency for non-CNN computa-
+tion (Step 8) is amortized for the whole batch. Note that such deep
+software+hardwarepipeliningtechniqueswerealsousedin[ 5,9]
+for integrating FPGA accelerators to Spark-based applications.
+5 FLEXCNN COMPILATION SYSTEM
+Figure 9 depicts the overview of our compilation system, which
+is composed of three modules: design space exploration engine,
+instruction generator, and integrator.
+•Design spaceexploration engine. TheCNN networkde-
+scriptionfileparsedfromTensorFlowandtheavailabletarget
+FPGA resources are fed into the design space exploration
+engine to search for the optimal hardware configuration pa-
+rameters. Once found, these parameters are then used for
+generatingtheaccelerator.TheDSEprocesswasexplained
+in Section 3.1.1
+•Instructiongenerator. Theinstructiongeneratortakesthe
+CNN network description file and accelerator hardware de-
+scription file as the inputs and creates one instruction for
+each CNN layer. The non-convolutional layers (e.g., bias,
+ReLU(6)) are fused with adjacent convolutional layers to im-
+prove the computation efficiency. The instruction generator
+produces one VLIW-like instruction for each of these fused
+layers.Thisinstructioncontainstheenablesignalforeachof
+the modules, the layer configurations, and tiling factors. An
+RBB contains two convolutional layers in one block. As we
+onlyhaveoneconvolutionmoduleintheaccelerator,wewillTable 2: Frequency and resource utilization.
+Precision Frequency LUTFFBRAM URAM DSP
+float 32-bit 242.9MHz 43%40% 60% 15% 50%
+Table 3: Performance on OpenPose-V2.
+Model Precision Frequency Runtime (ms)
+(MHz) (1) (2)
+All Uniform float 32-bit 237 57.7 41.5
+All Dynamic float 32-bit 242.9 35.6 24.7
+(2): With applying DRAM organization for concatenation layers
+(1): Without applying DRAM organization for concatenation layers
+divide this block into two layers. The first layer performs
+the first convolutionand the next one computesthe rest of
+the block.
+•Integrator. The integrator takes in the FPGA accelerator
+andintegratesitintotheTensorFlowframework,performing
+the end-to-end processing task. The optimizations on the
+integrator were covered in Section 4.
+6 EXPERIMENTAL RESULTS
+6.1 Experiment Setup
+TheFlexCNNarchitectureisdescribedusingVivadoHLSC[ 24].The
+targetplatformisXilinxVirtexUltrascale+VCU1525.Thedesign
+issynthesizedandimplementedusingXilinxSDAccel2018.3.We
+use OpenPose-V2 network explained in Section 2 to test our work.
+The accelerator can get any input size. For this section, we have
+configuredittotakeanRGBimageof384 ×384withfloating-point
+precision as inputs.
+6.2 Hardware Optimization
+The target FPGA platform comes with four DDR banks. In our
+implementation,weusetwoDDRbanks,assigningfeaturemaps
+and weights (including bias) to two separate DDR banks. All the
+architecture choices are parameterizable and can be adjusted based
+on the target FPGA. We found the following configurations that
+workbestfortheOpenPose-V2applicationonXilinxVCU1525.The
+systolicarrayforourstandardconvmoduleisorganizedasan8 ×8
+array with SIMD factor of 8. For the rest of the modules we use the
+same SIMD factor. The maximal tiling factors for Tn,Tm,Th,Tw
+are64,64,12,and96,respectively.Table2showsthefrequencyand
+resource utilization under this configuration.
+Table 3 shows the benefits of dynamic tiling and data layout
+transformation.Wecanseethattheseoptimizationsincreasethe
+performance by 2 .3×. Figure 1 depicts the performance gain of
+usingdynamictilinginalayer-by-layerfashionforthefirst24con-
+volutional layers. Table 4 shows how applying dynamic tiling and
+dynamicdatalayoutaffectsthetilingfactorsandeffectiveDRAM
+bandwidth (BW) for the first layer of the last RBB in OpenPose-V2compared to a design without these optimizations. The kernel size
+for this layer is 1 ×1 which means it can use the optimized data
+layout withburst lengthof Tn(k)×Tw(k)×Th(k)as describedin
+Section 3.2. This data layout, along with the best tiling factor used
+forthislayerincreasestheeffectiveDRAMBWandCTCratioby
+2.8×. This results in 6 .1×performance improvement.
+We further test the DSP efficiency of our design on a given con-
+volution layer. Of all the DSPs, 78.7% of them are used in Standard
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+137
+
+==== Page 6 ====
+Table4:Performanceimpactsofdynamictiling/datalayout
+transformation.
+Model ThTwTnTmEff. DRAM
+BW (GB/s)CTCPerf.
+(GFLOPs)
+All Uniform 12483232 4.31 14.9 24.4
+All Dynamic 12244848 12.05 41.3149.2 (6.1×)
+Figure 10: Layers in Table 5 under the roofline model.
+Table 5: Performance on different convolutional layers.
+LayerRuntime
+(ms)Perf.
+(GFLOPs)DSPtotaleffDSPusedeff
+Conv 3x3 709.3 245.2 73.8% 93%
+Conv 1x1 80.2 240.9 72.6% 91.4%
+DSC 3x3 113.4 176.3 53.1% 58.6%
+DSC 1x1 84.1 230.8 69.5% 76.7%
+Table 6: Performance impacts of integration optimization.
+VersionRuntime
+frame
+(ms)Perf.
+(FPS)Speedup
+Original 208.8 4.8 1
+1st pipeline 97.1 10.3 2.1
+2nd pipeline 42 23.8 5
+Convmodule and11.2%inDepth Conv module.Wemeasure DSP
+efficiencyusingtwofactors:thetotalnumberofDSPsinthedesign
+and the number of DSPs of the modules used by that layer. All the
+tests are on a 256 ×384×384 input, producing 256 output channel.
+Table 5 summarizes the results. DSC layers take K2×less computa-
+tion,makingthemcommunication-boundasshowninFigure10.
+ThisfiguredepictsthatDSClayersfallinthememory-boundregion
+of the roofline model since they have less CTC ratio. Therefore, we
+achieve lower computation efficiency in these layers. Additionally,
+it shows that the data layout optimization for the DSC with the
+1×1kernelincreasestheburstlength.Thishelpstoincreasethe
+effectiveDRAMbandwidth,leadingtoaperformanceimprovement
+over the 3 ×3 DSC.
+6.3 Integration Optimization
+Inthissection,weevaluatetheeffectofourintegrationoptimization.
+FlexCNNrunsat24.7ms,whichtranslatestoapeakperformance
+of40.5FPS.However,withoutproperoptimization,thedirectinte-
+gration into TensorFlow framework only leads to the performance
+of 4.8FPS, as shown in Table 6. Table 6 summarizes the impacts
+oftwo-levelpipeliningontheoverallperformance.Weareusing
+a batch of 16 for the OpenPose network to enable pipelining on
+FPGAsinceitproducesthebestperformanceandsmoothestoutput
+when displaying the result. With two-level pipelining, we achieve
+up to 5 ×speedup, which leads to the final performance of 23.8FPS.Table 7: Performance comparison of different platforms.
+PlatformFrequency
+(GHz)Runtime
+(ms)Dynamic Power
+(W)
+CPU 2.4 99.3 17
+GPU 1.4 25.3 38
+FPGA (ours) 0.243 24.7 10
+6.4 Comparative Studies
+Tothebestofourknowledge,thereisonlyonework[ 2]thathas
+implementedavariantofOpenPoseonFPGA.However,theytakea
+differentapproach.Theyreducethecomputationcostoftheoriginal
+network by making the weights sparse and using only two stages
+after the backbone network. Furthermore, they quantized the data
+to16-bitfixedpointandstoredfeaturemapsandweightson-chip.
+After these modifications, they neither reported their network’s
+computationcostnortheirarchitecture’sresourceutilization.Thus,
+we can not compare our results to theirs directly. Instead, we have
+compared our results against the network implementation using
+TensorFlow on CPU and GPU.
+TheCPUisa56-coreIntelXeonCPUE5-2680v4thatoperates
+at 2.40GHz. For GPU, we use the NVIDIA Tesla V100 GPU andit uses cuDNN[
+6] to run the network. To have a fair comparison
+onthelatencyofrunningthenetworkondifferentplatforms,we
+measuretheruntimeofasingleimageinferenceusingOpenPose-
+V2network.Table7summarizestheresults.Theruntimeconsiders
+only the CNN inference time on RGB images of size 384 ×384. For
+both the FPGA and GPU, the time to transfer the data from host
+to device and device to host is excluded from the measurement.
+We also measure the dynamic power on each platform, which is
+calculated as the difference of the hardware power when running
+and not running the application. Both GPU and FPGA suffer from
+thelowdatareuseanddegreeofparallelismofthisnetwork(thisis
+why FlexCNN’s performance on this network is only 117GFLOPs).
+However, FlexCNN is 3 .8×more energy efficient than GPU.
+7 CONCLUSION
+The rapid evolution of CNN networks has brought new challenges
+to FPGA acceleration. In this paper, we identify two major chal-
+lenges including the performance disparity of different CNN layers
+andthehighoverheadsofintegratingFPGAintoMLframework.
+Totacklethesetwochallenges,weproposeanacceleratornamed
+FlexCNN which employs dynamic tiling and data layout optimiza-
+tiontoimprovethehardwareefficiencyacrosslayers.Thesetwo
+techniques achieve 2 .3×speedup on the studied Openpose-V2 net-
+work. Furthermore, we propose a two-level integration pipeline to
+reduce the integration overheads. It adds another 5x speedup ofthe overall performance. At last, we are able to meet the require-
+ment of real-time processing with 23.8FPS with these optimization
+techniques.
+ACKNOWLEDGEMENTS
+Theauthorswouldliketothanktheanonymousreviewersfortheirvaluable
+comments and helpful suggestions. The authors also thank Tong He for
+helping with the accelerator integration, and Marci Baun for editing the
+paper. This work is supported by the ICN-WEN award jointly funded by
+the NSF (CNS-1719403) and Intel (34627365), the NeuroNex Award funded
+by NSF (DBI-1707408), and CDSC industrial partners, including Fujitsu,
+Huawei, Mentor Graphics, and NEC.
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+138
+
+==== Page 7 ====
+REFERENCES
+[1]MartínAbadi,PaulBarham,JianminChen,ZhifengChen,AndyDavis,Jeffrey
+Dean,MatthieuDevin,SanjayGhemawat,GeoffreyIrving,MichaelIsard,etal .
+2016. Tensorflow: A system for large-scale machine learning. In 12th USENIX
+Symposium on Operating Systems Design and Implementation (OSDI). 265–283.
+[2]Jinguji Akira, Tomoya Fujii, Shimpei Sato, and Hiroki Nakahara. 2018. An
+FPGA Realization of OpenPose Based on a Sparse Weight Convolutional Neural
+Network. In 2018 International Conference on Field-Programmable Technology
+(FPT). IEEE, 310–313.
+[3]LinBai,YimingZhao,andXinmingHuang.2018. ACNNacceleratoronFPGA
+usingdepthwiseseparableconvolution. IEEE Transactions on Circuits and Systems
+II: Express Briefs 65, 10 (2018), 1415–1419.
+[4]Zhe Cao, Tomas Simon, Shih-En Wei, and Yaser Sheikh. 2017. Realtime multi-
+person 2d pose estimation using part affinity fields. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition. 7291–7299.
+[5]Yu-TingChen,JasonCong,ZhenmanFang,JieLei,andPengWei.2016. When
+Spark meets FPGAs: A case study for next-generation DNA sequencing accelera-
+tion. In 8th USENIX Workshop on Hot Topics in Cloud Computing (HotCloud).
+[6]Sharan Chetlur, Cliff Woolley, Philippe Vandermersch, Jonathan Cohen, John
+Tran, Bryan Catanzaro, and Evan Shelhamer. 2014. cuDNN: Efficient primitives
+for deep learning. arXiv preprint arXiv:1410.0759 (2014).
+[7]Yuze Chi, Jason Cong, Peng Wei, and Peipei Zhou. 2018. SODA: Stencil with
+optimizeddataflowarchitecture.In 2018 IEEE/ACM International Conference on
+Computer-Aided Design (ICCAD). IEEE, 1–8.
+[8]JasonCongandJieWang.2018. PolySA:Polyhedral-basedsystolicarrayauto-
+compilation. In 2018 IEEE/ACM International Conference on Computer-Aided De-
+sign (ICCAD). IEEE, 1–8.
+[9]Jason Cong, Peng Wei, and Cody Hao Yu. 2018. From JVM to FPGA: Bridging
+abstractionhierarchyviaoptimizeddeeppipelining.In 10th USENIX Workshop
+on Hot Topics in Cloud Computing (HotCloud).
+[10]Yijin Guan, Hao Liang, Ningyi Xu, Wenqiang Wang, Shaoshuai Shi, Xi Chen,
+Guangyu Sun, Wei Zhang, and Jason Cong. 2017. FP-DNN: An automated frame-
+work for mapping deep neural networks onto FPGAs with RTL-HLS hybrid tem-
+plates. In 2017 IEEE 25th Annual International Symposium on Field-Programmable
+Custom Computing Machines (FCCM). IEEE, 152–159.
+[11]Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko, Weijun
+Wang, Tobias Weyand, Marco Andreetto, and Hartwig Adam. 2017. Mobilenets:
+Efficient convolutional neural networks for mobile vision applications. arXiv
+preprint arXiv:1704.04861 (2017).
+[12]Andrey Ignatov, Radu Timofte, William Chou, Ke Wang, Max Wu, Tim Hartley,
+and Luc Van Gool. 2018. AI benchmark: Running deep neural networks onandroid smartphones. In Proceedings of the European Conference on Computer
+Vision (ECCV). 0–0.
+[13]Ildoo Kim. 2018. tf-pose-estimation. https://github.com/ildoonet/tf-pose-
+estimation. (2018).
+[14]HuiminLi,XitianFan,LiJiao,WeiCao,XuegongZhou,andLingliWang.2016.
+AhighperformanceFPGA-basedacceleratorforlarge-scaleconvolutionalneural
+networks. In 2016 26th International Conference on Field Programmable Logic and
+Applications (FPL). IEEE, 1–9.[15]DeG Matthews,GAlexander,Mark VanDerWilk,Tom Nickson,KeisukeFujii,
+Alexis Boukouvalas, Pablo León-Villagrá, Zoubin Ghahramani, and James Hens-
+man.2017. GPflow:AGaussianprocesslibraryusingTensorFlow. The Journal of
+Machine Learning Research 18, 1 (2017), 1299–1304.
+[16]Daniel H Noronha, Bahar Salehpour, and Steven JE Wilton. 2018. LeFlow: En-
+ablingflexibleFPGAhigh-levelsynthesisofTensorFlowdeepneuralnetworks.
+InFSP Workshop 2018; Fifth International Workshop on FPGAs for Software Pro-
+grammers. VDE, 1–8.
+[17]Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zhmoginov, and Liang-
+Chieh Chen. 2018. MobileNetv2: Inverted residuals and linear bottlenecks. In
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition.
+4510–4520.
+[18]Yongming Shen, Michael Ferdman, and Peter Milder. 2017. Maximizing CNNaccelerator efficiency through resource partitioning. In 2017 ACM/IEEE 44th
+Annual International Symposium on Computer Architecture (ISCA). IEEE, 535–
+547.
+[19]Laurent Sifre and Stéphane Mallat. 2014. Rigid-motion scattering for image
+classification. Ph. D. dissertation (2014).
+[20]KarenSimonyanandAndrewZisserman.2014.Verydeepconvolutionalnetworks
+for large-scale image recognition. arXiv preprint arXiv:1409.1556 (2014).
+[21]NaveenSuda,VikasChandra,GaneshDasika,AbinashMohanty,YufeiMa,Sarma
+Vrudhula, Jae-sun Seo, and Yu Cao. 2016. Throughput-optimized OpenCL-based
+FPGAaccelerator forlarge-scaleconvolutionalneural networks.In Proceedings
+of the 2016 ACM/SIGDA International Symposium on Field-Programmable Gate
+Arrays. ACM, 16–25.
+[22]XuechaoWei,YunLiang,XiuhongLi,CodyHaoYu,PengZhang,andJasonCong.
+2018. TGPA:Tile-grainedpipelinearchitectureforlowlatencyCNNinference.
+In2018 IEEE/ACM International Conference on Computer-Aided Design (ICCAD) .
+IEEE, 1–8.
+[23]Xuechao Wei, Cody Hao Yu, Peng Zhang, Youxiang Chen, Yuxin Wang, Han
+Hu, Yun Liang, and Jason Cong. 2017. Automated systolic array architecture
+synthesis for high throughput CNN inference on FPGAs. In Proceedings of the
+54th Annual Design Automation Conference 2017. ACM, 29.
+[24]Xilinx.2018. VivadoDesignSuiteUserGuide-High-LevelSynthesis(UG902).
+(2018).
+[25]XuanYang,MingyuGao,JingPu,AnkitaNayak,QiaoyiLiu,StevenEmberton
+Bell, Jeff Ou Setter, Kaidi Cao, Heonjae Ha, Christos Kozyrakis, et al .2018. DNN
+dataflow choice is overrated. arXiv preprint arXiv:1809.04070 (2018).
+[26]Chen Zhang, Peng Li, Guangyu Sun, Yijin Guan, Bingjun Xiao, and Jason Cong.
+2015. Optimizing FPGA-based accelerator design for deep convolutional neural
+networks. In Proceedings of the 2015 ACM/SIGDA International Symposium on
+Field-Programmable Gate Arrays. ACM, 161–170.
+[27]ChenZhang,GuangyuSun,ZhenmanFang,PeipeiZhou,PeichenPan,andJason
+Cong. 2018. Caffeine: Towards uniformed representation and acceleration for
+deepconvolutionalneuralnetworks. IEEE Transactions on Computer-Aided Design
+of Integrated Circuits and Systems (2018).
+[28]Xiaofan Zhang, Junsong Wang, Chao Zhu, Yonghua Lin, Jinjun Xiong, Wen-mei
+Hwu, and Deming Chen. 2018. DNNBuilder: An automated tool for building
+high-performanceDNNhardwareacceleratorsforFPGAs.In Proceedings of the
+International Conference on Computer-Aided Design. ACM, 56.
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+139
+

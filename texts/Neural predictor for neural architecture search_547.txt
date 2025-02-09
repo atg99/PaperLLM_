@@ -1,0 +1,976 @@
+==== Page 1 ====
+Neural Predictor for Neural Architecture Search
+Wei Wen
+Google Brain and Duke University
+wei.wen@duke.eduHanxiao Liu
+Google Brain
+hanxiaol@google.comHai Li
+Duke University
+hai.li@duke.edu
+Yiran Chen
+Duke University
+yiran.chen@duke.eduGabriel Bender
+Google Brain
+gbender@google.comPieter-Jan Kindermans
+Google Brain
+pikinder@google.com
+Abstract
+Neural Architecture Search methods are effective but of-
+ten use complex algorithms to come up with the best ar-
+chitecture. We propose an approach with three basic steps
+that is conceptually much simpler. First we train Nrandom
+architectures to generate N(architecture, validation accu-
+racy) pairs and use them to train a regression model that
+predicts accuracy based on the architecture. Next, we use
+this regression model to predict the validation accuracies of
+a large number of random architectures. Finally, we train
+the top- Kpredicted architectures and deploy the model
+with the best validation result. While this approach seems
+simple, it is more than 20as sample efﬁcient as Regular-
+ized Evolution on the NASBench-101 benchmark and can
+compete on ImageNet with more complex approaches based
+on weight sharing, such as ProxylessNAS.
+1. Introduction
+The original Neural Architecture Search (NAS) meth-
+ods have resulted in improved accuracy but they came at a
+high computational cost [27, 20, 19]. Recent advances have
+reduced this cost signiﬁcantly [15, 9, 26, 4, 18, 5, 2, 17,
+24, 23, 3], but many of them require nontrivial specialized
+implementations. For example, weight sharing introduces
+additional complexity into the search process, and must be
+carefully tuned to get good results.
+With an inﬁnite compute budget, a na ¨ıve approach to ar-
+chitecture search would be to sample tens or hundreds of
+thousands of random architectures, train and evaluate each
+one, and then select the architectures with the best vali-
+dation set accuracies for deployment; this is a straightfor-
+ward application of the ubiquitous random search heuristic.
+However, the computational requirements of this approach
+makes it infeasible in practice. For example, to exhaus-
+tively train and evaluate each of the 400,000 architectures
+Search spaceTrain & validate78.1%81.3%75.2%NeuralPredictorSample Nmodels(A small subset)BuildSearch space77.9%82.1%…74.9%All modelsTop KNeuralPredictorPredictaccuracyTrain & validatePick the best validationTrueaccuracyFigure 1: Training and applying the Neural Predictor.
+in the NASBench [25] search space, it would take roughly
+25 years of TPU training time. Only a small number of
+companies and corporate research labs can afford this much
+compute, and it is far out of reach for most ML practition-
+ers.
+One way to alleviate this is to identify a small subset of
+promising models. If we can do this with a reasonably high
+recall (most models selected are indeed of high quality) then
+we can train and validate just this limited set of models to
+reliably select a good one for deployment. To achieve this,
+the proposed Neural Predictor uses the following steps to
+perform an architecture search:
+(1) Build a predictor by training Nrandom architec-
+tures to obtain N(architecture, validation accuracy) pairs.
+Use this data to train a regression model.
+(2) Quality prediction using the regression model over
+a large set of random architectures. Select the Kmost
+promising architectures for ﬁnal validation.
+(3) Final validation of the top Karchitectures by train-
+ing them. Then we select the model with the highest vali-
+dation accuracy to deploy.
+The workﬂow is illustrated in Figure 1. In this setup, the
+ﬁrst step is a traditional regression problem where we ﬁrst
+generate a dataset of Nsamples to train on. The second step
+1arXiv:1912.00848v1  [cs.LG]  2 Dec 2019
+
+==== Page 2 ====
+can be carried out efﬁciently because evaluating a model
+using the predictor is cheap. The third step is nothing more
+than traditional validation where we only evaluate a well
+curated set of Kmodels. While the method outlined above
+might seem straightforward, it is very effective:
+The Neural Predictor strongly outperforms random
+search on NASBench-101. It is also about 22:83times
+more sample-efﬁcient than Regularized Evolution, the
+best performing method in the NASBench-101 paper.
+The Neural Predictor can easily handle different search
+spaces. In addition to NASBench-101, we evaluated it
+on the ProxylessNAS [4] search space and found that
+the predicted architecture is as accurate as Proxyless-
+NAS and clearly better than random search.
+The architecure selection process uses two of the most
+ubiquitous tools from the ML toolbox: random sam-
+pling and supervised learning. In contrast, many ex-
+isting NAS approaches rely on reinforcement learning,
+weight sharing, or Bayesian optimization.
+The most computationally intensive components of the
+proposed method (training Nmodels in step 1 and K
+models in step 3) are highly parallelizable when sufﬁ-
+cient computation resources are available.
+2. Neural Predictor
+The core idea behind the Neural Predictor is that carrying
+out the actual training and validation process is the most
+reliable way to ﬁnd the best model. The goal of the Neural
+Predictor is to provide us with a curated list of promising
+models for ﬁnal validation prior to deployment. The entire
+Neural Predictor process is outlined below.
+Step 1: Build the predictor using Nsamples. We train
+Nmodels to obtain a small dataset of (architecture, vali-
+dation accuracy) pairs. The dataset is then used to train a
+regression model that maps an architecture to the predicted
+validation accuracy.
+Step 2: Quality prediction. Because architecture eval-
+uation using the learned predictor is efﬁcient and trivially
+parallelizable, we use it to rapidly predict the accuracies of
+a large number of random architectures. We then select the
+topKpredicted architectures for ﬁnal validation.
+Step 3: Final validation on Ksamples. We train and
+validate the top Kmodels in the traditional way. This al-
+lows us to select the best model based on the actual valida-
+tion accuracy. Even if our predictor is somewhat noisy, this
+step allows us to use a more reliable measurement to select
+our ﬁnal architecture for deployment.
+Training N+Kmodels is by far the most computation-
+ally expensive part of the Neural Predictor. If we as-
+sume a constant compute budget, NandKare key hyper-
+parameters which needs to be set; we will discuss this next.2.1. Hyper-parameters in the Workﬂow
+Hyper-parameters for (ﬁnal) model training are al-
+ways needed if we train a single model or we perform an
+architecture search. In this respect the Neural Predictor is
+no different from other methods. We found that using the
+same hyper-parameters for all models we train is an effec-
+tive strategy, one that was also used in NASBench-101.
+Trade-off between NandKfor a ﬁxed budget: If we
+increase N, the number of samples used to train the Neu-
+ral Predictor, we can expect the predictor to become more
+accurate. However, to maintain a ﬁxed compute budget, we
+must decrease Kin order to increase N.
+IfKis large and the predictor proposes a good set of ar-
+chitectures for ﬁnal validation, the precise ranking of these
+architecture is not that important.
+However, if we use more training data to improve the
+predictor, we have a small set of Kmodels for ﬁnal evalua-
+tion. In this case, the performance predictor must be able to
+reliably identify high-quality models from the search space.
+This might be a hard task and it is possible that trying out
+more models is more effective than using more data to get a
+small improvement in predictive quality. Because it is dif-
+ﬁcult to theoretically predict the optimal trade-off, we will
+investigate this in the experimental setting.
+To ﬁnd a lower bound on Nwe could iteratively increase
+Nuntil we observe a good cross-validation accuracy. This
+means that contrast to some other methods such as Regu-
+larized Evolution [19], ENAS [18], NASNet [27], Proxy-
+lessNAS [4], there is no need to repeat the entire search
+experiment in order to tune this hyper-parameter. The same
+applies to the hyper-parameters and the architecture of the
+Neural Predictor itself.
+The hyper-parameters of the Neural Predictor can be
+optimized by cross-validation using the Ntraining samples.
+In contrast, RL or Evolution-based search methods would
+require us to collect more training samples in order to try
+out a new hyper-parameter conﬁguration. We tried many
+options for the architecture of the predictor. Due to space
+constraints we will limit our discussion to Graph Convo-
+lutional Networks. A comparison against other regression
+methods can be found in the supplementary material.
+2.2. Modeling by Graph Convolutional Networks
+Graph Convolutional Networks (GCNs) are good at
+learning representations for graph-structured data [11, 22]
+such as a neural network architecture. The graph convolu-
+tional model we use is based on [11], which assumes undi-
+rected graphs. We will modify their approach to handle neu-
+ral architectures represented as directed graphs.
+We start with a D0-dimensional representation for each
+of the Inodes in the graph, giving us an initial feature vec-
+torV02RID0. For each node we use a one-hot vec-
+tor representing the selected operation. An example for
+
+==== Page 3 ====
+A cell or a network 
+Operations: [input, conv1x1, 
+conv3x3, max-pool, output] input output 
+max-pool conv1x1 conv3x3 conv1x1 0, 1, 1, 0, 0, 1 
+0, 0, 0, 0, 0, 1 
+0, 0, 0, 1, 1, 0 
+0, 0, 0, 0, 0, 1 
+0, 0, 0, 0, 0, 1 
+0, 0, 0, 0, 0, 0 
+adjacency matrix 0, 0, 0, 0, 0, 0 
+1, 0, 0, 0, 0, 0 
+1, 0, 0, 0, 0, 0 
+0, 0, 1, 0, 0, 0 
+0, 0, 1, 0, 0, 0 
+1, 1, 0, 1, 1, 0 
+01 23 4
+adjacency matrix 
+transpose 
+[1,0,0,0,0] [0,0,0,0,1] 
+[0,1,0,0,0] [0,1,0,0,0] [0,0,1,0,0] 
+[0,0,0,1,0] 
+01 23 455Figure 2: An illustration of graph and node representations. Left: A neural network architecture with 5candidate options
+per node, each represented as a one-hot code. The one-hot codes are inputs of a bidirectional GCN, which takes into account
+both the original adjacency matrix (middle) and its transpose (right).
+NASBench-101 is shown in Figure 2. The node repre-
+sentation is iteratively updated using Graph Convolutional
+Layers. Each layer uses an adjacency matrix A2RII
+based on the node connectivity and a trainable weight ma-
+trixWl2RDlDl+1:
+Vl+1= ReLU ( AVlWl): (1)
+Following [11], we add an identity matrix to A(correspond-
+ing to self cycles) and normalize it using the node degree.
+The original GCNs [11] assume undirected graphs.
+When applied to a directed acyclic graph, the directed ad-
+jacency matrix allows information to ﬂow only in a single
+direction. To make information ﬂow both ways, we always
+use the average of two GCN layers: one where we use Ato
+propagate information in the forward directions and another
+where we use ATto reverse the direction:
+Vl+1=1
+2ReLU 
+AVlW+
+l
++1
+2ReLU 
+ATVlW 
+l
+:
+Figure 2 shows an example of how the adjacency matrices
+are constructed (without normalization or self-cycles).
+GCNs are able to learn high quality node representations
+by stacking multiple of these layers together. Since we are
+more interested in the accuracy of the overall network (a
+global property), we take the average over node representa-
+tions from the ﬁnal graph convolutional layer and attach one
+or more fully connected layers to obtain the desired output.
+Details are provided in the supplementary material.
+3. Experiments
+In this section we will discuss two studies. First we will
+analyze the Neural Predictor’s behavior in the controlled en-
+vironment from NASBench-101 [25]. Afterwards we will
+use our approach to search for high quality mobile models
+in the ProxylessNAS search space [4].3.1. NASBench-101
+NASBench-101 [25] is a dataset used to benchmark NAS
+algorithms. The goal is to come up with a high quality ar-
+chitecture as efﬁciently as possible. The dataset has the fol-
+lowing properties. (1)Train time, validation and test results
+are provided for all 423,624 models in the search space. (2)
+Each model was trained and evaluated three times. This al-
+lows us to look at the variance across runs. (3)All models
+were trained in a consistent manner, preventing biases from
+the implementation from skewing results. (4)NASBench-
+101 recommends using only validation accuracies during a
+search, and reserving test accuracies in the ﬁnal report; this
+is important to avoid overﬁtting.
+NASBench-101 uses a cell-based NAS [27] on CIFAR-
+10 [12]. Each cell is a Directed Acyclic Graph (DAG)
+with an input node, an output node and up to 5interior
+nodes. Each interior node can be a 11convolution
+(conv1x1 ),33convolution ( conv3x3 ) or max-pooling
+op (max-pool ). One example is shown in Figure 2 (left).
+In each experiment, we use the validation accuracy from
+asingle run1as a search signal. The single run is uniformly
+sampled from these three records. This simulates training
+the architecture once. Test accuracy is only used for report-
+ing the accuracy on the model that was selected at the end
+of a search. For that model we use the mean test accuracy
+over three runs as the “ground truth” measure of accuracy.
+3.1.1 Oracle: an upper bound baseline
+Under the assumption of inﬁnite compute, a traditional ma-
+chine learning approach would be to train and validate all
+possible architectures to select the best one. We refer to this
+baseline as the “oracle” method. Figure 3 plots the valida-
+tion versus the test accuracy for all models. The model that
+1In the training dataset of our Neural Predictor, this means that each
+model’s accuracy label is sampled once and ﬁxed across all epochs.
+
+==== Page 4 ====
+Validation accuracy % Validation accuracy % Test accuracy % 
+Best test model Best validation 
+model Figure 3: (Left) Validation vs. test accuracy in NASBench-
+101. (Right) Zoomed in on the highly accurate region. Each
+model (point) is the validation accuracy from a single train-
+ing run. Test accuracies are averaged over three runs. This
+plot demonstrates that even knowing the validation accu-
+racy of every possible model is not sufﬁcient to predict
+which model will perform best on the testset.
+the oracle method would select based on the validation ac-
+curacy of 95:15% has a test set accuracy of 94:08%. This
+means that the oracle does not select the model with the
+highest test set accuracy. The global optimum on the test
+set is 94:32%. However, since this model cannot be found
+using extensive validation, one should not expect this model
+to be found using a well-performing architecture search al-
+gorithm. A more reasonable goal is to reliably select a
+model that has similar quality to the one selected by the
+oracle. Furthermore, it is important to realize that even an
+oracle approach has variance. We have three training runs
+for each model, which allows us to run multiple variations
+of the “oracle”. This simulates the impact of random vari-
+ations on the ﬁnal result. Averaged over 100oracle experi-
+ments, where in each experiment we randomly select one of
+3 validation results, the best validation accuracy has a mean
+95:13% and a standard deviation 0:03%. The test accuracy
+has a mean of 94:18% and a standard derviation 0:07%.
+3.1.2 Random search: a lower bound baseline
+Recently, Li et al. [13] questioned whether architecture
+search methods actually outperform random search. Be-
+cause this depends heavily on the search space and Li et
+al.[13] did not investigate the NASBench-101 search space
+we need to check this ourselves. Therefore we replicate the
+random baseline from NASBench-101 by sampling archi-
+tectures without replacement. After training, we pick the
+architecture with the highest validation accuracy and report
+its result on the test set. Here we observe that even when we
+train and validate 2000 models, the gap to the oracle is large
+(Figure 6). For random search the average test accuracy is
+GCN ClassifierGCN Regressorinaccurate modelsmodelsaccurate modelsaccuraciesFigure 4: Neural Predictor on NASBench-101. It is a cas-
+cade of a classiﬁer and a regressor. The classiﬁer ﬁlters out
+inaccurate models and the regressor predicts accuracies of
+accurate models.
+Figure 5: Binary classiﬁer to ﬁlter out inaccurate models in
+NASBench-101. In this example, 172models (left) are sam-
+pled to cross validate the classiﬁer. The right ﬁgure shows
+the performance of the classiﬁer on unseen test models.
+93:66% compared to 94:18% for the oracle. This implies
+thatthere is a large margin for improvement over ran-
+dom search. Moreover, the variance is quite high, with a
+standard deviation of 0:25%.
+3.1.3 Regularized evolution: a state of the art baseline
+In the original NASBench-101 publication, Regularized
+Evolution [19] was the best performing method. We repli-
+cated those experiments using the open source code and
+their hyper-parameter settings (available in the supplemen-
+tary material). Regularized evolution is signiﬁcantly bet-
+ter than random as shown in Figure 6. However even after
+2000 models are trained, it is still clearly worse than the ora-
+cle (on average) with an accuracy of 93:97% and a standard
+deviation of 0:26%.
+3.1.4 Neural Predictor
+Having set our baselines, we now describe the precise Neu-
+ral Predictor setup and evaluation.
+Setting up the GCN The graph representation of a
+model is a DAG with up to 7nodes. Each node is
+represented by an one-hot code of “[ input ,conv1x1 ,
+conv3x3 ,max-pool ,output ]”. The GCN has three
+Graph Convolutional layers with the constant node repre-
+
+==== Page 5 ====
+0 1000 2000 3000 4000 5000
+The number of samples94.094.294.494.694.895.095.295.4Validation accuracy %
+neural predictor w classifier
+neural predictor w/o classifier
+regularized evolution
+random search
+oracle
+0 1000 2000 3000 4000 5000
+The number of samples93.093.293.493.693.894.094.294.4Test accuracy %
+neural predictor w classifier
+neural predictor w/o classifier
+regularized evolution
+random search
+oracle
+0 1 2 3 4 5 6 7 8
+Total training time (seconds) 1e693.093.293.493.693.894.094.294.4Test accuracy %
+neural predictor w classifier
+neural predictor w/o classifier
+regularized evolution
+random search
+oracleFigure 6: The comparison of search efﬁciency among oracle, random search, Regularized Evolution and our Neural Predictor
+(with and without 2 stage regressor). All experiments are averaged over 600runs. The x-axis represents the total compute
+budget N+K. The vertical dotted line is at N= 172 and represents the number of samples (or total training time) used
+to build our Neural Predictor. From this line on we start from K= 1 and increase it as we use more architectures for ﬁnal
+validation. The shaded region indicates standard deviation of each search method.
+0 1000 2000 3000 4000 5000
+The number of samples94.094.294.494.694.895.095.295.4Validation accuracy %neural predictor 860
+neural predictor 344
+neural predictor 172
+neural predictor 129
+neural predictor 86
+neural predictor 43
+regularized evolution
+random search
+oracle
+0 1000 2000 3000 4000 5000
+The number of samples93.093.293.493.693.894.094.294.4Test accuracy %neural predictor 860
+neural predictor 344
+neural predictor 172
+neural predictor 129
+neural predictor 86
+neural predictor 43
+regularized evolution
+random search
+oracle
+0 1 2 3 4 5 6 7
+Total training time (seconds) 1e693.093.293.493.693.894.094.294.4Test accuracy %neural predictor 860
+neural predictor 344
+neural predictor 172
+neural predictor 129
+neural predictor 86
+neural predictor 43
+regularized evolution
+random search
+oracle
+Figure 7: Analysis of the trade-off between Ntraining samples vs Kﬁnal validation samples in the neural predictor. The
+x-axis is the total compute budget N+K. The vertical lines indicate different choices for N, the number of training samples
+and the point where we start validating Kmodels. All experiments are averaged over 600runs.
+sentation size Dand one hidden fully-connected layer with
+output size 128. Finally, the accuracy we need to predict is
+limited to a ﬁnite range. While it is not that common for
+regression, we can force the network to make predictions
+in this ﬁnite range by using a sigmoid at the output layer.
+Speciﬁcally, we use a sigmoid function that is scaled and
+shifted such that its output accuracy is always between 10%
+and100% .
+All hyper-parameters for the predictor are ﬁrst optimized
+using cross-validation where1
+3Nsamples were used for
+validation. After setting the hyper-parameters, we use all N
+samples to train the ﬁnal predictor. At this point we heuris-
+tically increase the node representation size Dsuch that thenumber of parameters in the Neural Predictor is also 1:5
+larger. Speciﬁc NandDvalues and other training details
+are in the supplementary material.
+A two stage predictor Looking at a small dataset of
+N= 1722models in Figure 5 (left) during cross-validation,
+we realized that for NASBench-101 a two stage predictor is
+needed. The NasBench-101 dataset contains many models
+that are not stable during training or perform very poorly
+(e.g. a model with only pooling operations).
+The two stage predictor, shown in Figure 4, ﬁlters ob-
+2In our implementation, we split the NASBench-101 dataset to 10;000
+shards and each shard has 43samples. The N= 172 comes from a
+random 4shards.
+
+==== Page 6 ====
+viously bad models ﬁrst by predicting whether each model
+will achieve an accuracy above 91%. This allows the the
+second stage to focus on a narrower accuracy range, which
+makes it more reliable.
+Both stages share the same GCN architecture but have
+different output layers. A classiﬁer trained on these N=
+172models has a low False Negative Rate as shown in Fig-
+ure 5 (right). This implies that the classiﬁer will ﬁlter out
+very few actually good models.
+If we only use a single stage, the MSE for the validation
+accuracy is 1.95 (averaged over 10 random splits). By in-
+troducing the ﬁltering stage this reduces to 0.66. In our ﬁnal
+results in in Figure 6 we will also include an evaluation of
+the predictor without the ﬁltering stage.
+Results using N= 172 (or0:04% of the search space)
+for training are shown in Figure 6. We used N= 172
+models to train the predictor. Then we vary K, the number
+of architectures with the highest predicted accuracies to be
+trained and validated to select the best one. Therefore, “the
+number of samples” in the ﬁgure equals N+Kfor Neural
+Predictor. In Figure 6 (left), our Neural Predictor signiﬁ-
+cantly outperforms Regularized Evolution in terms of sam-
+ple efﬁciency. On the test set, the mean validation accuracy
+is comparable to that of the oracle after about 1000 sam-
+ples. The sample efﬁciency in validation accuracy trans-
+fers well to test accuracy in terms of both the total num-
+ber of trained models in Figure 6 (middle) and wall-clock
+time in Figure 6 (right). After 5000 samples, Regularized
+Evolution reaches validation and test accuracies of 95:06%
+and94:04% respectively; our predictor can reach the same
+validation 12:40faster and the same test 22:83faster.
+Another advantage we observe is that Neural Predictor has
+small search variance.
+NvsKand ablation study. We next consider the prob-
+lem of choosing an optimal value of Nwhen the total num-
+ber of models we’re permitted to train, N+K, is ﬁxed.
+Figure 7 summarizes our study on N. A Neural Predictor
+underperforms with a very small N(43or86), as it cannot
+predict accurately enough which models are interesting to
+evaluate. In Figure 3 we have shown that some models are
+higher ranked according to validation accuracies than test
+accuracies. This can cause the test accuracy to degrade as
+we increase K.
+Finally, we consider the case where Nis large (e.g., N=
+860) butKis small. In this case we clearly see that the
+increase in quality of the GCN cannot compensate for the
+decrease in evaluation budget.
+3.2. ImageNet Experiments
+While the NASBench-101 dataset allows us to look at the
+behavior in a well controlled environment, it does not allow
+us to evaluate whether the approach generalizes to larger
+scale problems. It also does not address the issue of ﬁndinghigh quality inference time constrained models. Therefore,
+to demonstrate that our approach is more widely applicable
+we look at this use case in our second set of experiments on
+ImageNet [6] with the ProxylessNAS search space [4]. We
+will compare our results to a random baseline and our own
+reproduction of the ProxylessNAS search. In this search
+space, the goal is to ﬁnd a good model that has an inference
+time around 84 ms on a Pixel-1 phone.
+Search space The ProxylessNAS search space is illus-
+trated in Figure 8. It does not have the cell-based struc-
+ture from NASBench-101; it instead requires independent
+choices for the individual layers. The layers are divided up
+into blocks, each of which has its own ﬁxed resolution and a
+ﬁxed number of output ﬁlters. We search over which layers
+to skip and what operations to use in each layer. (The ﬁrst
+layer of a block is always present.) There are approximately
+6:641017models in the search space. Because this search
+space is so large, we cannot generate the oracle baseline; we
+must instead rely on the random search and ProxylessNAS
+re-implementations we discuss next.
+3.2.1 Baselines
+The random search baseline samples 256 models with
+inference times between 75ms and 85ms. All these models
+are trained for 90 epochs.Then, we look at which models
+are Pareto optimal (i.e. have good tradeoffs between infer-
+ence time and validation quality). All Pareto optimal mod-
+els were then trained for 360 epochs and evaluated on the
+test set. The results are shown in Figure 10. More imple-
+mentation details are in the supplementary material.
+ProxylessNAS [4] is an efﬁcient architecture search al-
+gorithm based on weight sharing and reinforcement learn-
+ing (RL). It trains a large neural network where different
+paths can be switched on or off to mimic speciﬁc architec-
+tures in the search space. The RL controller assumes that for
+a single network all decisions can be made independently
+(i.e. the probability distribution over architectures is factor-
+ized). To train the shared weights of the large model, we
+repeat the process of (i) sampling an architecture from the
+RL controller and (ii) training it for a single step. To up-
+date the RL controller, another batch is sampled. This time
+the batch is evaluated on the validation set, and this result
+is used in combination with additional information (i.e. the
+latency) to compute a reward used to update the RL con-
+troller.
+In the original publication, ProxylessNAS reports an
+accuracy of 74.6% for their best model; our reproduc-
+tion of that model achieves 74.9% accuracy. We also re-
+implemented the search algorithm itself. By repeating the
+search 5 times we obtain an average accuracy of 75.0% and
+a variance of 0.1.Since these results are close together we
+consider this sufﬁciently good as a basis for comparison for
+
+==== Page 7 ====
+1layer4layers4layers4layers4layers4layers1layerHead
+Stem[IBwithkernelsize[3,5,7]andexpansionfactor[3,6],zero][IB3×3, IB5×5, IB7×7]32filters16filters32filters40filters80filters96filters192filters320filters1280filtersStride2Stride2Stride2Stride222nodesFigure 8: The search space of ProxylessNAS. Only convolutional layers in blue are searched. The optional operations in each
+layer are 6types of Inverted Bottleneck (IB) [21] (with a kernel size 33,55or77and an expansion factor of 3or6)
+and one zero operation (which outputs zeros for layer skipping purpose). The expansion factor in the ﬁrst block is ﬁxed as 1,
+and the zero operation is forbidden in the ﬁrst layer of every block. The search space size is 3667156:641017.
+Training samplesValidation samplesTest samples
+Figure 9: The performance of Neural Predictor on training, validation and test samples.
+the neural predictor.
+3.2.2 Neural predictor
+Overall, we use the same basic pipeline as in the
+NASBench-101 experiments. However, because the mod-
+els in the ProxylessNAS search space are much more sta-
+ble than those in NASBench-101 we only need a single
+stage predictor. To transfer from NASBench-101 to the
+ProxylessNAS search space, all we have to do is to modify
+the node representation. Because the ProxylessNAS search
+space is just a linear graph as shown in Figure 8 (bottom),
+we can modify the node representation at the input to be
+nothing more than a one hot vector with length 7as this
+allows us to describe all architectures.
+Training and validating the neural predictor To build
+the neural predictor we randomly sample 119models; 79
+samples are used for training and 40samples are for valida-
+tion. To ﬁnd the GCN’s hyperparameters we average vali-
+dation MSE scores over 10random training and validation
+splits. Based on this we select a GCN with 18Graph Con-
+volutional layers with node representation size 96, and with
+two fully-connected layers with hidden sizes 512and128
+on top of the mean node representations in the last Graph
+Convolutional layer. After all hyper-parameters are ﬁnal-
+ized, we train our GCN with all 119samples.Our validation also showed that for ImageNet experi-
+ments, no classiﬁer is needed to ﬁlter inaccurate models.
+This is because the model accuracy is within a relatively
+small range as as shown in Figure 9 (left and middle). Our
+ﬁnal settings for the Neural Predictor achieved on MSE
+0:1090:028averaged over 10validation runs. Figure 9
+shows an example of the correlation between true accu-
+racy and predicted accuracy for training samples (left) and
+validation samples (middle). For validation samples, the
+Kendall rank correlation coefﬁcient is 0:649and the Coefﬁ-
+cient of Determination ( R2score) is 0:648895 .
+Looking at the predictive performance of the predic-
+tor. In Figure 9 (right), we test the generalization of our
+Neural Predictor to unseen test architectures. We ﬁrst ran-
+domly sample 100Kmodels from the ProxylessNAS search
+space without inference time constraint and predict their ac-
+curacies. We then pick the model with minimum predicted
+accuracy ( 72:94%), the model with maximum predicted ac-
+curacy ( 78:45%), and 8additional models which are evenly
+spaced between those two endpoints. We train those 10
+models to obtain their true accuracies. In Figure 9 (right),
+the Kendall rank correlation coefﬁcient is 0:956and the Co-
+efﬁcient of Determination ( R2score) is 0:929. More inter-
+esting, although our training dataset never observed mod-
+els with accuracies higher than 76%, our Neural Predictor
+can still successfully predict the 5models with accuracies
+
+==== Page 8 ====
+InferenceTime(ms)TruevalidationaccuracyPredictedaccuracy
+TruetestaccuracyInferenceTime(ms)InferenceTime(ms)Figure 10: Comparison between random search, ProxylessNAS and Neural Predictor. Left: Frontier models predicted by
+the Neural Predictor. Middle: Validation accuracy of each found frontier models. Right: Test accuracy of each found
+frontier model. (Each test accuracy is averaged over 5training runs under different initial weight values. Error bars with 95%
+conﬁdence interval are also plotted in the ﬁgure.)
+higher than 76%. This demonstrates the generalization of
+our Neural Predictor to unseen data.
+Finding high quality mobile sized models We now use
+the predictor to select frontier models with good trade-offs
+between accuracies and inference times. We randomly sam-
+pleN=112,000 models with inference times between
+75ms and 85ms, and predict their accuracies as shown in
+Figure 10 (left). As a sanity check, we also predict the
+quality of the ProxylessNAS model. The predicted valida-
+tion accuracy is 76:0%which is close to its true validation
+accuracy 76:3%.
+The next step is selecting KPareto optimal models.
+However, because the predictor can make mistakes, we need
+a soft version of Pareto optimality. To do so, we sort the
+models based on increasing inference time. In the regular
+deﬁnition, a model is Pareto optimal if no faster model has
+higher quality. In our setup, we deﬁne a model as ”soft-
+Pareto optimal” when the predicted accuracy is higher than
+the minimum of the previous Jmodels. In our experiments
+we set J= 6. This leaves us with 137promising models in
+green in Figure 10 (left).
+Allk= 137 models are then trained and validated. This
+allows us to obtain a traditional Pareto frontier as shown in
+Figure 10 (middle). The architectures of those true frontier
+models are included in the supplementary material. The
+Neural Predictor outperforms the random baseline and
+is comparable to ProxylessNAS. Recall that the random
+baseline trained 256models. This is the same number of
+models we trained in total for our method ( N= 119 models
+for training the predictor and K= 137 models selected for
+ﬁnal validation). For test set comparisons we train our mod-
+els and our reproduction of ProxylessNAS for 360 epochs.
+The results are shown in Figure 10 (right).Now we observe
+that the gap between the Pareto frontier of the neural pre-dictor and the random baseline is stable on unseen data. To
+obtain a frontier for ProxylessNAS, one could run multiple
+searches to reduce/increase the inference time. We opt to
+reduce the number of ﬁlters in each layer to 0:92to obtain
+a faster model. The results show that the Neural Predictor
+and ProxylessNAS perform comparably.
+4. Discussion and Related Work
+The effectiveness of NAS vs random search has been
+questioned recently [13]. On NASBench-101 the Neural
+Predictor and Regularized Evolution are clearly better than
+random search. We also observed that the Neural Predictor
+is about 22:83times more efﬁcient than Regularized Evolu-
+tion on NASBench-101.
+In the ProxylessNAS search space we saw that the Neu-
+ral Predictor and ProxylessNAS produce models of similar
+quality. We believe that implementing and using the Neu-
+ral Predictor is more straightforward but running a single
+ProxylessNAS search requires fewer resources. Training
+allN+K= 256 models for the entire Neural Predic-
+tor experiment took 47.5 times as much compute as a sin-
+gle ProxylessNAS search. In practice the gap is actually
+much smaller because optimizing the hyper-parameters of
+the Neural Predictor has negligible cost but trying out a new
+hyper-parameter conﬁguration for ProxylessNAS requires a
+full search. On top of that, the Neural Predictor is more
+effective at targeting different latency targets than Proxy-
+lessNAS, which needs a search per target. Furthermore, in
+the ideal setting where we can completely parallelize model
+training for the Neural Predictor ( N= 119 models for train-
+ing in parallel followed by K= 136 for validation in par-
+allel) it would ﬁnish in half the time of a ProxylessNAS
+search. Based on this analysis we believe that the Neural
+Predictor and ProxylessNAS are complementary. Choosing
+
+==== Page 9 ====
+which method to use will depend on the complexity of im-
+plementing the search space (with weight sharing) and the
+computational resources available.
+Finally, we want to point out that this approach is not the
+ﬁrst to use a regression model in a NAS setup. However, it is
+by far the most straightforward one. Other approaches use
+more complicated setups [14, 1], propose creative ways to
+back-propagate through network architectures [17], or ap-
+ply Bayesian optimization [5] or complicated weight shar-
+ing [2] instead of a simple regression model.
+5. Acknowledgements
+We would like to thank Chris Ying, Ken Caluwaerts, Es-
+teban Real, Jon Shlens and Quoc Le for valuable input and
+discussions.
+References
+[1] Bowen Baker, Otkrist Gupta, Ramesh Raskar, and Nikhil
+Naik. Accelerating neural architecture search using perfor-
+mance prediction. arXiv preprint arXiv:1705.10823 , 2017.
+9
+[2] Gabriel Bender, Pieter-Jan Kindermans, Barret Zoph, Vijay
+Vasudevan, and Quoc Le. Understanding and simplifying
+one-shot architecture search. In International Conference on
+Machine Learning , pages 549–558, 2018. 1, 9
+[3] Andrew Brock, Theodore Lim, James M Ritchie, and Nick
+Weston. Smash: one-shot model architecture search through
+hypernetworks. arXiv preprint arXiv:1708.05344 , 2017. 1
+[4] Han Cai, Ligeng Zhu, and Song Han. Proxylessnas: Direct
+neural architecture search on target task and hardware. arXiv
+preprint arXiv:1812.00332 , 2018. 1, 2, 3, 6
+[5] Xiaoliang Dai, Peizhao Zhang, Bichen Wu, Hongxu Yin, Fei
+Sun, Yanghan Wang, Marat Dukhan, Yunqing Hu, Yiming
+Wu, Yangqing Jia, et al. Chamnet: Towards efﬁcient network
+design through platform-aware model adaptation. In Pro-
+ceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition , pages 11398–11407, 2019. 1, 9
+[6] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,
+and Li Fei-Fei. Imagenet: A large-scale hierarchical image
+database. In 2009 IEEE conference on computer vision and
+pattern recognition , pages 248–255. Ieee, 2009. 6
+[7] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Delving deep into rectiﬁers: Surpassing human-level perfor-
+mance on imagenet classiﬁcation. In Proceedings of the
+IEEE international conference on computer vision , pages
+1026–1034, 2015. 13
+[8] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In Proceed-
+ings of the IEEE conference on computer vision and pattern
+recognition , pages 770–778, 2016. 13
+[9] Hanzhang Hu, John Langford, Rich Caruana, Saurajit
+Mukherjee, Eric Horvitz, and Debadeepta Dey. Efﬁcient for-
+ward architecture search. arXiv preprint arXiv:1905.13360 ,
+2019. 1[10] Diederik P Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. arXiv preprint arXiv:1412.6980 ,
+2014. 11
+[11] Thomas N Kipf and Max Welling. Semi-supervised classi-
+ﬁcation with graph convolutional networks. arXiv preprint
+arXiv:1609.02907 , 2016. 2, 3
+[12] Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple
+layers of features from tiny images. Technical report, Cite-
+seer, 2009. 3
+[13] Liam Li and Ameet Talwalkar. Random search and re-
+producibility for neural architecture search. arXiv preprint
+arXiv:1902.07638 , 2019. 4, 8
+[14] Chenxi Liu, Barret Zoph, Maxim Neumann, Jonathon
+Shlens, Wei Hua, Li-Jia Li, Li Fei-Fei, Alan Yuille, Jonathan
+Huang, and Kevin Murphy. Progressive neural architecture
+search. In Proceedings of the European Conference on Com-
+puter Vision (ECCV) , pages 19–34, 2018. 9
+[15] Hanxiao Liu, Karen Simonyan, and Yiming Yang.
+Darts: Differentiable architecture search. arXiv preprint
+arXiv:1806.09055 , 2018. 1
+[16] Ilya Loshchilov and Frank Hutter. Sgdr: Stochas-
+tic gradient descent with warm restarts. arXiv preprint
+arXiv:1608.03983 , 2016. 11, 12
+[17] Renqian Luo, Fei Tian, Tao Qin, Enhong Chen, and Tie-Yan
+Liu. Neural architecture optimization. In Advances in neural
+information processing systems , pages 7816–7827, 2018. 1,
+9
+[18] Hieu Pham, Melody Y Guan, Barret Zoph, Quoc V Le, and
+Jeff Dean. Efﬁcient neural architecture search via parameter
+sharing. arXiv preprint arXiv:1802.03268 , 2018. 1, 2
+[19] Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V
+Le. Regularized evolution for image classiﬁer architecture
+search. In Proceedings of the AAAI Conference on Artiﬁcial
+Intelligence , volume 33, pages 4780–4789, 2019. 1, 2, 4, 11
+[20] Esteban Real, Sherry Moore, Andrew Selle, Saurabh Sax-
+ena, Yutaka Leon Suematsu, Jie Tan, Quoc V Le, and Alexey
+Kurakin. Large-scale evolution of image classiﬁers. In Pro-
+ceedings of the 34th International Conference on Machine
+Learning-Volume 70 , pages 2902–2911. JMLR. org, 2017. 1
+[21] Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zh-
+moginov, and Liang-Chieh Chen. Mobilenetv2: Inverted
+residuals and linear bottlenecks. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition ,
+pages 4510–4520, 2018. 7
+[22] Petar Veli ˇckovi ´c, Guillem Cucurull, Arantxa Casanova,
+Adriana Romero, Pietro Lio, and Yoshua Bengio. Graph at-
+tention networks. arXiv preprint arXiv:1710.10903 , 2017.
+2
+[23] Bichen Wu, Xiaoliang Dai, Peizhao Zhang, Yanghan Wang,
+Fei Sun, Yiming Wu, Yuandong Tian, Peter Vajda, Yangqing
+Jia, and Kurt Keutzer. Fbnet: Hardware-aware efﬁcient con-
+vnet design via differentiable neural architecture search. In
+Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition , pages 10734–10742, 2019. 1
+[24] Sirui Xie, Hehui Zheng, Chunxiao Liu, and Liang Lin.
+Snas: stochastic neural architecture search. arXiv preprint
+arXiv:1812.09926 , 2018. 1
+
+==== Page 10 ====
+[25] Chris Ying, Aaron Klein, Esteban Real, Eric Christiansen,
+Kevin Murphy, and Frank Hutter. Nas-bench-101: To-
+wards reproducible neural architecture search. arXiv preprint
+arXiv:1902.09635 , 2019. 1, 3
+[26] Hongpeng Zhou, Minghao Yang, Jun Wang, and Wei Pan.
+Bayesnas: A bayesian approach for neural architecture
+search. arXiv preprint arXiv:1905.04919 , 2019. 1
+[27] Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V
+Le. Learning transferable architectures for scalable image
+recognition. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pages 8697–8710,
+2018. 1, 2, 3
+
+==== Page 11 ====
+6. Supplementary Material
+6.1. Ablation Study of Neural Predictor Architec-
+tures
+Figure 11 includes ablation study of different architec-
+tures for the Neural Predictor on NASBench-101. We com-
+pared Graph Convolutional Networks (GCN) and Multi-
+layer Perceptrons (MLP) in the ﬁgure. To generate inputs
+for a MLP, we simply concatenate the one-hot codes of node
+operations with the upper triangle of the adjacency matrix.
+From the ﬁgure, we can see such a simple MLP can out-
+perform state-of-the-art Regularized Evolution; more im-
+portantly, the GCN that we selected achieves the best. We
+also tried Convolutional Neural Networks (CNN) but com-
+pletely failed with a performance near to random search.
+During our development, we also proposed a data augmen-
+tation to improve the performance of MLP and CNN. In this
+augmentation, we randomly permute the order of nodes to
+generate new inputs online. However, we needed to per-
+form the permutation during validation; otherwise, the vali-
+dation data distribution is different from training data distri-
+bution. More importantly, GCN encodes the inductive bias
+that the prediction should be permutation invariant. There-
+fore, GCN is our ﬁnal decision.
+6.2. Reproduction of Regularized Evolution [19]
+We follow the NASBench-101 paper and their released
+code3to reproduce Regularized Evolution. The population
+size is set to 100, the sampling size from the population is
+set to 10, and the mutation probabilities of edges and nodes
+are1
+14and1
+10respectively.
+For reproduction purpose, we clarify two differences in
+this paper when plotting curves of “the test accuracy versus
+training time spent”:
+in the NASBench-101 paper, the test accuracy comes
+from a single training run, which leads to the use of
+a single validation accuracy as the signal for search.
+We instead report the mean test accuracy over three
+records. We use the mean because it is a quality expec-
+tation when the a discovered architecture is distributed
+3https://colab.research.google.com/github/
+google-research/nasbench/blob/master/NASBench.
+ipynb
+N D N D
+43 48 172 144
+86 72 334 210
+129 96 860 320
+Table 1: Node representation size Dunder Nand re-trained by different users, and it simulates a sce-
+nario where higher uncertainty exists. Moreover, it is
+the user case that we encountered in the ImageNet ex-
+periments.
+in Figure 6 and Figure 7 in Section 3.1, we plot the test
+accuracy averaged over 600experiments; while, in the
+NASBench-101 paper, the median test accuracy over
+100experiments were plotted.
+6.3. Implementation Details of Neural Predictor
+6.3.1 NASBench-101 on Cifar-10
+The Architecture of Neural Predictor starts with three
+bidirectional Graph Convolutional layers, whose node rep-
+resentations have the same size D. The node representa-
+tions from the last Graph Convolutional layer are averaged
+to obtain a graph representation, which is followed by a
+fully-connected layer with hidden size 128and an output
+layer.
+Training Hyper-parameters of the Neural Predictor
+are cross validated. For the classiﬁer in the two stage pre-
+dictor, we use the Adam optimizer [10] with an initial learn-
+ing rate 0:0002 , dropout rate 0:1and weight decay 0:001.
+The learning rate is gradually decayed to zero by a cosine
+schedule [16]. We train the classiﬁer for 300epochs with a
+mini-batch size 10. The regressor in the two stage predictor
+uses the same hyper-parameters but an initial learning rate
+0:0001 .
+Node representation size Dunder different training
+dataset size Nis listed in Table 1.
+6.3.2 ProxylessNAS on ImageNet
+The Architecture of Neural Predictor includes 18bidi-
+rectional Graph Convolutional layers. The node representa-
+tions from the last Graph Convolutional layer are averaged
+to obtain a graph representation, which is followed by two
+fully-connected layers with hidden sizes 512and128and an
+output layer. The predictor is one stage without a classiﬁer.
+All Graph Convolutional layers have a node representation
+size96.
+The Training Hyper-parameters of Neural Predictor
+are cross validated. We have 119samples4,40of which are
+validation samples and 79are training samples. Training
+hyper-parameters are validated by averaging over 10ran-
+dom splits of 119samples. We use the Adam optimizer with
+an initial learning rate 0:001 and weight decay 0:00001 .
+4We trained 120models and one crashed, ending up with the odd num-
+ber119
+
+==== Page 12 ====
+0 1000 2000 3000 4000 5000
+The number of samples94.094.294.494.694.895.095.295.4Validation accuracy %
+GCN
+MLP
+regularized evolution
+random search
+oracle
+0 1000 2000 3000 4000 5000
+The number of samples93.093.293.493.693.894.094.294.4Test accuracy %
+GCN
+MLP
+regularized evolution
+random search
+oracle
+0 1 2 3 4 5 6 7 8
+Total training time (seconds) 1e693.093.293.493.693.894.094.294.4Test accuracy %
+GCN
+MLP
+regularized evolution
+random search
+oracleFigure 11: The ablation study of our Neural Predictor under different architectures. Experiments are performed in
+NASBench-101. In this study, a one stage predictor without a classiﬁer is used. All methods are averaged over 600ex-
+periments. The shaded region indicates standard deviation of each search method. The x-axis represents the total compute
+budget N+K. The vertical dotted line is at N= 172 and represents the number of samples (or total training time) used
+to build our Neural Predictor. From this line on we start from K= 1 and increase it as we use more architectures for ﬁnal
+validation.
+Inference time Top-1 test accuracy Architecture
+75:05ms 73:760:08% (0;0;6;0;0;0;0;0;6;1;4;6;2;4;0;1;5;0;2;6;2;3)
+75:10ms 74:070:09% (0;0;6;0;6;1;2;0;6;3;0;1;5;2;0;0;1;4;0;6;5;3)
+75:36ms 73:860:19% (0;1;6;6;6;0;4;6;6;4;6;6;1;5;5;1;3;1;5;2;2;3)
+75:76ms 74:160:20% (0;0;6;6;6;2;0;2;3;4;6;1;6;0;1;1;1;5;4;2;3;3)
+76:10ms 74:350:08% (0;0;6;0;6;2;3;6;0;4;3;4;5;3;0;6;0;1;0;2;2;3)
+78:23ms 74:700:15% (0;0;0;6;6;1;0;6;0;5;0;2;1;4;0;2;2;5;5;0;2;3)
+80:42ms 74:610:07% (0;0;6;0;6;2;0;0;2;1;0;0;6;5;0;1;3;5;5;2;2;3)
+82:44ms 74:700:04% (0;0;6;6;0;2;0;0;4;5;4;6;2;4;3;3;6;5;1;2;2;3)
+84:95ms 74:750:09% (0;0;0;0;6;1;3;1;6;4;2;1;0;2;6;0;5;4;2;2;5;3)
+Table 2: Frontier Architectures in Figure 10 (right) in Section 3.2.2. An architecture is represented by the indices of operations
+in all 22layers. The mapping between indices and operations are listed in Figure 8 in Section 3.2. In the ﬁrst block (layer),
+an index selects [IB3x3, IB5x5, IB7x7] with a ﬁxed expansion factor 1. In other layers, an index selects [IB3x3-3, IB5x5-3,
+IB7x7-3, IB3x3-6, IB5x5-6, IB7x7-6, zero], where a sufﬁx “- M” denotes an expansion factor M.
+The learning rate is gradually decayed to zero by a cosine
+schedule [16]. We train for 300epochs with a mini-batch
+size10.
+Training Hyper-Parameters of Image Classiﬁcation
+Models on ImageNet The ofﬁcial ImageNet dataset con-
+sists of 1,281,167 training examples and 50,000 validation
+examples. Since the ofﬁcial test set for ImageNet was never
+publicly released, we follow the standard (although admit-
+tedly confusing) convention of using the 50,000-example
+validation set as our test set. We randomly partitioned the
+1,281,167-image training set into 1024 shards, and used the
+ﬁnal 40 shards – or 50,046 examples – as our validation set.For models which we planned to evaluate on our valida-
+tion set, we excluded these 50,046 examples during model
+training. We did, however, use these examples for models
+we planned to evaluate on our test set.
+When training image classiﬁcation models, we used dis-
+tributed synchronous SGD with four Cloud TPU v2 or v3
+instances (i.e., 32 TPU cores) and a per-core batch size
+of 128. Models were optimized using RMSProp with mo-
+mentum 0.9, decay 0.9, and epsilon 0.1. The learning rate
+was decayed according to a cosine schedule. Models were
+trained with batch normalization with epsilon 0.001 and
+momentum 0.99. Convolutional kernels were initialized
+
+==== Page 13 ====
+with He initialization5[7] and bias variables were initial-
+ized to 0. We initialized the ﬁnal fully connected layer of
+the network with mean 0 and stddev 0.01. We used an L2
+regularization rate of 410 5for all convolutional ker-
+nels, but did not apply L2 regularization to the ﬁnal fully
+connected layer. Models were trained on 224224input
+images with ResNet [8] image preprocessing. Models were
+either trained for 90 or 360 epochs. We used a dropout rate
+of 0 (resp. 0.15) before the ﬁnal fully connected layer when
+training models for 90 (resp. 360) epochs.
+6.4. Discovered Frontier Models on ImageNet
+Table 2 includes architectures at the frontier in Figure
+10 (right) in Section 3.2.2. Our predictor discovers archi-
+tectures with cheap operations (with small kernel size and
+expansion factor) or the skip operation (i.e. zero by index
+6) in the early layers, and places diverse operations in later
+layers to make the trade-off.
+5The default TensorFlow implementation of He initialization has an is-
+sue which can cause it to overestimate the fan-in of depthwise convolutions
+by multiple orders of magnitude. We correct this issue in our implementa-
+tion.
+

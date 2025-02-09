@@ -1,0 +1,872 @@
+==== Page 1 ====
+Fast Point R-CNN
+Yilun Chen1Shu Liu2Xiaoyong Shen2Jiaya Jia1,2
+1The Chinese University of Hong Kong2Tencent YouTu Lab
+{ylchen, leojia }@cse.cuhk.edu.hk, {shawnshuliu, dylanshen }@tencent.com
+Abstract
+We present a uniﬁed, efﬁcient and effective framework
+for point-cloud based 3D object detection. Our two-stage
+approach utilizes both voxel representation and raw point
+cloud data to exploit respective advantages. The ﬁrst stage
+network, with voxel representation as input, only consists of
+light convolutional operations, producing a small number
+of high-quality initial predictions. Coordinate and indexed
+convolutional feature of each point in initial prediction are
+effectively fused with the attention mechanism, preserving
+both accurate localization and context information. The
+second stage works on interior points with their fused fea-
+ture for further reﬁning the prediction. Our method is eval-
+uated on KITTI dataset, in terms of both 3D and Bird’s Eye
+View (BEV) detection, and achieves state-of-the-arts with a
+15FPS detection rate.
+1. Introduction
+One challenging task in 3D perception is 3D object de-
+tection, which serves as the basic component for perception
+in autonomous driving, robotics, etc. Deep convolutional
+neural networks (CNN) greatly improve performance of 3D
+object detection [5, 43, 25, 15, 40, 23]. Recent approaches
+of 3D object detection utilize different types of data, includ-
+ing monocular [3] images, stereo images [4] and RGB-D
+images [32, 33]. In autonomous driving, point clouds cap-
+tured by LiDAR are the more general and informative data
+format to help make prediction [5, 25, 15, 23].
+Challenges LiDAR point cloud is an essential type of ge-
+ometry data for 3D detection. High sparseness and irregu-
+larity of point cloud, however, make it not easily tractable
+for CNN. One scheme is to transform the sparse point cloud
+to the volumetric representation in compact shape by dis-
+cretization, which is called voxelization. This representa-
+tion enables CNN to perform recognition.
+However, volumetric representation is still computation-
+ally challenging. One line of solutions is to use a coarse
+grid [43, 40, 23, 2, 31, 1]; but coarse quantization pre-vents following CNN from utilizing ﬁne-grained informa-
+tion. Several consecutive convolutional layers and subsam-
+pling operations in the CNN worsen the problem.
+Another line [26, 28, 19, 36] is to process point cloud
+directly for 3D object recognition. Different from the vol-
+umetric representation, coordinates of point cloud and their
+structure are directly fed into the neural network to exploit
+precise localization information. We note applying these
+methods to large-scale point clouds for autonomous driving
+is still computationally very heavy.
+Our Contributions In this paper, we propose a uniﬁed,
+fast and effective two-stage 3D object detection framework,
+making use of both voxel representation and raw point
+cloud data. The ﬁrst stage of our network, named V ox-
+elRPN, directly exploits the voxel representation of point
+clouds. Computationally economical convolutional layers
+are adopted for both high efﬁciency and surprisingly high-
+quality detection.
+In the second stage, we apply a light-weight PointNet
+to further reﬁne the predictions. With a small number of
+initial predictions, the second stage is also in a very fast
+speed. We design the module with attention mechanism to
+effectively fuse the coordinates of each interior point with
+the convolution feature from the ﬁrst stage. It makes each
+point aware of its context information.
+One characteristic of our approach is that it beneﬁts from
+both representation of point clouds in volumetric represen-
+tation and raw dense coordinates. The 3D volumetric rep-
+resentation provides a robust way to process point clouds.
+The light-weight PointNet in the second stage inspects co-
+ordinates of points again to capture more localization in-
+formation with enlarged receptive ﬁelds, producing decent
+results. Since our method utilizes convolutional feature for
+each region on point clouds and is with high efﬁciency, we
+name it Fast Point R-CNN.
+With this conceptually simple structure, we achieve high
+efﬁciency and meanwhile decent 3D detection accuracy,
+achieving state-of-the-art results. It is even more effective
+than prior methods that take both RGB and point clouds as
+input. The main contribution of this paper is threefold.
+9775
+
+
+==== Page 2 ====
+•We propose a quick and practical two-stage 3D object
+detection framework based on point clouds (without
+RGB images), exploiting both volumetric representa-
+tion and raw dense input of point clouds.
+•Our system consists of both 2D and 3D convolution to
+preserve information. We fuse convolutional features
+with point coordinate for box reﬁnement.
+•Our system runs at 15FPS and achieves state-of-the-
+art performance in terms of BEV and 3D detection,
+especially for high quality object detection.
+2. Related Work
+We brieﬂy review recent work on 3D data representation
+of point clouds and 3D object detection.
+3D Data Representation Representation of point clouds
+from 3D LiDAR scanners is fundamental for different tasks.
+Generally there are two main ways – voxelization [24, 37]
+or raw point clouds [26, 28, 19, 36]. For the ﬁrst type, Mat-
+urana et al. [24] ﬁrst applied 3D convolution for 3D object
+recognition. For the point-based approaches, PointNet [26]
+is the pioneer to directly learn feature representation based
+on raw points. It further aggregates global descriptors for
+classiﬁcation. Recently, Rethage et al. [6] employed Point-
+Net as the low-level feature descriptor in each 3D grid and
+applied 3D convolution. There are also other methods that
+do not process 3D data directly. For example, most view-
+based methods [34, 27, 35] care more about 2D color and
+gather information from different views of rendered images.
+3D Object Detection Over past a few years, a series of
+3D detectors [5, 25, 15, 43, 40, 23, 20, 29, 41, 16] achieved
+promising results on KITTI benchmark [8].
+Joint Image-LiDAR Detection : Several approaches [5, 15,
+20, 25] fused information from different sensors, such as
+RGB images and LiDAR. For example, MV3D [5] fused
+BEV and front view of LiDAR points as well as images,
+and designed a deep fusion scheme to combine region-wise
+features from multiple views. A VOD [15] fused BEV and
+images in full resolutions to improve prediction quality, es-
+pecially for small objects. Accurate geometric information
+may be lost in the high-level layers with this scheme. Con-
+tfuse [20] compensated the geometric information via com-
+bining the convolution feature over LiDAR point cloud with
+the nearest image features and LiDAR point coordinates in
+the multi-scale scheme. In spite of geometric information
+encoded in each voxel, deeper layers have access mostly to
+coarse geometric feature. Based on a strong 2D detector on
+image, F-PointNet [25] and PointFusion [38] incorporated
+PointNet structures to estimate the amodal 3D box. But the
+2D detector and PointNet are two separate stages and the
+ﬁnal results heavily rely on the 2D detection results.LiDAR-based Detection : Most LiDAR-based detection ap-
+proaches process point clouds as voxel-input and apply ei-
+ther 2D convolution or 3D convolution to make prediction.
+Due to directly encoding coordinates of point clouds into
+voxel grid, deep layers may gradually lose this level of in-
+formation. Several encoding techniques [32, 33, 17, 18]
+provide other representations to preserve more informa-
+tion. Chen et al . [5] encoded hand-crafted features for
+respective representation of BEV and front view. Instead
+of hand-crafted features, V oxelNet [43] applied VFE lay-
+ers via a PointNet-like network to learn low-level geomet-
+ric feature, by which it shows good performance. However
+the network structure is computationally heavy. Recently,
+SECOND [39] applied Sparse Convolution [10] to speed
+up V oxelNet and produce better results. PointPillars [16]
+applied acceleration techniques, including NVIDIA Ten-
+sorRT, to achieve high speed. We note they may also accel-
+erate our method. PointRCNN [29] and IPOD [41], concur-
+rent with our work, generate point-wise proposals on Point
+Clouds, which consumes much computation on point-wise
+calculation in the similar region or background region.
+3. Our Method
+In this paper, we propose a simple and fast two-stage
+framework for 3D object detection with point cloud data, as
+shown in Figure 1. The ﬁrst stage takes voxel representa-
+tion as input and produces a set of initial predictions. To
+compensate the loss of precise localization information in
+the voxelization and consecutive convolution process, the
+second stage combines raw point cloud with context feature
+from the ﬁrst stage to produce reﬁnement results.
+3.1. Motivation
+Point cloud, captured by LiDAR, is a set of points with
+irregular structure and sparse distribution. It is not straight-
+forward to make use of powerful CNN for training and in-
+ference on point cloud data. Discretizing points into vox-
+elized input [43, 20] or projecting them to BEV with com-
+pact shape like RGB images [40, 23] forms a set of solu-
+tions, where abstract and rich feature representation can be
+produced. However, the discretization process inevitably
+introduces quantization artifacts with resolution decreasing
+to the number of bins in the voxel map. Moreover, con-
+secutive convolution and downsampling operation may also
+weaken the precise localization signal that originally exists
+in point clouds.
+Methods like PointNet [26] are specially designed for
+directly processing point cloud data. Directly applying
+these methods to entire point cloud, which is with a large
+scale in scenarios of autonomous driving, may produce
+more position-informative results. But they require a huge
+amount of GPU memory and computation, almost impossi-
+ble to achieve a high detection speed. Other methods [25]
+9776
+
+
+==== Page 3 ====
+Voxelize
+Initial Prediction
+V oxelRPN RefinerNetCoordinate Feature
+Convolution Feature
+Voxelizen×4
+Raw Point C loud
+Figure 1. Overview of our two-stage framework. In the ﬁrst stage, we voxelize point cloud and feed them to V oxelRPN to produce a
+small number of initial predictions. Then we generate the box feature for each prediction by fusing interior points’ coordinates and context
+feature from V oxelRPN. Box features are fed to ReﬁnerNet for further reﬁnement.
+rely on detection results from 2D detector followed by re-
+gression of the 3D amodal box for each object. This kind
+of pipeline heavily relies on 2D detection results, inheriting
+the weakness when detecting cluttered or distant objects in
+images. Clearly, directly working on point cloud data is a
+better choice if information can be properly made use of.
+To this end, our method is new to exploit the hybrid of
+voxel and raw point cloud, without relying on RGB im-
+ages. The two effective stages are voxel representation input
+to V oxelRPN to acquire a set of initial predictions in high
+speed, and ReﬁnerNet to fuse raw point cloud and extracted
+context feature for better localization quality. These two
+components are elaborated on in the following.
+3.2. VoxelRPN
+V oxelRPN takes 3D voxel input and produces 3D detec-
+tion results. It is a one-stage object detector.
+Input Representation Input to V oxelRPN is the vox-
+elized point cloud, which is actually a regular grid. Each
+voxel in the grid contains information of original points ly-
+ing in the local region. Speciﬁcally, we divide the 3D space
+into spatially arranged voxels. Suppose the region of inter-
+est for the point cloud is a cuboid of size (L,W,H)and
+each voxel is of size (vl,vw,vh), the 3D space can be di-
+vided into 3D voxel grid of size (L/vl,W/vw,V/vh).
+There may be more than one points in a voxel. In V ox-
+elNet [43], 35points are kept and fed to the VFE layers to
+extract features. Our ﬁnding, however, is that simply us-
+ing 6 points in each voxel followed a 8-channel MLP layer
+is already adequate to achieve reasonable performance em-
+pirically. With this representation in a compact shape, we
+easily exploit the great power of CNN for informative fea-
+ture extraction.
+Network Structure Aiming at 3D detection, our network
+needs to clearly ﬁlter information from (X,Y,Z)dimen-
+sions. In [40, 23], the Zdimension is simply transformedinto the channels when generating the voxel representation.
+Then several 2D convolutions are applied. In this way, the
+information along Zdimension vanishes quickly. As a re-
+sult, detection only on BEV becomes achievable. Differ-
+ently, V oxelNet [43] keeps three separate dimensions when
+producing voxels followed by three 3D convolutions. It is
+noticed that the efﬁciency is decreased.
+Along a more appropriate direction, we ﬁnd that a num-
+ber of consecutive 3D convolutions are quite effective on
+preserving the 3D structure. Based on this observation, our
+backbone network is composed of 2D and 3D convolutions,
+achieving high efﬁciency as PIXOR [40] and even higher
+performance than V oxelNet [43].
+We show details of our backbone network in Figure 2.
+The ﬁrst part consists of six 3D convolutional layers, which
+only possess a small number of ﬁlters to keep time budget.
+Instead of aggressively downsampling features in the Zdi-
+mension by ﬁlters with stride 2and kernel size 3, we insert
+3D convolution layers with kernel size 2 in the Zdimen-
+sion without padding, to better fuse and preserve informa-
+tion. What follows are three blocks of 2D convolutions for
+further abstraction and enlarging the receptive ﬁeld.
+Objects of the same category in 3D scene are generally
+with similar scales. Thus, different from the popular multi-
+scale object detector [21] in 2D images, which assigns ob-
+ject proposals to different layers according to their respec-
+tive scales, we note that the HyperNet [14] structure is more
+appropriate.
+Speciﬁcally, we upsample by deconvolution the feature
+maps from the last layers of the block 2, 3 and 4, as illus-
+trated in Figure 2. Then we concatenate them to gather rich
+location information in lower layers and with stronger se-
+mantic information in higher layers. Pre-deﬁned anchors
+[22] are used with speciﬁc scales and angles on this fused
+feature map. Then the classiﬁcation and regression heads
+run on this feature map respectively to classify each anchor
+and regress the location of existing objects.
+9777
+
+
+==== Page 4 ====
+Concatenation
+Conv2D 3×3×3 (8)
+3×3×2 (16)
+3×3×2 (64)3×3×3 (32)
+3×3×2 (64)
+3×3×2 (128)
+3×3 (256)
+3×3 (256)3×
+5×
+3×3 (256)
+3×3 (256) 5×/(2, 2, 2)
+/(1, 1, 2)
+/(2, 2)
+/(2, 2)Voxel Input (800 ×704×20×24)
+Deconv/(2, 2, 1)
+DeconvC
+Creg
+clsConv3D 
+3×3 (256)BLOCK1
+BLOCK2
+BLOCK3
+BLOCK4Figure 2. Network Structure of V oxelRPN. The format of layers
+used in the ﬁgure follows (kernel size )(channels)/(stride),i.e.,
+(kx,ky,kz)(chn)/(sx,sy,sz). The default stride is 1 unless oth-
+erwise speciﬁed.
+3.3. ReﬁnerNet
+Although decent performance is achieved by V oxelRPN,
+We further improve the prediction quality through directly
+processing raw point cloud since the voxelization process
+and consecutively strided convolutions in the ﬁrst block still
+lose an amount of localization information, which however
+can be supplemented by further feature enhancement in our
+ReﬁnerNet.
+ReﬁnerNet makes use of the coordinates of point clouds.
+F-PointNet [25] is the pioneer work to utilize PointNet to
+regress 3D amodal bounding boxes from 2D detection re-
+sults. Only interior points are used for inference without
+aware of context information. Our method, contrarily, also
+beneﬁts from important context information.
+Box Feature We use points in each bounding box predic-
+tion of V oxelRPN to generate box feature. Different from
+the two independent networks used in [25], we take not only
+coordinates but also features extracted from V oxelRPN as
+input. Convolutional feature maps from V oxelRPN capture
+local geometric structure of objects and gradually gather
+them in a hierarchical way, leading to a much larger recep-
+tive ﬁeld to proﬁt prediction. Then PointNet is applied to
+map each point to high-dimensional space and fuse point
+representation through max-pooling operation to gather in-
+formation among all points with its context.
+For each predicted bounding box from V oxelRPN, we
+ﬁrst project it to BEV . Then all points around the region
+of BEV box are used as input, as illustrated in Figure 1.
+8x3512512n×128n×4
+n×256
+n×512n×256
+n×256n×128
+n×1C Mn×C
+MCConcatenation
+Element-wise Multiplication Coordinate
+Conv
+Feature
+Sigmoid ActivationFusion Module
+Bbox PredictionFigure 3. Network Structure of ReﬁnerNet.
+MProposal
+GT1
+234
+Figure 4. Canonization of a box. The number denotes the order of
+corner prediction in ReﬁnerNet.
+For each point pwith coordinate (xp,yp)and feature map
+Fwith size (LF,WF,CF), we deﬁne the corresponding
+feature as the feature vector with CFchannels at location
+(⌊xpLF
+L⌋,⌊ypWF
+W⌋). We grasp the ﬁnal concatenation fea-
+ture map from V oxelRPN with more comprehensive infor-
+mation.
+Before feeding the coordinates of each point to the fol-
+lowing network, we ﬁrst canonize them for the purpose of
+guaranteeing the translation and rotation invariance. The
+coordinates of points within 0.3 meters around the proposal
+box are cropped and canonized by rotation and translation
+given the proposal box. As shown in Figure 3, we deﬁne
+the coordinate feature as the high-dimensional (128D) rep-
+resentation acquired via a MLP layer.
+Network Structure With these two sources of features,
+we ﬁnd a way to effectively fuse them. Instead of trivial
+concatenation, we design a new module with the attention
+mechanism for comprehensive feature generation. As illus-
+trated in Figure 3, we ﬁrst concatenate the high-dimensional
+coordinate feature with the convolutional feature. Then it
+is multiplied with the attention, generated by the convo-
+lutional features. What follows is a light-weight PointNet
+consisting of two MLP layers with max-pooling to aggre-
+gate all information in one box.
+The ﬁnal box reﬁnement is achieved by two MLP layers
+to predict reﬁned location of all box corner points based on
+proposals. As shown in Figure 4, when computing the re-
+gression target, the ground-truth box as well as point cloud
+are canonized by rotation and translation given the proposal
+box. This operation organizes ground-truth box corners in
+a speciﬁc order, which can reduce the uncertainty of the
+corner order caused by rotation. Our experiments manifest
+superiority of the canonized corner loss.
+9778
+
+
+==== Page 5 ====
+Without bells and whistles, this light-weight ReﬁnerNet
+can already effectively improve the accuracy in box predic-
+tion, especially considering the Zdimension and bounding
+boxes with higher IoUs in both 3D and BEV .
+3.4. Network Training
+Training our Fast Point R-CNN includes two steps. We
+ﬁrst train V oxelRPN until convergence. Then the Reﬁner-
+Net is trained based on the extracted features and inferred
+bounding boxes.
+VoxelRPN In V oxelRPN, the anchors spread on each lo-
+cation of the global feature map. One anchor is considered
+as a positive sample if its IoU with ground-truth is higher
+than 0.6 in BEV . The regression target is the ground-truth
+bounding box with the highest IoU value. One anchor is
+considered as negative if its IoU value with all ground-truth
+boxes is lower than 0.45. We train V oxelRPN with a multi-
+task loss as
+Loss=Lcls+Lreg, (1)
+whereLclsis the classiﬁcation binary cross entropy loss as
+Lcls=1
+Npos/summationdisplay
+iLcls(ppos
+i,1)+γ
+Nneg/summationdisplay
+iLcls(pneg
+i,0),
+(2)
+Lcls(p,t) =−(tlog(p)+(1−t)log(1−p)).(3)
+In our experiments, we use γ= 10 . Due to the imbalanced
+distributions of positive and negative samples, we normalize
+their loss separately. OHEM [30] is applied to the negative
+term of the classiﬁcation loss. Each anchor is parameter-
+ized as (xa,ya,za,ha,wa,la,θa)and the ground truth box
+is parameterized as ( xg,yg,zg,hg,wg,lg,θg). For regres-
+sion, we adopt parameterization following [43, 9] as
+∆1x=xg−xa
+da,∆1y=yg−ya
+da,∆1z=zg−za
+ha,
+∆1h= log(hg
+ha),∆1w= log(wg
+wa),∆1l= log(lg
+la),
+∆1θ=θg−θa.(4)
+The regression loss is deﬁned as a smooth L1 loss of
+Lreg(x) =/braceleftbigg
+0.5(σx)2, if|x|<1/σ2
+|x|−0.5/σ2,otherwise(5)
+whereσis set to3in our experiments.
+ReﬁnerNet It is noticed that the recall of our V oxelRPN
+on 0.5 IoU thresh, in top 30 predicted boxes in Bird’s Eve
+View (BEV), is over 95% for car. Our ReﬁnerNet is for
+improving the quality of prediction boxes. We only train it
+on positive proposal boxes whose IoU with ground-truth is
+higher than 0.5 in BEV .The regression target is deﬁned as the offset from
+proposal center (xp,yp,zp)to 8 canonized corners
+(xi,g,yi,g,zi,gfori= 1,...,8) of the target box as shown in
+Figure 4:
+∆2xi=xi,g−xp,∆2yi=yi,g−yp,∆2zi=zi,g−zp
+(6)
+This parameterization is a general and natural design for
+ReﬁnerNet that processes directly on coordinates of points.
+4. Experiments
+We conduct experiments on the challenging KITTI [8]
+dataset in terms of 3D detection and BEV detection. Exten-
+sive ablation studies on our approach are conducted.
+4.1. Experiment Setup
+Dataset and Evaluation Metric The KITTI dataset pro-
+vides 7,481 images and point clouds for training and 7,518
+for testing. Note for evaluation on the test subset and com-
+parison with other methods, we can only submit our result
+to the evaluation server. Following the protocol in [5, 43],
+we divide the training data into a training set (3,712 images
+and point clouds) with around 14,000 Car annotations and
+a validation set (3,769 images and point clouds). Ablation
+studies are conducted on this split. While for evaluation on
+test set, we train our model on the entire train set with 7k
+point clouds.
+According to the occlusion/truncation level and the
+height of 2D boxes in images, evaluation on the KITTI
+dataset is split into three difﬁculty levels as “easy”, “moder-
+ate” and “hard”. The KITTI leaderboard ranks all methods
+according to AP 0.7in “moderate” difﬁculty and takes it as
+the primary metric.
+Implementation Details The point cloud is cropped to
+the range of [0.,70.4]×[−40.,40.]×[−3.,1.]meters along
+(X,Y,Z)axes respectively, following [5, 43]. The input to
+V oxelRPN is generated by voxelizing the point cloud into
+a 3D cuboid of size 800×704×20, where each voxel is
+with size 0.1×0.1×0.2meter. As a result, the output
+convolutional feature map is with size 200×176×1. 4
+anchors are deﬁned in each output location with different
+angles (0◦,45◦,90◦,135◦).
+For the category of “car”, we use the anchor size of
+ha= 1.73,wa= 0.6,la= 0.8meters. NMS with IoU
+threshold 0.1 is applied to prediction from V oxelRPN to ﬁl-
+ter out duplicated predictions and help keep high efﬁciency
+of the ReﬁnerNet. For the categories of Pedestrian andCy-
+clist, the network removes the downsampling in the fourth
+Conv3D layer since these two categories are much smaller
+than car category.
+We use anchors of size ha= 1.73,wa= 0.6,la= 0.8
+andha= 1.73,wa= 0.6,la= 1.76forPedestrian and
+9779
+
+
+==== Page 6 ====
+Cyclist respectively. Like F-PointNet[25], multi-class pre-
+diction for ReﬁnerNet is to concatenate predicted class label
+of V oxelRPN (one-hot encoding vector) with the feature af-
+ter max-pooling operation and then reﬁne box corners for
+all classes. We note that training on Pedestrian andCyclist
+can improve their performance.
+Training Details By default, models are trained on 8
+NVIDIA P40 GPUs with batch-size 16 – that is, each GPU
+holds 2 point clouds. We apply ADAM [12] optimizer with
+an initial learning rate 0.01for training of V oxelRPN and
+ReﬁnerNet. We train V oxelRPN for 70 epochs and the
+learning rate is decreased by 10 times at 50th and 65th
+epochs. Training of ReﬁnerNet lasts for 70 epochs and the
+learning rate is decreased by 10 times at 40th, 55th and 65th
+epochs.
+Batch Normalization is used following each parameter
+layer. A weight decay of 0.0001 is used in both networks.
+Since the training of ReﬁnerNet requires the convolutional
+feature from V oxelRPN, we train it for each frame instead
+of on objects, saving a large amount of computation.
+Data Augmentation Multiple data augmentation strate-
+gies are applied during training in order to alleviate the
+overﬁtting problem considering the limited amount of train-
+ing data. For each frame of the point cloud, we conduct
+left-right random ﬂipping, random scaling with a uniformly
+sampled scale from 0.95∼1.05and random rotation with
+a degree sampled from −45◦∼45◦around the origin for
+entire scene of point clouds.
+We also disturb each ground-truth bounding box and
+its corresponding interior points by random translation.
+Speciﬁcally, the shift is sampled from N(0,1)for bothX
+andYaxes and N(0,0.3)forZaxis. Random rotation
+aroundZaxis is uniformly sampled from −18◦∼18◦.
+Note that there is a collision detection to prevent collision
+of different objects.
+MIXUP Augmentation Similar to the spirit of [7, 42] in
+2D object detection, we also augment input point clouds
+with cropped ground-truth from other point sets to greatly
+improve the convergence speed and quality. Instead of crop-
+ping solely interior points of each ground-truth box, we
+crop a larger region with extra 0.3 meters to better preserve
+the context information. With this regularization, cropped
+points and surrounding points are distributed more coher-
+ently with each other, making the network better capture
+the property of each object. In our setting, 20 objects are
+added in each frame of point clouds.
+4.2. Main Results
+As shown in Table 1, we compare Fast Point R-CNN
+with state-of-the-art approaches in 3D object detection and
+BEV object detection on KITTI test dataset. The ofﬁcialKITTI benchmark ranks different methods according to the
+performance on the moderate subset. Our model achieves
+state-of-the-art performance while accomplishing high efﬁ-
+ciency (15FPS on NVIDIA Tesla P40 GPU). Note that SEC-
+OND [39] applies SparseConv [10] and PointPillars [16]
+used engineering techniques of NVIDIA TensorRT. These
+solutions are complementary to ours.
+For better comparison, we reproduce V oxelNet [43] as a
+strong baseline network. It is noteworthy that our reproduc-
+tion even yields much better results than those reported in
+[43]. As shown in Table 2, our proposed V oxelRPN outper-
+forms V oxelNet in 3D object detection. Accompanied by
+ReﬁnerNet, nearly twice as fast as V oxelNet, Fast Point R-
+CNN outperforms V oxelNet in both 3D object detection and
+BEV object detection. We show qualitative results in Fig-
+ure 5. We can make good prediction at several challenging
+scenes.
+5. Ablation Studies
+We conduct extensive ablation study for each component
+based on the train/val. split.
+5.1. VoxelRPN
+To illustrate the effectiveness of V oxelRPN, we start with
+a fast and yet simple baseline and gradually add our pro-
+posed components. The baseline consists of only 2D con-
+volutions and directly processes input voxel by encoding
+information along Zaxis into the channel dimension. The
+difference with V oxelRPN is that the ﬁrst 6 Conv3D layers
+in the ﬁrst block are replaced with 6 Conv2D layers. We
+keep the same kernel size in XandYaxes; the channels
+are 128 except the ﬁrst layer with 64 channels. Two anchors
+with angles 0◦and90◦are used. As shown in Table 3, the
+baseline achieves reasonable performance.
+More 3D Convolutions (Conv3D) By replacing lower
+layers to 3D convolutions as illustrated in Figure 2 and pro-
+cessing the 3D voxels, we improve the baseline by nearly 1
+point, manifesting the effectiveness of 3D convolutions on
+preserving the information, especially along Zdimension.
+With this modiﬁcation, the time cost only increases 5ms.
+Higher Resolution Input (HRI) We also introduce the
+ﬁner voxel, producing higher resolution grid input with size
+800×704×20, as described in Figure 2. Accordingly, we
+modify the stride of the ﬁrst layer to 2 to effectively reduce
+the computation overhead. This technique can signiﬁcantly
+improve the results without adding much computation.
+MIXUP Augmentation (MIXUP) With MIXUP aug-
+mentation, we improve the performance with around 0.5
+point. With MIXUP augmentation, we achieve comparable
+performance with only half of the original training epochs.
+9780
+
+
+==== Page 7 ====
+Method Input Time (s)3D BEVGPUAPeasy APmoderate APhard APeasy APmoderate APhard
+MV3D [5] L+I 0.24 66.77 52.73 51.31 85.82 77.00 68.94 TITAN X
+A VOD-FPN [15] L+I 0.1 81.94 71.88 66.38 88.53 83.79 77.90 TITAN XP
+A VOD [15] L+I 0.1 73.59 65.78 58.38 86.80 85.44 77.73 TITAN XP
+F-PointNet [25] L+I 0.17 81.20 70.39 62.19 88.70 84.00 75.33 GTX 1080
+ContFuse [20] L+I 0.06 82.54 66.22 64.04 88.81 85.83 77.33 –
+RoarNet [13] L+I 0.1 83.71 73.04 59.16 88.20 79.41 70.02 TITAN X
+IPOD [41] L+I 0.2 79.75 72.57 66.33 86.93 83.98 77.85 Tesla P40
+V oxelNet [43] L 0.22 77.49 65.11 57.73 89.35 79.26 77.39 TITAN X
+PIXOR [40] L 0.1 - - - 84.44 80.04 74.31 TITAN XP
+SECOND [39] L 0.05 83.13 73.66 66.20 88.07 79.37 77.95 GTX 1080Ti
+PointPillars [16] L 0.016 79.05 74.99 68.30 88.35 86.10 79.83 GTX 1080Ti
+PointRCNN-deprecate [29] L 0.1 84.32 75.42 67.86 89.28 86.04 79.02 TITAN XP
+PointRCNN [29] L 0.1 85.94 75.76 68.32 89.47 85.68 79.10 TITAN XP
+Fast Point R-CNN L 0.065 84.28 75.73 67.39 88.03 86.10 78.17 Tesla P40
+Table 1. Comparison of main results on KITTI test set. Here ‘L’ denotes LiDAR input and ‘I’ denotes RGB image input.
+Method Time (s)3D BEV
+APeasy APmoderate APhard APeasy APmoderate APhard
+V oxelNet (Paper) 0.225 81.97 65.46 62.85 89.60 84.81 78.57
+V oxelNet (Reproduced) 0.117 86.48 75.26 73.25 90.13 87.61 86.4
+V oxelRPN 0.058 87.51 76.64 74.4 89.8 87.58 86.38
+Fast Point R-CNN 0.065 89.12 79.00 77.48 90.12 88.10 86.24
+Table 2. Comparison of main results on KITTI validation set.
+Conv3D HRI MIXUP MA 3D AP 0.7(moderate)
+- - - - 73.8
+/check 74.7
+/check /check 75.34
+/check /check /check 75.82
+/check /check /check/check 76.64
+Table 3. Effectiveness of different techniques applied to V oxelRPN
+on KITTI val subset. The baseline network consists of only 2D
+convolutions. Conv3D denotes we replace the lower layers with
+3D convolutions. HRI denotes high resolution input. MIXUP de-
+notes the use of MIXUP augmentation. MA means anchors with 4
+different angles are used instead of 2 of them.
+More Anchors (MA) With4anchors in angles 0◦,45◦,
+90◦and135◦respectively, instead of using only 2 anchors,
+we further gain another 0.8point bonus. We ﬁnd that the
+matching probability gain with ground-truth is signiﬁcant
+with more anchors involved.
+5.2. ReﬁnerNet
+Input Features We ﬁrst investigate the importance of
+both coordinate and convolution features. As shown in Ta-
+ble 4, with only coordinate feature or convolution feature,
+the ReﬁnerNet improves results over V oxelRPN. It is no-
+ticeable that the performance with coordinate feature as in-
+put is better than the one with convolution feature as input.
+This manifests that the accurate location information is lost
+in the quantization representation of point cloud and con-Fuse methods 3D AP 0.7(moderate)
+Coordinate Feature 77.82
+Convolution Feature 76.90
+Concatenation 78.38
++ Attention Module 79.00
+Table 4. Comparison of different fusion methods in ReﬁnerNet.
+secutive convolutional-and-downsampling operations.
+Feature Fusion With the compensation of coordinate in-
+formation, the performance boosts greatly. Much better per-
+formance is achieved with both coordinate and convolution
+features, since they provide semantically complementary
+information. We also compare our strategy of fusing these
+two sources of features with simple concatenation. Our fu-
+sion method with attention mechanism outperforms the al-
+ternative by 0.62 point, as shown in Table 4.
+Effect of Canonized Corner Loss We compare parame-
+terization of box prediction. The naive parameterization of
+7 parameters as regression loss only achieves 78.45 in 3D
+AP0.7. With canonized corner loss, it can further improve
+to 79.
+Comparison with RoI Align One straightforward
+method for box reﬁnement is to use RoI Align[11]. For
+comparison, we implement rotated RoI align that crops
+convolutional features from V oxelRPN given proposals.
+For the car class, we pool with size 8×4along the
+9781
+
+
+==== Page 8 ====
+Figure 5. Visualization of our results.
+Method Range (meters)3D (Moderate) BEV (Moderate)
+AP0.7AP0.8AP0.7AP0.8
+V oxelRPN 0-30 88.39 58.81 90.22 83.32
+Fast Point R-CNN 0-30 89.26 62.73 90.25 85.61
+V oxelRPN 30-50 51.99 13.31 73.51 49.63
+Fast Point R-CNN 30-50 58.41 15.39 73.9 50.05
+Table 5. Comparison of nearby- and distant-object detection accu-
+racy.
+direction of car inside the rotated box region. Then two
+4096D MLP layers are applied to perform classiﬁcation
+and regression. Only the above operations are different – it
+achieves 77.39 with AP 0.7. Our ReﬁnerNet performs better
+clearly. We conjecture that rotated RoI align still lacks
+precise localization information.
+Result Analysis In the scenario of autonomous driving,
+faraway objects are with much less points due to the lim-
+ited resolution of LiDAR and occlusion by nearby objects,
+making it more challenging to detect distant objects. As
+shown in Table 5, there is a large discrepancy between ac-
+curacy of nearby and faraway objects. It is noteworthy that
+ReﬁnerNet signiﬁcantly improves the performance of 3D
+detection accuracy of distant objects ranging from 30to50
+meters, i.e., from51.99to58.41with AP 0.7metric. It is be-
+cause distant objects generally possess only a small number
+of points. With only voxel representation, it is hard for V ox-
+elRPN to fully capture the structure of objects. But with the
+proﬁtable access to coordinate feature, ReﬁnerNet can still
+infer the complete structure of objects and achieve better
+inference.
+As shown in Tables 5 and 6, ReﬁnerNet can further im-
+prove detection with higher quality, evaluated with AP 0.8,
+which demonstrates that ReﬁnerNet better utilizes ﬁne-
+grained localization information than V oxelRPN.
+5.3. Experiments on Other Categories
+KITTI benchmark provides limited annotations for
+Pedestrian andCyclist categories. For reference, we pro-Method3D (Moderate) BEV (Moderate)
+AP0.6AP0.7AP0.8AP0.6AP0.7AP0.8
+V oxelRPN 88.94 76.64 42.6 89.77 87.58 71.39
+Fast Point R-CNN 89.14 79.0 52.95 89.86 88.10 74.58
+Table 6. Detection results with different IoU thresholds.
+MethodAP0.5onPedestrian AP0.5onCyclist
+3D BEV 3D BEV
+PointPillars [16] 43.53 50.23 59.07 62.25
+F-PointNet [25] 44.89 50.22 56.77 61.96
+PointRCNN [29] 41.78 – 59.60 –
+Fast Point R-CNN 42.90 45.43 59.36 62.59
+Table 7. Performance on Pedestrian andCyclist on test set.
+vide results on these two classes. Following [43, 39], we
+train the network for these two categories. Our ﬁnal re-
+sults on Pedestrian andCyclist are 63.05 and 64.32 respec-
+tively, with V oxelRPN results 60.78 and 62.41 on KITTI val
+dataset. We achieve comparable results on KITTI test data
+as listed in Table 7. We believe when more data is used,
+superiority of our two-stage network can be better demon-
+strated.
+6. Conclusion
+In this paper, we have proposed a generic, effective and
+fast two-stage framework for 3D object detection. Our
+method makes use of both voxel representation and raw
+point cloud to beneﬁt from both of them. The ﬁrst stage
+takes voxel representation as input and applies convolu-
+tional operations to acquire a set of initial predictions. Then
+the second stage further reﬁnes them based on raw point
+clouds and extracted convolution features.
+With this conceptually simple but practically powerful
+design, our method is on par with existing solutions while
+maintaining higher detection speed. We believe our re-
+search shows a new way to properly utilize different dimen-
+sions of information for this challenging and yet practically
+fundamental task.
+9782
+
+
+==== Page 9 ====
+References
+[1] Waleed Ali, Sherif Abdelkarim, Mohamed Zahran, Mah-
+moud Zidan, and Ahmad El Sallab. Yolo3d: End-to-end
+real-time 3d oriented object bounding box detection from li-
+dar point cloud. arXiv:1808.02350 , 2018.
+[2] Jorge Beltran, Carlos Guindel, Francisco Miguel Moreno,
+Daniel Cruzado, Fernando Garcia, and Arturo de la Escalera.
+Birdnet: a 3d object detection framework from lidar informa-
+tion. arXiv:1805.01195 , 2018.
+[3] Xiaozhi Chen, Kaustav Kundu, Ziyu Zhang, Huimin Ma,
+Sanja Fidler, and Raquel Urtasun. Monocular 3d object de-
+tection for autonomous driving. In CVPR , 2016.
+[4] Xiaozhi Chen, Kaustav Kundu, Yukun Zhu, Andrew G
+Berneshawi, Huimin Ma, Sanja Fidler, and Raquel Urtasun.
+3d object proposals for accurate object class detection. In
+NIPS , 2015.
+[5] Xiaozhi Chen, Huimin Ma, Ji Wan, Bo Li, and Tian Xia.
+Multi-view 3d object detection network for autonomous
+driving. In CVPR , 2017.
+[6] Rethage Dario, Wald Johanna, Sturm Jrgen, Navab Nassir,
+and Tombari Federico. Fully-convolutional point networks
+for large-scale point clouds. In ECCV , 2018.
+[7] Debidatta Dwibedi, Ishan Misra, and Martial Hebert. Cut,
+paste and learn: Surprisingly easy synthesis for instance de-
+tection. In ICCV , 2017.
+[8] Andreas Geiger, Philip Lenz, and Raquel Urtasun. Are we
+ready for autonomous driving? the kitti vision benchmark
+suite. In CVPR , 2012.
+[9] Ross Girshick. Fast r-cnn. In ICCV , 2015.
+[10] Benjamin Graham, Martin Engelcke, and Laurens van der
+Maaten. 3d semantic segmentation with submanifold sparse
+convolutional networks. CVPR , 2018.
+[11] Kaiming He, Georgia Gkioxari, Piotr Doll ´ar, and Ross Gir-
+shick. Mask r-cnn. In ICCV , 2017.
+[12] Diederik P Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. arXiv:1412.6980 , 2014.
+[13] Youngwook Paul Kwon Kiwoo Shin and Masayoshi
+Tomizuka. Roarnet: A robust 3d object detection based on
+region approximation reﬁnement. arXiv:1811.03818 , 2018.
+[14] Tao Kong, Anbang Yao, Yurong Chen, and Fuchun Sun.
+Hypernet: Towards accurate region proposal generation and
+joint object detection. In CVPR , 2016.
+[15] Jason Ku, Melissa Moziﬁan, Jungwook Lee, Ali Harakeh,
+and Steven Waslander. Joint 3d proposal generation and ob-
+ject detection from view aggregation. IROS , 2018.
+[16] Alex H Lang, Sourabh V ora, Holger Caesar, Lubing Zhou,
+Jiong Yang, and Oscar Beijbom. Pointpillars: Fast encoders
+for object detection from point clouds. arXiv:1812.05784 ,
+2018.
+[17] Bo Li. 3d fully convolutional network for vehicle detection
+in point cloud. In IROS , 2017.
+[18] Bo Li, Tianlei Zhang, and Tian Xia. Vehicle detection from
+3d lidar using fully convolutional network. Robotics: Sci-
+ence and Systems , 2016.
+[19] Yangyan Li, Rui Bu, Mingchao Sun, and Baoquan Chen.
+Pointcnn. NIPS , 2018.[20] Ming Liang, Bin Yang, Shenlong Wang, and Raquel Urtasun.
+Deep continuous fusion for multi-sensor 3d object detection.
+InECCV , 2018.
+[21] Tsung-Yi Lin, Piotr Doll ´ar, Ross B Girshick, Kaiming He,
+Bharath Hariharan, and Serge J Belongie. Feature pyramid
+networks for object detection. In CVPR , 2017.
+[22] Wei Liu, Dragomir Anguelov, Dumitru Erhan, Christian
+Szegedy, Scott Reed, Cheng-Yang Fu, and Alexander C
+Berg. Ssd: Single shot multibox detector. In ECCV , 2016.
+[23] Wenjie Luo, Bin Yang, and Raquel Urtasun. Fast and furi-
+ous: Real time end-to-end 3d detection, tracking and motion
+forecasting with a single convolutional net. In CVPR , 2018.
+[24] Daniel Maturana and Sebastian Scherer. V oxnet: A 3d con-
+volutional neural network for real-time object recognition. In
+IROS , 2015.
+[25] Charles R. Qi, Wei Liu, Chenxia Wu, Hao Su, and
+Leonidas J. Guibas. Frustum pointnets for 3d object detec-
+tion from rgb-d data. In CVPR , 2018.
+[26] Charles R. Qi, Hao Su, Kaichun Mo, and Leonidas J Guibas.
+Pointnet: Deep learning on point sets for 3d classiﬁcation
+and segmentation. CVPR , 2017.
+[27] Charles R. Qi, Hao Su, Matthias Nießner, Angela Dai,
+Mengyuan Yan, and Leonidas J Guibas. V olumetric and
+multi-view cnns for object classiﬁcation on 3d data. In
+CVPR , 2016.
+[28] Charles R. Qi, Li Yi, Hao Su, and Leonidas J Guibas. Point-
+net++: Deep hierarchical feature learning on point sets in a
+metric space. In NIPS , 2017.
+[29] Shaoshuai Shi, Xiaogang Wang, and Hongsheng Li. Pointr-
+cnn: 3d object proposal generation and detection from point
+cloud. arXiv:1812.04244 , 2018.
+[30] Abhinav Shrivastava, Abhinav Gupta, and Ross Girshick.
+Training region-based object detectors with online hard ex-
+ample mining. In CVPR , 2016.
+[31] Martin Simon, Stefan Milz, Karl Amende, and Horst-
+Michael Gross. Complex-yolo: Real-time 3d object detec-
+tion on point clouds. arXiv:1803.06199 , 2018.
+[32] Shuran Song and Jianxiong Xiao. Sliding shapes for 3d ob-
+ject detection in depth images. In ECCV , 2014.
+[33] Shuran Song and Jianxiong Xiao. Deep sliding shapes for
+amodal 3d object detection in rgb-d images. In CVPR , 2016.
+[34] Hang Su, Subhransu Maji, Evangelos Kalogerakis, and Erik
+Learned-Miller. Multi-view convolutional neural networks
+for 3d shape recognition. In ICCV , 2015.
+[35] Maxim Tatarchenko, Alexey Dosovitskiy, and Thomas Brox.
+Multi-view 3d models from single images with a convolu-
+tional network. In ECCV , 2016.
+[36] Yue Wang, Yongbin Sun, Ziwei Liu, Sanjay E Sarma,
+Michael M Bronstein, and Justin M Solomon. Dynamic
+graph cnn for learning on point clouds. arXiv:1801.07829 ,
+2018.
+[37] Zhirong Wu, Shuran Song, Aditya Khosla, Fisher Yu, Lin-
+guang Zhang, Xiaoou Tang, and Jianxiong Xiao. 3d
+shapenets: A deep representation for volumetric shapes. In
+CVPR , 2015.
+[38] Danfei Xu, Dragomir Anguelov, and Ashesh Jain. Pointfu-
+sion: Deep sensor fusion for 3d bounding box estimation. In
+CVPR , 2018.
+9783
+
+
+==== Page 10 ====
+[39] Yan Yan, Yuxing Mao, and Bo Li. Second: Sparsely embed-
+ded convolutional detection. Sensors , 2018.
+[40] Bin Yang, Wenjie Luo, and Raquel Urtasun. Pixor: Real-
+time 3d object detection from point clouds. In CVPR , 2018.
+[41] Zetong Yang, Yanan Sun, Shu Liu, Xiaoyong Shen, and Ji-
+aya Jia. Ipod: Intensive point-based object detector for point
+cloud. arXiv:1812.05276 , 2018.
+[42] Hongyi Zhang, Moustapha Cisse, Yann N Dauphin, and
+David Lopez-Paz. mixup: Beyond empirical risk minimiza-
+tion. In ICLR , 2017.
+[43] Yin Zhou and Oncel Tuzel. V oxelnet: End-to-end learning
+for point cloud based 3d object detection. In CVPR , 2018.
+9784
+
+

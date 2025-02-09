@@ -1,0 +1,829 @@
+==== Page 1 ====
+Interventional Few-Shot Learning
+Zhongqi Yue1,3,Hanwang Zhang1,Qianru Sun2,Xian-Sheng Hua3
+1Nanyang Technological University,2Singapore Management University,3Alibaba Group
+yuez0003@ntu.edu.sg, hanwangzhang@ntu.edu.sg,
+qianrusun@smu.edu.sg, xiansheng.hxs@alibaba-inc.com
+Abstract
+We uncover an ever-overlooked deﬁciency in the prevailing Few-Shot Learning
+(FSL) methods: the pre-trained knowledge is indeed a confounder that limits the
+performance. This ﬁnding is rooted from our causal assumption: a Structural Causal
+Model (SCM) for the causalities among the pre-trained knowledge, sample features,
+and labels. Thanks to it, we propose a novel FSL paradigm: Interventional Few-
+Shot Learning (IFSL). Speciﬁcally, we develop three effective IFSL algorithmic
+implementations based on the backdoor adjustment, which is essentially a causal
+intervention towards the SCM of many-shot learning: the upper-bound of FSL
+in a causal view. It is worth noting that the contribution of IFSL is orthogonal
+to existing ﬁne-tuning and meta-learning based FSL methods, hence IFSL can
+improve all of them, achieving a new 1-/5-shot state-of-the-art on miniImageNet,
+tiered ImageNet, and cross-domain CUB. Code is released at https://github.
+com/yue-zhongqi/ifsl .
+1 Introduction
+Few-Shot Learning (FSL) — the task of training a model using very few samples — is nothing short
+of a panacea for any scenario that requires fast model adaptation to new tasks [ 64], such as minimizing
+the need for expensive trials in reinforcement learning [ 29] and saving computation resource for
+light-weight neural networks [ 26,24]. Although we knew that, more than a decade ago, the crux
+of FSL is to imitate the human ability of transferring prior knowledge to new tasks [ 17], not until
+the recent advances in pre-training techniques, had we yet reached a consensus on “what & how to
+transfer”: a powerful neural network 
+pre-trained on a large dataset D. In fact, the prior knowledge
+learned from pre-training prospers today’s deep learning era, e.g.,D= ImageNet, 
+= ResNet in
+visual recognition [23, 22]; D= Wikipedia, 
+= BERT in natural language processing [61, 15].
+Pre-Training
+DMeta-Learning
+fFine-tune (Si;Qi)g
+Fine-Tuning
+(S;Q)Fine-Tuning
+(S;Q)
+or
+
+
+
+Figure 1: The relationships among different FSL
+paradigms (color green and orange). Our goal is to
+remove the deﬁciency introduced by Pre-Training.In the context of pre-trained knowledge, we de-
+note the original FSL training set as support
+setSand the test set as query setQ, where
+the classes in (S;Q)are unseen (or new) in
+D. Then, we can use 
+as a backbone (ﬁxed
+or partially trainable) for extracting sample rep-
+resentations x, and thus FSL can be achieved
+simply by ﬁne-tuning the target model on Sand
+test it onQ[11,16]. However, the ﬁne-tuning
+only exploits theD’s knowledge on “what to
+transfer”, but neglects “how to transfer”. Fortu-
+nately, the latter can be addressed by applying
+a post-pre-training and pre-ﬁne-tuning strategy:
+meta-learning [52]. Different from ﬁne-tuning
+whose goal is the “model” trained on Sand tested onQ, meta-learning aims to learn the “meta-model”
+34th Conference on Neural Information Processing Systems (NeurIPS 2020), Vancouver, Canada.
+
+==== Page 2 ====
+50%Weak Ω
+StrongΩ
+0.40.50.60.70.80.91
+1-shot 5-shot 10-shot 1-shot 5-shot 10-shot 1-shot 5-shot 10-shotChart Title
+ResNet10 WRN28-101510 1510 151060%70%80%90%(a)
+ (b)Accuracy
+SQ AverageS6QSupport Set
+“Lion”
+“African Hunting Dog”Query Set
+Classiﬁed as “Dog”
+(due to “yellow grass”)
+Classiﬁed as “Lion”
+(due to “green grass”)
+Figure 2: Quantitative and qualitative evidences of pre-trained knowledge misleading the ﬁne-tune FSL paradigm.
+(a)miniImageNet ﬁne-tuning accuracy on 1-/5-/10-shot FSL using weak and strong backbones: ResNet-10 and
+WRN-28-10.SQ (orS6Q ) denotes the pre-trained classiﬁer scores of the query is similar (or dissimilar)
+to that of the support set. “Average” is the mean of both. The dissimilarity is measured using query hardness
+deﬁned in Section 5.1. (b) An example of 5-shot S6Q .
+— a learning behavior — trained on many learning episodes f(Si;Qi)gsampled fromDand tested
+on the target task (S;Q). In particular, the behavior can be parametrized by using model parameter
+generator [ 46,19] or initialization [ 18]. After meta-learning, we denote 
+as the new model starting
+point for the subsequent ﬁne-tuning on target task (S;Q). Figure 1 illustrates the relationships among
+the above discussed FSL paradigms.
+It is arguably a common sense that the stronger the pre-trained 
+is, the better the downstream
+model will be. However, we surprisingly ﬁnd that this may not be always the case in FSL. As shown
+in Figure 2(a), we can see a paradox: though stronger 
+improves the performance on average, it
+indeed degrades that of samples in Qdissimilar toS. To illustrate the “dissimilar”, we show a 5-shot
+learning example in Figure 2(b), where the prior knowledge on “green grass” and “yellow grass” is
+misleading. For example, the “Lion” samples in Qhave “yellow grass”, hence they are misclassiﬁed
+as “Dog” whoseShas major “yellow grass”. If we use stronger 
+, the seen old knowledge (“grass”
+& “color”) will be more robust than the unseen new knowledge (“Lion” & “Dog”), and thus the
+old becomes even more misleading. We believe that such a paradox reveals an unknown systematic
+deﬁciency in FSL, which has been however hidden for years by our gold-standard “fair” accuracy,
+averaged over all the random (S;Q)test trials, regardless of the similarity between SandQ(cf.
+Figure 2(a)). Though Figure 2 only illustrates the ﬁne-tune FSL paradigm, the deﬁciency is expected
+in the meta-learning paradigm, as ﬁne-tune is also used in each meta-train episode (Figure 1). We
+will analyze them thoroughly in Section 5.
+In this paper, we ﬁrst point out that the cause of the deﬁciency: pre-training can do evil in FSL, and
+then propose a novel FSL paradigm: Interventional Few-Shot Learning (IFSL), to counter the evil.
+Our theory is based on the assumption of the causalities among the pre-trained knowledge, few-shot
+samples, and class labels. Speciﬁcally, our contributions are summarized as follows.
+We begin with a Structural Causal Model (SCM) assumption in Section 2.2, which shows that
+the pre-trained knowledge is essentially a confounder that causes spurious correlations between
+the sample features and class labels in support set. As an intuitive example in Figure 2(b), even
+though the “grass” feature is not the cause of the “Lion” label, the prior knowledge on “grass”
+still confounds the classiﬁer to learn a correlation between them.
+In Section 2.3, we illustrate a causal justiﬁcation of why the proposed IFSL fundamentally works
+better: it is essentially a causal approximation to many-shot learning. This motivates us to develop
+three effective implementations of IFSL using the backdoor adjustment [44] in Section 3.
+Thanks to the causal intervention, IFSL is naturally orthogonal to the downstream ﬁne-tuning
+and meta-learning based FSL methods [ 18,62,27]. In Section 5.2, IFSL improves all base-
+lines by a considerable margin, achieving new 1-/5-shot state-of-the-arts: 73.51%/83.21% on
+miniImageNet [ 62], 83.07%/88.69% on tiered ImageNet [ 49], and 50.71%/64.43% on cross-
+domain CUB [65].
+We further diagnose the detailed performances of FSL methods across different similarities
+betweenSandQ. We ﬁnd that IFSL outperforms all baselines in every inch.
+2
+
+==== Page 3 ====
+2 Problem Formulations
+2.1 Few-Shot Learning
+We are interested in a prototypical FSL: train a K-way classiﬁer on an N-shot support setS, whereN
+is a small number of training samples per class ( e.g.,N=1 or 5); then test the classiﬁer on a query set
+Q. As illustrated in Figure 1, we have the following two paradigms to train the classiﬁer P(yjx;),
+predicting the class y2f1;:::;Kgof a sample x:
+Fine-Tuning . We consider the prior knowledge as the sample feature representation x, encoded by
+the pre-trained network 
+on datasetD. In particular, we refer xto the output of the frozen sub-part
+of
+and the rest trainable sub-part of 
+(if any) can be absorbed into . We train the classiﬁer
+P(yjx;)on the support setS, and then evaluate it on the query set Qin a standard supervised way.
+Meta-Learning . Yet, 
+only carries prior knowledge in a way of “representation”. If the dataset D
+can be re-organized as the training episodes f(Si;Qi)g, each of which can be treated as a “sandbox”
+that has the same N-shot-K-way setting as the target (S;Q). Then, we can model the “learning
+behavior” fromDparameterized as , which can be learned by the above ﬁne-tuning paradigm for
+each (Si;Qi). Formally, we denote P(yjx;)as the enhanced classiﬁer equipped with the learned
+behavior. For example, can be the classiﬁer weight generator [ 19], distance kernel function in k-
+NN [ 62], or even’s initialization [ 18]. Considering L(Si;Qi;)as the loss function of P(yjx;)
+trained onSiand tested onQi, we can have  arg min (;)Ei[L(Si;Qi;)], and then we ﬁx
+the optimized and ﬁne-tune for onSand test onQ. Please refer to Appendix 5 for the details of
+various ﬁne-tuning and meta-learning settings.
+2.2 Structural Causal Model
+From the above discussion, we can see that (;)in meta-learning and in ﬁne-tuning are both
+dependent on the pre-training. Such “dependency” can be formalized with a Structural Causal Model
+(SCM) [ 44] proposed in Figure 3(a), where the nodes denote the abstract data variables and the
+directed edges denote the (functional) causality, e.g.,X!Ydenotes that Xis the cause and Y
+is the effect. Now we introduce the graph and the rationale behind its construction at a high-level.
+Please see Section 3 for the detailed functional implementations.
+𝐷
+𝑋𝐶
+𝑌
+(a)
+……Channel 1𝑐3Image:
+School Bus
+Channel 2 Channel 3 (b)
+Class Manifold
+Unicycle
+Class Manifold
+Street Sign
+Class Manifold
+Ashcan𝒄𝟑=𝟎.𝟏𝟎𝟑
+𝒄𝟐=𝟎.𝟐𝟏𝟏
+𝒄𝟏=𝟎.𝟑𝟕𝟔
+Image: School Bus (c)
+Figure 3: (a) Causal Graph for FSL; (b) Feature-wise illustration of
+D!C: Feature channels of pre-trained network( e.g.1: : :512for
+ResNet-10). X!C: Per-channel response to an image (“school
+bus”) visualized by CAM[ 77]; (c) Class-wise illustration for D!
+C: features are clustered according to the pre-training semantic
+classes (colored t-SNE plot[ 37]).X!C: An image (“school
+bus”) can be represented in terms of the similarities among the base
+classes (“ashcan”, “unicycle”, “sign”).D!X. We denote Xas the fea-
+ture representation and Das the pre-
+trained knowledge, e.g., the datasetD
+and its induced model 
+. This link as-
+sumes that the feature Xis extracted
+by using 
+.
+D!C X. We denote Cas the
+transformed representation of Xin
+the low-dimensional manifold, whose
+base is inherited from D. This as-
+sumption can be rationalized as fol-
+lows. 1)D!C: a set of data
+points are usually embedded in a low-
+dimensional manifold. This ﬁnding
+can be dated back to the long history
+of dimensionality reduction [ 59,50].
+Nowadays, there are theoretical [ 3,
+8] and empirical [ 77,71] evidences
+showing that disentangled semantic manifolds emerge during training deep networks. 2) X!C:
+features can be represented using (or projected onto) the manifold base linearly [ 60,9] or non-
+linearly [ 6]. In particular, as later discussed in Section 3, we explicitly implement the base as feature
+dimensions (Figure 3(b)) and class-speciﬁc mean features (Figure 3(c)).
+X!Y C. We denote Yas the classiﬁcation effect ( e.g., logits), which is determined by Xvia
+two ways: 1) the direct X!Yand 2) the mediation X!C!Y. In particular, the ﬁrst way can be
+removed ifXcan be fully represented by C(e.g., feature-wise adjustment in Section 3). The second
+way is inevitable even if the classiﬁer does not take Cas an explicit input, because any Xcan be
+3
+
+==== Page 4 ====
+inherently represented by C. To illustrate, suppose that Xis a linear combination of two base vectors
+plus a noise residual: x=c1b1+c2b2+e, any classiﬁer f(x)=f(c1b1+c2b2+e)will implicitly
+exploit theCrepresentation in terms of b1andb2. In fact, this assumption also fundamentally
+validates unsupervised representation learning [ 5]. To see this, if C6!Yin Figure 3(a), uncovering
+the latent knowledge representation from P(YjX)would be impossible, because the only path left
+that transfers knowledge from DtoY:D!X!Y, is cut off by conditioning on X:D6!X!Y.
+An ideal FSL model should capture the true causality between XandYto generalize to unseen
+samples. For example, as illustrated in Figure 2(b), we expect that the “Lion” prediction is caused by
+the “lion” feature per se , but not the background “grass”. However, from the SCM in Figure 3(a), the
+conventional correlation P(YjX)fails to do so, because the increased likelihood of YgivenXis not
+only due to “X causes Y” via X!YandX!C!Y, but also the spurious correlation via 1)
+D!X,e.g., the “grass” knowledge generates the “grass” feature, and 2) D!C!Y,e.g., the
+“grass” knowledge generates the “grass” semantic, which provides useful context for “Lion” label.
+Therefore, to pursue the true causality between XandY, we need to use the causal intervention
+P(Yjdo(X))[45] instead of the likelihood P(YjX)for the FSL objective.
+2.3 Causal Intervention via Backdoor Adjustment
+By now, an astute reader may notice that the causal graph in Figure 3(a) is also valid for Many-Shot
+Learning (MSL), i.e., conventional learning based on pre-training. Compared to FSL, the P(YjX)
+estimation of MSL is much more robust. For example, on miniImageNet, a 5-way-550-shot ﬁne-tuned
+classiﬁer can achieve 95% accuracy, while a 5-way-5-shot one only obtains 79%. We used to blame
+FSL for insufﬁcient data by the law of large numbers in point estimation [ 14]. However, it does not
+answer why MSL converges to the true causal effects as the number of samples increases inﬁnitely.
+In other words, why P(Yjdo(X))P(YjX)in MSL while P(Yjdo(X))6P(YjX)in FSL?
+To answer the question, we need to incorporate the endogenous feature sampling xP(XjI)
+into the estimation of P(YjX), whereIdenotes the sample ID. We have P(YjX=xi):=
+ExP(XjI)P(YjX=x;I=i) =P(YjI),i.e., we can use P(YjI)to estimateP(YjX). In Fig-
+ure 4(a), the causal relation between IandXis purelyI!X,i.e.,X!Idoes not exist, because
+tracing theX’s ID out of many-shot samples is like to ﬁnd a needle in a haystack, given the nature that
+a DNN feature is an abstract and diversity-reduced representation of many samples [ 21]. However, as
+shown in Figure 4(b), X!Ipersists in FSL, because it is much easier for a model to “guess” the
+correspondence, e.g., the 1-shot extreme case that has a trivial 1-to-1 mapping for X$I. Therefore,
+as we formally show in Appendix 1, the key causal difference between MSL and FSL is: MSL
+essentially makes Ianinstrumental variable [1] that achieves P(YjX):=P(YjI)P(Yjdo(X)).
+Intuitively, we can see that all the causalities between IandDin MSL are all blocked by col-
+liders1, makingIandDindependent. So, the feature Xis essentially “intervened” by I, no
+longer dictated by D,e.g., neither “yellow grass” nor “green grass” dominates “Lion” in Fig-
+ure 2(b), mimicking the casual intervention by controlling the use of pre-trained knowledge.
+Many -shot
+𝑋 𝑌 𝐼𝐷
+✘
+Few-shot
+𝑋 𝑌 𝐼𝐷𝐶
+Few-shot
+𝑋 𝑌 𝐼𝐷
+𝐶
+𝑋 𝑌𝐶𝑑1⋯𝑑𝑛𝐷
+(a)
+Many -shot
+𝑋 𝑌 𝐼𝐷
+✘
+Few-shot
+𝑋 𝑌 𝐼𝐷𝐶
+Few-shot
+𝑋 𝑌 𝐼𝐷
+𝐶
+𝑋 𝑌𝐶𝑑1⋯𝑑𝑛𝐷 (b)
+Many -shot
+𝑋 𝑌 𝐼𝐷
+✘✘
+Few-shot
+𝑋 𝑌 𝐼𝐷𝐶
+Few-shot
+𝑋 𝑌 𝐼𝐷
+𝐶
+𝑋 𝑌𝐶𝑑1⋯𝑑𝑛𝐷 (c)
+Figure 4: Causal graphs with sampling process. (a) Many-Shot
+Learning, where P(YjX)P(Yjdo(X)); (b) Few-Shot Learn-
+ing where P(YjX)6P(Yjdo(X); (c) Interventional Few-Shot
+Learning where we directly model P(Yjdo(X)).In this paper, we propose to use the
+backdoor adjustment [ 44] to achieve
+P(Yjdo(X))without the need for
+many-shot, which certainly under-
+mines the deﬁnition of FSL. The back-
+door adjustment assumes that we can
+observe and stratify the confounder,
+i.e.,D=fdg, where each dis a strat-
+iﬁcation of the pre-trained knowledge.
+Formally, as shown in Appendix 2, the
+backdoor adjustment for the graph in
+Figure 3(a) is:
+P(Yjdo(X=x)) =X
+dP(YjX=x;D=d;C=g(x;d))P(D=d); (1)
+1In causal graph, the junction A!B Cis called a “collider”, making AandCindependent even though
+AandCare linked via B[44]. For example, A= “Quality”, C= “Luck”, and B= “Paper Acceptance”.
+4
+
+==== Page 5 ====
+wheregis a function deﬁned later. However, it is not trivial to instantiate d, especially when Dis a
+3rd-party delivered pre-trained network where the dataset is unobserved [ 20]. Next, we will offer
+three practical implementations of Eq. (1) for Interventional FSL.
+3 Interventional Few-Shot Learning
+Our implementation idea is inspired from the two inherent properties of any pre-trained DNN. First,
+each feature dimension carries a semantic meaning, e.g., every channel in convolutional neural
+network is well-known to encode visual concepts [ 77,71]. So, each feature dimension represents
+a piece of knowledge. Second, most prevailing pre-trained models use a classiﬁcation task as the
+objective, such as the 1,000-way classiﬁer of ResNet [ 23] and the token predictor of BERT [ 15].
+Therefore, the classiﬁer can be considered as the distilled knowledge, which has been already widely
+adopted in literature [ 24]. Next, we will detail the proposed Interventional FSL (IFSL) by providing
+three different implementations2forg(x;d),P(YjX;D;C ), andP(D)in Eq. (1). In particular, the
+exact forms of P(Yj)across different classiﬁers are given in Appendix 5.
+Feature-wise Adjustment . Suppose thatFis the index set of the feature dimensions of x,e.g., from
+the last-layer of the pre-trained network 
+. We divideFintonequal-size disjoint subsets, e.g., the
+output feature dimension of ResNet-10 is 512, if n= 8, thei-th set will be a feature dimension index
+set of size 512/8 = 64, i.e.,Fi=f64(i 1) + 1;:::;64ig. The stratum set of pre-trained knowledge
+is deﬁned as D:=fd1;:::;dng, where each di=Fi.
+(i)g(x;di):=fkjk2Fi\Itg, whereItis an index set whose corresponding absolute values in
+xare larger than the threshold t. The reason is simple: if a feature dimension is inactive in x, its
+corresponding adjustment can be omitted. We set t=1e-3 in this paper.
+(ii)P(YjX;D;C ) =P(Yj[x]c), wherec=g(x;di)is implemented as the index set deﬁned above,
+[x]c=fxkgk2cis a feature selector which selects the dimensions of xaccording to the index set c.
+The classiﬁer takes the adjusted feature [x]cas input. Note that dis already absorbed in c, so[x]cis
+essentially a function of (X;D;C ).
+(iii)P(di) = 1=n, where we assume a uniform prior for the adjusted features.
+(iv)The overall feature-wise adjustment is:
+P(Yjdo(X=x)) =1
+nnX
+i=1P(Yj[x]c);wherec=fkjk2Fi\Itg: (2)
+It is worth noting that the feature-wise adjustment is always applicable, as we can always have the
+feature representation xfrom the pre-trained network. Interestingly, our feature-wise adjustment
+sheds some light on the theoretical justiﬁcations for the multi-head trick in transformers [ 61]. We
+will explore this in future work.
+Class-wise Adjustment . Suppose that there are mpre-training classes, denoted as A=fa1;:::amg.
+In class-wise adjustment, each stratum of pre-trained knowledge is deﬁned as a pre-training class, i.e.,
+D:=fd1;:::;dmgand eachdi=ai.
+(i)g(x;di):=P(aijx) xi, whereP(aijx)is the pre-trained classiﬁer’s probability output that x
+belongs to class ai, and xiis the mean feature of pre-training samples from class ai. Note that unlike
+feature-wise adjustment where cis an index set, here c=g(x;di)is implemented as a real vector.
+(ii)P(YjX;D;C ) =P(Yjxg(x;di)), wheredenotes vector concatenation.
+(iii)P(di) = 1=m, where we assume a uniform prior of each class.
+(iv)The overall class-wise adjustment is:
+P(Yjdo(X=x)) =1
+mmX
+i=1P(YjxP(aijx) xi)P(Yjx1
+mmX
+i=1P(aijx) xi); (3)
+2We assume that the combinations of the feature dimensions or classes are linear, otherwise the adjustment
+requires prohibitive O(2n)sampling. We will relax this assumption in future work.
+5
+
+==== Page 6 ====
+where we adopt the Normalized Weighted Geometric Mean (NWGM) [ 66,67] approximation to
+move the outer sumPPinto the inner P(P). This greatly reduces the network forward-pass
+consumption as mis usually large in pre-training dataset. Please refer to Appendix 3 for the detailed
+derivation.
+Combined Adjustment . We can combine feature-wise and class-wise adjustment to make the
+stratiﬁcation in backdoor adjustment much more ﬁne-grained. Our combination is simple: applying
+feature-wise adjustment after class-wise adjustment. Thus, we have:
+P(Yjdo(X=x))1
+nnX
+i=1P(Yj[x]c1
+mmX
+j=1[P(ajjx) xj]c);wherec=fkjk2Fi\Itg:(4)
+4 Related Work
+Few-Shot Learning . FSL has a wide spectrum of methods, including ﬁne-tuning [ 11,16], optimizing
+model initialization [ 18,40], generating model parameters [ 51,34], learning a feature space for a
+better separation of sample categories [ 62,72], feature transfer [ 54,41], and transductive learning
+that additionally uses query set data [ 16,27,25]. Thanks to them, the classiﬁcation accuracy has
+been drastically increased [ 27,72,68,35]. However, accuracy as a single number cannot explain
+the paradoxical phenomenon in Figure 2. Our work offers an answer from a causal standpoint by
+showing that pre-training is a confounder. We not only further improve the accuracy of various FSL
+methods, but also explain the reason behind the improvements. In fact, the perspective offered by our
+work can beneﬁt all the tasks that involve pre-training—any downstream task can be seen as FSL
+compared to the large-scale pre-training data.
+Negative Transfer . The above phenomenon is also known as the negative transfer, where learning
+in source domain contributes negatively to the performance in target domain [ 42]. Many research
+works have being focused on when and how to conduct this transfer learning [ 28,4,76]. Yosinski et
+al.[69] split ImageNet according to man-made objects and natural objects as a test bed for feature
+transferability. They resemble the S6Q settings used in Figure 2(a). Other work also revealed
+that using deeper backbone might lead to degraded performance when the domain gap between
+training and test is large [ 31]. Some similar ﬁndings are reported in the few-shot setting [ 47] and
+NLP tasks [58]. Unfortunately, they didn’t provide a theoretical explanation why it happens.
+Causal Inference . Our work aims to deal with the pre-training confounder in FSL based on causal
+inference [ 45]. Causal inference was recently introduced to machine learning [ 38,7] and has been
+applied to various ﬁelds in computer vision. [ 67] proposes a retrospective for image captioning
+and other applications include image classiﬁcation [ 10,36], imitation learning [ 13], long-tailed
+recognition [ 56] and semantic segmentation [ 73]. We are the ﬁrst to approach FSL from a causal
+perspective. We would like to highlight that data-augmentation based FSL can also be considered as
+approximated intervention. These methods learn to generate additional support samples with image
+deformation [ 12,74] or generative models [ 2,75]. This can be view as physical interventions on the
+image features. Regarding the causal relation between image Xand labelY, some works adopted
+anti-causal learning [ 39],i.e.,Y!X, where the assumption is that labels Yare disentangled
+enough to be treated as Independent Mechanism (IM) [ 43,55], which generates observed images
+XthroughY!X. However, our work targets at the more general case where labels can be
+entangled ( e.g.“lion” and “dog” share the semantic “soft fur”) and the IM assumption may not hold.
+Therefore, we use causal prediction X!Yas it is essentially a reasoning process, where the IM
+is captured by D, which is engineered to be disentangled through CNN ( e.g., the conv-operations
+are applied independently). In this way, Dgenerates visual features through D!Xand emulates
+human’s naming process through D!Y(e.g., “fur”, “four-legged” !“meerkat”). In fact, the
+causal direction X!Y(NOT anti-causal Y!X) has been empirically justiﬁed in complex CV
+tasks [30, 63, 56, 57].
+5 Experiments
+5.1 Datasets and Settings
+Datasets . We conducted experiments on benchmark datasets in FSL literature: 1) mini ImageNet [62]
+containing 600 images per class over 100 classes. We followed the split proposed in [ 48]: 64/16/20
+6
+
+==== Page 7 ====
+classes for train/val/test. 2) tiered ImageNet [49] is much larger compared to miniImageNet with
+608 classes and each class around 1,300 samples. These classes were grouped into 34 higher-level
+concepts and then partitioned into 20/6/8 disjoint sets for train/val/test to achieve larger domain
+difference between training and testing. 3) Caltech-UCSD Birds-200-2011 ( CUB ) [65] for cross-
+domain evaluation. It contains 200 classes and each class has around 60 samples. The models used
+for CUB test were trained on the miniImageNet. Training and evaluation settings on miniImageNet
+andtiered ImageNet are included in Appendix 5.
+Implementation Details . We pre-trained the 10-layer ResNet (ResNet-10) [ 23] and the WideResNet
+(WRN-28-10) [ 70] as our backbones. Our proposed IFSL supports both ﬁne-tuning and meta-learning.
+For ﬁne-tuning, we applied average pooling on the last residual block and used the pooled features to
+train classiﬁers. For meta-learning, we deployed 5 representative methods that cover a large spectrum
+of meta-learning based FSL: 1) model initialization: MAML [ 18], 2) weight generator: LEO [ 51],
+transductive learning: SIB [ 27], 4) metric learning: MatchingNet (MN) [ 62], and 5) feature transfer:
+MTL [ 54]. For both ﬁne-tuning and meta-learning, our IFSL aims to the learn classiﬁer P(Yjdo(X))
+instead of the conventional P(YjX). Detailed implementations are given in Appendix 5.
+Evaluation Metrics . Our evaluation is based on the following metrics: 1) Conventional accuracy
+(Acc) is the average classiﬁcation accuracy commonly used in FSL [ 18,62,54]. 2) Hardness-speciﬁc
+Acc. For each query, we deﬁne a hardness that measures its semantic dissimilarity to the support set,
+and accuracy is then computed at different levels of query hardness. Speciﬁcally, query hardness
+is computed by h= log ((1 s)=s)ands=exphr+;p+
+c=gti=P
+cexphr+;p+
+ci, wherehiis the
+cosine similarity, ()+represents the ReLU activation function, rdenotes the 
+prediction logits of
+query, pcdenotes the average prediction logits of class cin the support set and gtis the ground-truth
+of query. Using Hardness-speciﬁc Acc is similar to evaluating the hardness of FSL tasks [ 16], while
+ours is query-sample-speciﬁc and hence is more ﬁne-grained. Later, we will show its effectiveness to
+unveil the spurious effects in FSL. 3) Feature localization accuracy ( CAM-Acc ) quantiﬁes if a model
+“pays attention” to the actual object when making prediction. It is deﬁned as the percentage of pixels
+inside the object bounding box by using Grad-CAM [ 53] score larger than 0:9. Compared to Accthat
+shows if the prediction is correct, CAM-Acc reveals whether the prediction is based on the correct
+visual cues.
+Table 1: Acc (%) averaged over 2000 5-way FSL tasks before and after
+applying IFSL. We obtained the results by using ofﬁcial code and our
+backbones for a fair comparison across methods. We also implemented SIB in
+both transductive and inductive setting to facilitate fair comparison. For IFSL,
+we reported results of combined adjustment as it almost always outperformed
+feature-wise and class-wise adjustment. See Appendix 6 for Acc and 95%
+conﬁdence intervals on all 3 types of adjustment.
+ResNet-10 WRN-28-10
+miniImageNet tiered ImageNet miniImageNet tiered ImageNetMethod
+5-shot 1-shot 5-shot 1-shot 5-shot 1-shot 5-shot 1-shot
+Linear76.38 56.26 81.01 61.39 79.79 60.69 85.37 67.27
++IFSL +2.19 77.97 +1.59 60.13 +3.87 82.08 +1.07 64.29 +2.9 80.97 +1.18 64.12 +3.43 86.19 +0.82 69.96 +2.69
+Cosine76.68 56.40 81.13 62.08 79.72 60.83 85.41 67.30
++IFSL +1.77 77.63 +0.95 59.84 +3.44 81.75 +0.62 64.47 +2.39 80.74 +1.02 63.76 +2.93 86.13 +0.72 69.36 +2.06
+k-NN76.63 55.92 80.85 61.16 79.60 60.34 84.67 67.25Fine-Tuning
++IFSL +3.13 78.42 +1.79 62.31 +6.36 81.98 +1.13 65.71 +4.55 81.08 +1.48 64.98 +4.64 86.06 +1.39 70.94 +3.69
+MAML [18]70.85 56.59 74.02 59.17 73.92 58.02 77.20 61.40
++IFSL +5.55 76.37 +5.52 59.36 +2.77 81.04 +7.02 63.88 +4.71 79.25 +5.33 62.84 +4.82 85.10 +7.90 67.70 +6.30
+LEO [51]74.49 58.48 80.25 65.25 75.86 59.77 82.15 68.90
++IFSL +1.94 76.91 +2.42 61.09 +2.61 81.43 +1.18 66.03 +0.78 77.72 +1.86 62.19 +2.42 85.04 +2.89 70.28 +1.38
+MTL [54]75.65 58.49 81.14 64.29 77.30 62.99 83.23 70.08
++IFSL +2.02 78.03 +2.38 61.17 +2.68 82.35 +1.21 65.72 +1.43 80.20 +2.9 64.40 +1.41 86.02 +2.79 71.45 +1.37
+MN [62]75.21 61.05 79.92 66.01 77.15 63.45 82.43 70.38
++IFSL +1.34 76.73 +1.52 62.64 +1.59 80.79 +0.87 67.30 +1.29 78.55 +1.40 64.89 +1.44 84.03 +1.60 71.41 +1.03
+SIB [27]
+(transductive)78.88 67.10 85.09 77.64 81.73 71.31 88.19 81.97
++IFSL +1.15 80.32 +1.44 68.85 +1.75 85.43 +0.34 78.03 +0.39 83.21 +1.48 73.51 +2.20 88.69 +0.50 83.07 +1.10
+SIB [27]
+(inductive)75.64 57.20 81.69 65.51 78.17 60.12 84.96 69.20Meta-Learning
++IFSL +2.05 77.68 +2.04 60.33 +3.13 82.75 +1.06 67.34 +1.83 80.05 +1.88 63.14 +3.02 86.14 +1.18 71.45 +2.25
+20%40%60%80%
+Accuracy
+Hardness20%40%60%80%
+Accuracy
+Hardness
+ResNet -10 Baseline
+ResNet -10 IFSLWRN -28-10 Baseline
+WRN -28-10 IFSL
+ResNet -10 Baseline
+ResNet -10 IFSLWRN -28-10 Baseline
+WRN -28-10 IFSL(a)Fine-Tuning (Linear)
+20%40%60%80%
+Accuracy
+Hardness20%40%60%80%
+Accuracy
+HardnessResNet -10 Baseline
+ResNet -10 IFSLWRN -28-10 Baseline
+WRN -28-10 IFSL
+ResNet -10 Baseline
+ResNet -10 IFSLWRN -28-10 Baseline
+WRN -28-10 IFSL
+linear sib
+(b)Meta-Learning (SIB)
+Figure 5: Accuracy across
+query hardness on 5-shot ﬁne-
+tuning and meta-learning. Ad-
+ditional results are shown in
+Appendix 6.
+5.2 Results and Analysis
+Conventional Acc . 1) From Table 1, we observe that IFSL consistently improves ﬁne-tuning and
+meta-learning in all settings, which suggests that IFSL is agnostic to methods, datasets, and backbones.
+2) In particular, the improvements are typically larger on 1-shot than 5-shot. For example, in ﬁne-
+7
+
+==== Page 8 ====
+Table 2: Comparison with state-of-the-arts of 5-way 1-/5-
+shot Acc (%) on miniImageNet and tiered ImageNet.
+Method Backbonemini ImageNet tiered ImageNet
+5-shot 1-shot 5-shot 1-shot
+Baseline++ [11] ResNet-10 75.90 53.97 - -
+IdeMe-Nety[12] ResNet-10 73.78 57.61 80.34 60.32
+TRAML [32] ResNet-12 79.54 67.10 - -
+DeepEMD [72] ResNet-12 82.41 65.91 86.03 71.16
+CTM [33] ResNet-18 80.51 64.12 84.28 68.41
+FEAT [68] WRN-28-10 81.80 66.69 84.38 70.41
+Tran. Baseline [16] WRN-28-10 78.40 65.73 85.50 73.34
+wDAE-GNN [19] WRN-28-10 78.85 62.96 83.09 68.18
+SIBy[27] WRN-28-10 81.73 71.31 88.19 81.97
+SIB+IFSL (ours) WRN-28-10 83.21 73.51 88.69 83.07
+yUsing our pre-trained backbone.Table 3: Results of cross-domain eval-
+uation: miniImageNet!CUB. The
+whole report is in Appendix 6.
+Backbone Method 5-shot 1-shot
+Linear58.84 42.25
++IFSL 60.65 45.14
+SIB60.60 45.87ResNet-10
++IFSL 62.07 47.07
+Linear62.12 42.89
++IFSL 64.15 45.64
+SIB62.59 49.16WRN-28-10
++IFSL 64.43 50.71
+“mixing bowl” “crate” “triﬂe” “ant” “electric guitar”
+Query
+Linear
++IFSLMAML
++IFSLCAM-Acc5-shot 1-shot
+Linear MAML Linear MAML
+29.02 29.43 25.22 27.39
++IFSL 29.85 30.06 +IFSL 26.67 28.42
+Figure 6: Some miniImageNet visualizations of Grad-Cam [ 53] activation of query images and the CAM-Acc
+(%) table of using linear classiﬁer and MAML. Categories with red text represent failed cases. The complete
+results on CAM-Acc are shown in Appendix 6, where IFSL achieves similar or better results in all settings.
+tuning, the average performance gain is 1.15% on 5-shot and 3.58% on 1-shot. The results support our
+analysis in Section 2.3 that FSL models are more prone to bias in lower-shot settings. 3) Regarding
+the average improvements on ﬁne-tuning vs. meta-learning ( e.g.k-NN and MN), we observe that IFSL
+improves more on ﬁne-tuning in most cases. We conjecture that this is because meta-learning is an
+implicit form of intervention, where randomly sampled meta-training episodes effectively stratify the
+pre-trained knowledge. This suggests that meta-learning is fundamentally superior over ﬁne-tuning
+due to increased robustness against confounders. We will investigate this potential theory in future
+work. 4) Additionally we see that the improvements on miniImageNet are usually larger than that on
+tiered ImageNet. A possible reason is the much larger training set for tiered ImageNet: it substantially
+increases the breadth of the pre-trained knowledge and the resulting models explain query samples
+much better. 5) According to Table 1 and Table 2, it is clear that our k-NN+IFSL outperforms
+IdeMe-Net [ 12] using the same pre-trained ResNet-10. This shows that using data augmentation —
+a method of physical data intervention as in IdeMe-Net [ 12] is inferior to our causal intervention
+in IFSL. 6) Overall, our IFSL achieves the new state-of-the-art on both datasets. Note that IFSL is
+ﬂexible to be plugged into different baselines.
+Hardness-speciﬁc Acc. 1) Figure 5(a) shows the plot of Hardness-speciﬁc Acc of ﬁne-tuning. We
+notice that when query becomes harder, ResNet-10 (blue curves) becomes superior to WRN-28-10
+(red curves). This tendency is consistent with Figure 2(a) illustrating the effect of the confounding
+bias caused by pre-training. 2) Intriguingly, in Figure 5(b), we notice that this tendency is reversed for
+meta-learning, i.e., deeper backbone always performs better. The improved performance of deeper
+backbone on hard queries suggests that meta-learning should have some functions to remove the
+confounding bias. This evidence will inspire us to provide a causal view of meta-learning in future
+work. 3) Overall, Figure 5 shows that using IFSL futher improves ﬁne-tuning and meta-learning
+consistently across all hardness, validating the effectiveness of the proposed causal intervention.
+CAM-Acc & Visualization. In Figure 6, we compare +IFSL to baseline linear classiﬁer on the
+left and to baseline MAML [ 18] on the right, and summarize CAM-Acc results in the upper-right
+table. From the visualization, we see that using IFSL let the model pay more attention to the objects.
+However, notice that all models failed in the categories colored as red. A possible reason behind the
+failures is the extremely small size of the object — models have to resort to context for prediction.
+From the numbers, we can see our improvements for 1-shot are larger than that for 5-shot, consistent
+8
+
+==== Page 9 ====
+with our ﬁndings using other evaluation metrics. These results suggest that IFSL helps models use
+the correct visual semantics for prediction by removing the confounding bias.
+Cross-Domain Generalization Ability. In Table 3, we show the testing results on CUB using the
+models trained on the miniImageNet. The setting is challenging due to the big domain gap between
+the two datasets. We chose linear classiﬁer as it outperforms cosine and k-NN in cross-domain
+setting and compared with transductive method — SIB. The results clearly show that IFSL works
+well in this setting and brings consistent improvements, with the average 1.94% of Acc. In addition,
+we can see that applying IFSL brings larger improvements to the inductive linear classiﬁer than to
+the transductive SIB. It is possibly because transductive methods involve unlabeled query data and
+performs better than inductive methods with the additional information. Nonetheless we observe that
+IFSL can further improve SIB in cross-domain (Table 3) and single-domain (Table 1) generalization.
+6 Conclusions
+We presented a novel casual framework: Interventional Few-Shot Learning (IFSL), to address
+an overlooked deﬁciency in recent FSL methods: the pre-training is a confounder hurting the
+performance. Speciﬁcally, we proposed a structural causal model of the causalities in the process
+of FSL and then developed three practical implementations based on the backdoor adjustment. To
+better illustrate the deﬁciency, we diagnosed the classiﬁcation accuracy comprehensively across
+query hardness, and showed that IFSL improves all the baselines across all the hardness. It is worth
+highlighting that the contribution of IFSL is not only about improving the performance of FSL, but
+also offering a causal explanation why IFSL works well: it is a causal approximation to many-shot
+learning. We believe that IFSL may shed light on exploring the new boundary of FSL, even though
+FSL is well-known to be ill-posed due to insufﬁcient data. To upgrade IFSL, we will seek other
+observational intervention algorithms for better performance, and devise counterfactual reasoning for
+more general few-shot settings such as domain transfer.
+7 Acknowledgements
+The authors would like to thank all the anonymous reviewers for their constructive comments and
+suggestions. This research is partly supported by the Alibaba-NTU Singapore Joint Research Institute,
+Nanyang Technological University (NTU), Singapore; the Singapore Ministry of Education (MOE)
+Academic Research Fund (AcRF) Tier 1 and Tier 2 grant; and Alibaba Innovative Research (AIR)
+programme. We also want to thank Alibaba City Brain Group for the donations of GPUs.
+8 Broader Impact
+The proposed method aims to improve the Few-Shot Learning task. Advancements in FSL helps the
+deployment of machine learning models in areas where labelled data is difﬁcult or expensive to obtain
+and it is closely related to social well-beings: few-shot drug discovery or medical imaging analysis
+in medical applications, cold-start item recommendation in e-commerce, few-shot reinforcement
+learning for industrial robots, etc.. Our method is based on causal inference and the analysis is rooted
+on causation rather than correlation. The marriage between causality and machine learning can
+produce more robust, transparent and explainable models, broadening the applicability of ML models
+and promoting fairness in artiﬁcial intelligence.
+References
+[1]Joshua D Angrist and Alan B Krueger. Instrumental variables and the search for identiﬁcation:
+From supply and demand to natural experiments. Journal of Economic Perspectives , 2001. 4
+[2]Antreas Antoniou, Amos Storkey, and Harrison Edwards. Data augmentation generative adver-
+sarial networks. In Proceedings of the International Conference on Learning Representations
+Workshops , 2018. 6
+[3]Sanjeev Arora, Nadav Cohen, Wei Hu, and Yuping Luo. Implicit regularization in deep matrix
+factorization. In Advances in Neural Information Processing Systems , 2019. 3
+9
+
+==== Page 10 ====
+[4]Hossein Azizpour, Ali Sharif Razavian, Josephine Sullivan, Atsuto Maki, and Stefan Carlsson.
+Factors of transferability for a generic convnet representation. IEEE transactions on Pattern
+Analysis and Machine Intelligence , 2015. 6
+[5]Yoshua Bengio. Deep learning of representations for unsupervised and transfer learning. In
+Proceedings of ICML Workshop on Unsupervised and Transfer Learning , 2012. 4
+[6]Yoshua Bengio, Aaron Courville, and Pascal Vincent. Representation learning: A review and
+new perspectives. IEEE Transactions on Pattern Analysis and Machine Intelligence , 2013. 3
+[7]Yoshua Bengio, Tristan Deleu, Nasim Rahaman, Rosemary Ke, Sébastien Lachapelle, Olexa
+Bilaniuk, Anirudh Goyal, and Christopher Pal. A meta-transfer objective for learning to
+disentangle causal mechanisms. In International Conference on Learning Representations ,
+2019. 6
+[8]Michel Besserve, Rémy Sun, and Bernhard Schölkopf. Counterfactuals uncover the modular
+structure of deep generative models. arXiv preprint arXiv:1812.03253 , 2018. 3
+[9]Emmanuel J Candès, Xiaodong Li, Yi Ma, and John Wright. Robust principal component
+analysis? Journal of the ACM (JACM) , 2011. 3
+[10] Krzysztof Chalupka, Pietro Perona, and Frederick Eberhardt. Visual causal feature learning. In
+Uncertainty in Artiﬁcial Intelligence , 2015. 6
+[11] Wei-Yu Chen, Yen-Cheng Liu, Zsolt Kira, Yu-Chiang Frank Wang, and Jia-Bin Huang. A closer
+look at few-shot classiﬁcation. In International Conference on Learning Representations , 2019.
+1, 6, 8
+[12] Zitian Chen, Yanwei Fu, Yu-Xiong Wang, Lin Ma, Wei Liu, and Martial Hebert. Image
+deformation meta-networks for one-shot learning. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition , 2019. 6, 8
+[13] Pim de Haan, Dinesh Jayaraman, and Sergey Levine. Causal confusion in imitation learning. In
+Advances in Neural Information Processing Systems , 2019. 6
+[14] F.M. Dekking, C. Kraaikamp, H.P. Lopuhaä, and L.E. Meester. A Modern Introduction to
+Probability and Statistics: Understanding Why and How . Springer Texts in Statistics. Springer,
+2005. 4
+[15] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. Bert: Pre-training of deep
+bidirectional transformers for language understanding. Proceedings of the 2019 Conference
+of the North American Chapter of the Association for Computational Linguistics: Human
+Language Technologies , 2019. 1, 5
+[16] Guneet S Dhillon, Pratik Chaudhari, Avinash Ravichandran, and Stefano Soatto. A baseline for
+few-shot image classiﬁcation. In International Conference on Learning Representations , 2020.
+1, 6, 7, 8
+[17] Li Fei-Fei, Rob Fergus, and Pietro Perona. One-shot learning of object categories. IEEE
+Transactions on Pattern Analysis and Machine Intelligence , 2006. 1
+[18] Chelsea Finn, Pieter Abbeel, and Sergey Levine. Model-agnostic meta-learning for fast adap-
+tation of deep networks. In International Conference on Machine Learning , 2017. 2, 3, 6, 7,
+8
+[19] Spyros Gidaris and Nikos Komodakis. Generating classiﬁcation weights with gnn denoising
+autoencoders for few-shot learning. In Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition , 2019. 2, 3, 8
+[20] Ross Girshick, Ilija Radosavovic, Georgia Gkioxari, Piotr Dollár, and Kaiming He. Detectron.
+https://github.com/facebookresearch/detectron , 2018. 5
+[21] Ian Goodfellow, Yoshua Bengio, and Aaron Courville. Deep Learning . The MIT Press, 2016. 4
+[22] Kaiming He, Georgia Gkioxari, Piotr Dollár, and Ross Girshick. Mask r-cnn. In Proceedings of
+the IEEE International Conference on Computer Vision , 2017. 1
+[23] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for im-
+age recognition. In Proceedings of the IEEE Conference on Computer Vision and Pattern
+Recognition , 2016. 1, 5, 7
+[24] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network. In
+Advances in Neural Information Processing Systems Deep Learning Workshop , 2014. 1, 5
+10
+
+==== Page 11 ====
+[25] Ruibing Hou, Hong Chang, MA Bingpeng, Shiguang Shan, and Xilin Chen. Cross attention
+network for few-shot classiﬁcation. In Advances in Neural Information Processing Systems ,
+2019. 6
+[26] Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko, Weijun Wang, Tobias
+Weyand, Marco Andreetto, and Hartwig Adam. Mobilenets: Efﬁcient convolutional neural
+networks for mobile vision applications. arXiv preprint arXiv:1704.04861 , 2017. 1
+[27] Shell Xu Hu, Pablo Moreno, Yang Xiao, Xi Shen, Guillaume Obozinski, Neil Lawrence, and
+Andreas Damianou. Empirical bayes transductive meta-learning with synthetic gradients. In
+International Conference on Learning Representations , 2020. 2, 6, 7, 8
+[28] Minyoung Huh, Pulkit Agrawal, and Alexei A Efros. What makes imagenet good for transfer
+learning? arXiv preprint arXiv:1608.08614 , 2016. 6
+[29] Muhammad Abdullah Jamal and Guo-Jun Qi. Task agnostic meta-learning for few-shot learning.
+InProceedings of the IEEE Conference on Computer Vision and Pattern Recognition , 2019. 1
+[30] Qi Jiaxin, Niu Yulei, Huang Jianqiang, and Zhang Hanwang. Two causal principles for
+improving visual dialog. In Proceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition , 2020. 6
+[31] Simon Kornblith, Jonathon Shlens, and Quoc V Le. Do better imagenet models transfer better?
+InProceedings of the IEEE conference on Computer Vision and Pattern Recognition , 2019. 6
+[32] Aoxue Li, Weiran Huang, Xu Lan, Jiashi Feng, Zhenguo Li, and Liwei Wang. Boosting few-shot
+learning with adaptive margin loss. In Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition , 2020. 8
+[33] Hongyang Li, David Eigen, Samuel Dodge, Matthew Zeiler, and Xiaogang Wang. Finding
+task-relevant features for few-shot learning by category traversal. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition , 2019. 8
+[34] Huaiyu Li, Weiming Dong, Xing Mei, Chongyang Ma, Feiyue Huang, and Bao-Gang Hu.
+Lgm-net: Learning to generate matching networks for few-shot learning. In International
+Conference on Machine Learning , 2019. 6
+[35] Yaoyao Liu, Bernt Schiele, and Qianru Sun. An ensemble of epoch-wise empirical bayes for
+few-shot learning. In European Conference on Computer Vision , 2020. 6
+[36] David Lopez-Paz, Robert Nishihara, Soumith Chintala, Bernhard Scholkopf, and Léon Bottou.
+Discovering causal signals in images. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , 2017. 6
+[37] Laurens van der Maaten and Geoffrey Hinton. Visualizing data using t-sne. Journal of Machine
+Learning Research , 2008. 3
+[38] Sara Magliacane, Thijs van Ommen, Tom Claassen, Stephan Bongers, Philip Versteeg, and
+Joris M Mooij. Domain adaptation by using causal inference to predict invariant conditional
+distributions. In Advances in Neural Information Processing Systems , 2018. 6
+[39] Gong Mingming, Zhang Kun, Liu Tongliang, Tao Dacheng, Clark Glymour, and Bernhard
+Schölkopf. Domain adaptation with conditional transferable components. In International
+Conference on Machine Learning , 2016. 6
+[40] Alex Nichol and John Schulman. Reptile: a scalable metalearning algorithm. arXiv preprint
+arXiv:1803.02999 , 2018. 6
+[41] Boris Oreshkin, Pau Rodríguez López, and Alexandre Lacoste. Tadam: Task dependent adaptive
+metric for improved few-shot learning. In Advances in Neural Information Processing Systems ,
+2018. 6
+[42] Sinno Jialin Pan and Qiang Yang. A survey on transfer learning. IEEE Transactions on
+Knowledge and Data Engineering , 2009. 6
+[43] Giambattista Parascandolo, Niki Kilbertus, Mateo Rojas-Carulla, and Bernhard Schölkopf.
+Learning independent causal mechanisms. In International Conference on Machine Learning ,
+2018. 6
+[44] J. Pearl, M. Glymour, and N.P. Jewell. Causal Inference in Statistics: A Primer . Wiley, 2016. 2,
+3, 4
+11
+
+==== Page 12 ====
+[45] Judea Pearl. Causality: Models, Reasoning and Inference . Cambridge University Press, 2nd
+edition, 2009. 4, 6
+[46] Siyuan Qiao, Chenxi Liu, Wei Shen, and Alan L Yuille. Few-shot image recognition by
+predicting parameters from activations. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , 2018. 2
+[47] Tiago Ramalho, Thierry Sousbie, and Stefano Peluchetti. An empirical study of pretrained
+representations for few-shot classiﬁcation. arXiv preprint arXiv:1910.01319 , 2019. 6
+[48] Sachin Ravi and Hugo Larochelle. Optimization as a model for few-shot learning. In Interna-
+tional Conference on Learning Representations , 2017. 6
+[49] Mengye Ren, Eleni Triantaﬁllou, Sachin Ravi, Jake Snell, Kevin Swersky, Joshua B. Tenen-
+baum, Hugo Larochelle, and Richard S. Zemel. Meta-learning for semi-supervised few-shot
+classiﬁcation. In International Conference on Learning Representations , 2018. 2, 7
+[50] Sam T Roweis and Lawrence K Saul. Nonlinear dimensionality reduction by locally linear
+embedding. Science , 2000. 3
+[51] Andrei A. Rusu, Dushyant Rao, Jakub Sygnowski, Oriol Vinyals, Razvan Pascanu, Simon
+Osindero, and Raia Hadsell. Meta-learning with latent embedding optimization. In International
+Conference on Learning Representations , 2019. 6, 7
+[52] Adam Santoro, Sergey Bartunov, Matthew Botvinick, Daan Wierstra, and Timothy Lillicrap.
+Meta-learning with memory-augmented neural networks. In International Conference on
+Machine Learning , 2016. 1
+[53] Ramprasaath R Selvaraju, Michael Cogswell, Abhishek Das, Ramakrishna Vedantam, Devi
+Parikh, and Dhruv Batra. Grad-cam: Visual explanations from deep networks via gradient-based
+localization. In Proceedings of the IEEE International Conference on Computer Vision , 2017.
+7, 8
+[54] Qianru Sun, Yaoyao Liu, Tat-Seng Chua, and Bernt Schiele. Meta-transfer learning for few-shot
+learning. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition ,
+2019. 6, 7
+[55] Raphael Suter, Ðor ¯de Miladinovi ´c, Bernhard Schölkopf, and Stefan Bauer. Robustly disen-
+tangled causal mechanisms: Validating deep representations for interventional robustness. In
+International Conference on Machine Learning , 2019. 6
+[56] Kaihua Tang, Jianqiang Huang, and Hanwang Zhang. Long-tailed classiﬁcation by keeping
+the good and removing the bad momentum causal effect. In Advances in Neural Information
+Processing Systems , 2020. 6
+[57] Kaihua Tang, Yulei Niu, Jianqiang Huang, Jiaxin Shi, and Hanwang Zhang. Unbiased scene
+graph generation from biased training. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , 2020. 6
+[58] Marc Tanti, Albert Gatt, and Kenneth P Camilleri. Transfer learning from language models to im-
+age caption generators: Better models may not transfer better. arXiv preprint arXiv:1901.01216 ,
+2019. 6
+[59] Joshua B Tenenbaum, Vin De Silva, and John C Langford. A global geometric framework for
+nonlinear dimensionality reduction. Science , 2000. 3
+[60] Matthew Turk and Alex Pentland. Face recognition using eigenfaces. In Proceedings. 1991
+IEEE Computer Society Conference on Computer Vision and Pattern Recognition , 1991. 3
+[61] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
+Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Informa-
+tion Processing Systems , 2017. 1, 5
+[62] Oriol Vinyals, Charles Blundell, Timothy Lillicrap, Daan Wierstra, et al. Matching networks
+for one shot learning. In Advances in Neural Information Processing Systems , 2016. 2, 3, 6, 7
+[63] Tan Wang, Jianqiang Huang, Hanwang Zhang, and Qianru Sun. Visual commonsense r-cnn. In
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , 2019. 6
+[64] Yaqing Wang and Quanming Yao. Few-shot learning: A survey. arXiv preprint
+arXiv:1904.05046 , 2019. 1
+12
+
+==== Page 13 ====
+[65] P. Welinder, S. Branson, T. Mita, C. Wah, F. Schroff, S. Belongie, and P. Perona. Caltech-UCSD
+Birds 200. Technical report, California Institute of Technology, 2010. 2, 7
+[66] Kelvin Xu, Jimmy Ba, Ryan Kiros, Kyunghyun Cho, Aaron Courville, Ruslan Salakhudinov,
+Rich Zemel, and Yoshua Bengio. Show, attend and tell: Neural image caption generation with
+visual attention. In International Conference on Machine Learning , 2015. 6
+[67] Xu Yang, Hanwang Zhang, and Jianfei Cai. Deconfounded image captioning: A causal
+retrospect. arXiv preprint arXiv:2003.03923 , 2020. 6
+[68] Han-Jia Ye, Hexiang Hu, De-Chuan Zhan, and Fei Sha. Few-shot learning via embedding
+adaptation with set-to-set functions. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , 2020. 6, 8
+[69] Jason Yosinski, Jeff Clune, Yoshua Bengio, and Hod Lipson. How transferable are features in
+deep neural networks? In Advances in Neural Information Processing Systems , 2014. 6
+[70] Sergey Zagoruyko and Nikos Komodakis. Wide residual networks. In British Machine Vision
+Conference , 2016. 7
+[71] Matthew D Zeiler and Rob Fergus. Visualizing and understanding convolutional networks. In
+European Conference on Computer Vision , 2014. 3, 5
+[72] Chi Zhang, Yujun Cai, Guosheng Lin, and Chunhua Shen. Deepemd: Few-shot image classiﬁ-
+cation with differentiable earth mover’s distance and structured classiﬁers. 2020. 6, 8
+[73] Dong Zhang, Hanwang Zhang, Jinhui Tang, Xian sheng Hua, and Qianru Sun. Causal inter-
+vention for weakly-supervised semantic segmentation. In Advances in Neural Information
+Processing Systems , 2020. 6
+[74] Hongguang Zhang, Jing Zhang, and Piotr Koniusz. Few-shot learning via saliency-guided
+hallucination of samples. In Proceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition , 2019. 6
+[75] Ruixiang Zhang, Tong Che, Zoubin Ghahramani, Yoshua Bengio, and Yangqiu Song. Metagan:
+An adversarial approach to few-shot learning. In Advances in Neural Information Processing
+Systems , 2018. 6
+[76] Youshan Zhang and Brian D Davison. Impact of imagenet model selection on domain adaptation.
+InProceedings of the IEEE Winter Conference on Applications of Computer Vision Workshops ,
+2020. 6
+[77] Bolei Zhou, Aditya Khosla, Agata Lapedriza, Aude Oliva, and Antonio Torralba. Learning deep
+features for discriminative localization. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , 2016. 3, 5
+13
+

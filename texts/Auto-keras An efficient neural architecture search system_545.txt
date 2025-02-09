@@ -1,0 +1,1242 @@
+==== Page 1 ====
+Auto-Keras: An Efficient Neural Architecture Search System
+Haifeng Jin, Qingquan Song, Xia Hu
+Department of Computer Science and Engineering, Texas A&M University
+{jin,song_3134,xiahu}@tamu.edu
+ABSTRACT
+Neural architecture search (NAS) has been proposed to automat-
+ically tune deep neural networks, but existing search algorithms,
+e.g., NASNet [ 51], PNAS [ 29], usually suffer from expensive com-
+putational cost. Network morphism, which keeps the functional-
+ity of a neural network while changing its neural architecture,
+could be helpful for NAS by enabling more efficient training during
+the search. In this paper, we propose a novel framework enabling
+Bayesian optimization to guide the network morphism for effi-
+cient neural architecture search. The framework develops a neural
+network kernel and a tree-structured acquisition function optimiza-
+tion algorithm to efficiently explores the search space. Extensive
+experiments on real-world benchmark datasets have been done to
+demonstrate the superior performance of the developed framework
+over the state-of-the-art methods. Moreover, we build an open-
+source AutoML system based on our method, namely Auto-Keras.
+The code and documentation are available at https://autokeras.com.
+The system runs in parallel on CPU and GPU, with an adaptive
+search strategy for different GPU memory limits.
+CCS CONCEPTS
+•Computing methodologies →Neural networks ;Supervised
+learning ;Discrete space search .
+KEYWORDS
+Automated Machine Learning, AutoML, Neural Architecture Search,
+Bayesian Optimization, Network Morphism
+ACM Reference Format:
+Haifeng Jin, Qingquan Song, Xia Hu. 2019. Auto-Keras: An Efficient Neural
+Architecture Search System. In The 25th ACM SIGKDD Conference on Knowl-
+edge Discovery and Data Mining (KDD ’19), August 4–8, 2019, Anchorage, AK,
+USA. ACM, New York, NY, USA, 11 pages. https://doi.org/10.1145/3292500.
+3330648
+1 INTRODUCTION
+Automated Machine Learning (AutoML) has become a very im-
+portant research topic with wide applications of machine learning
+techniques. The goal of AutoML is to enable people with limited
+machine learning background knowledge to use machine learning
+models easily. Work has been done on automated model selection,
+automated hyperparameter tunning, and etc. In the context of deep
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+©2019 Association for Computing Machinery.
+ACM ISBN 978-1-4503-6201-6/19/08. . .$15.00
+https://doi.org/10.1145/3292500.3330648learning, neural architecture search (NAS), which aims to search
+for the best neural network architecture for the given learning task
+and dataset, has become an effective computational tool in AutoML.
+Unfortunately, existing NAS algorithms are usually computation-
+ally expensive. The time complexity of NAS is O(n¯t), where nis the
+number of neural architectures evaluated during the search, and ¯t
+is the average time consumption for evaluating each of the nneu-
+ral networks. Many NAS approaches, such as deep reinforcement
+learning [ 2,37,47,50,51], gradient-based methods [ 8,31,33] and
+evolutionary algorithms [ 12,17,30,38,39,41], require a large nto
+reach a good performance. Moreover, many of them train each of
+thenneural networks from scratch, which is very slow.
+Initial efforts have been devoted to making use of network mor-
+phism in neural architecture search [ 7,13]. It is a technique to
+morph the architecture of a neural network but keep its function-
+ality [ 10,45]. Therefore, we are able to modify a trained neural
+network into a new architecture using the network morphism op-
+erations, e.g., inserting a layer or adding a skip-connection. Only a
+few more epochs are required to further train the new architecture
+towards better performance. Using network morphism would re-
+duce the average training time ¯tin neural architecture search. The
+most important problem to solve for network morphism-based NAS
+methods is the selection of operations, which is to select an opera-
+tion from the network morphism operation set to morph an existing
+architecture to a new one. The network morphism-based NAS meth-
+ods are not efficient enough. They either require a large number of
+training examples [ 7], or inefficient in exploring the large search
+space [ 13]. How to perform efficient neural architecture search with
+network morphism remains a challenging problem.
+As we know, Bayesian optimization [ 40] has been widely adopted
+to efficiently explore black-box functions for global optimization,
+whose observations are expensive to obtain. For example, it has
+been used in hyperparameter tuning for machine learning mod-
+els [3,15,21,24,40,44], in which Bayesian optimization searches
+among different combinations of hyperparameters. During the
+search, each evaluation of a combination of hyperparameters in-
+volves an expensive process of training and testing the machine
+learning model, which is very similar to the NAS problem. The
+unique properties of Bayesian optimization motivate us to explore
+its capability in guiding the network morphism to reduce the num-
+ber of trained neural networks nto make the search more efficient.
+It is non-trivial to design a Bayesian optimization method for
+network morphism-based NAS due to the following challenges.
+First, the underlying Gaussian process (GP) is traditionally used for
+learning probability distribution of functions in Euclidean space.
+To update the Bayesian optimization model with observations, the
+underlying GP is to be trained with the searched architectures and
+their performances. However, the neural network architectures are
+not in Euclidean space and hard to parameterize into a fixed-length
+vector. Second, an acquisition function needs to be optimized for
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1946
+
+
+==== Page 2 ====
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA H. Jin et al.
+Bayesian optimization to generate the next architecture to observe.
+However, in the context of network morphism, it is not to maximize
+a function in Euclidean space, but finding a node in a tree-structured
+search space, where each node represents a neural architecture and
+each edge is a morph operation. Thus traditional gradient-based
+methods cannot be simply applied. Third, the changes caused by a
+network morphism operation is complicated. A network morphism
+operation on one layer may change the shapes of some intermediate
+output tensors, which no longer match input shape requirements of
+the layers taking them as input. How to maintain such consistency
+is a challenging problem.
+In this paper, an efficient neural architecture search with network
+morphism is proposed, which utilizes Bayesian optimization to
+guide through the search space by selecting the most promising
+operations each time. To tackle the aforementioned challenges, an
+edit-distance neural network kernel is constructed. Being consistent
+with the key idea of network morphism, it measures how many
+operations are needed to change one neural network to another.
+Besides, a novel acquisition function optimizer, which is capable
+of balancing between the exploration and exploitation, is designed
+specially for the tree-structure search space to enable Bayesian
+optimization to select from the operations. In addition, a graph-level
+network morphism is defined to address the changes in the neural
+architectures based on layer-level network morphism. The proposed
+approach is compared with the state-of-the-art NAS methods [ 13,
+22] on benchmark datasets of MNIST, CIFAR10, and FASHION-
+MNIST. Within a limited search time, the architectures found by
+our method achieves the lowest error rates on all of the datasets.
+In addition, we have developed a widely adopted open-source
+AutoML system based on our proposed method, namely Auto-Keras.
+It is an open-source AutoML system, which can be download and
+installed locally. The system is carefully designed with a concise
+interface for people not specialized in computer programming and
+data science to use. To speed up the search, the workload on CPU
+and GPU can run in parallel. To address the issue of different GPU
+memory, which limits the size of the neural architectures, a memory
+adaption strategy is designed for deployment.
+The main contributions of the paper are as follows:
+•Propose an algorithm for efficient neural architecture search
+based on network morphism guided by Bayesian optimization.
+•Conduct intensive experiments on benchmark datasets to demon-
+strate the superior performance of the proposed method over the
+baseline methods.
+•Develop an open-source system, namely Auto-Keras, which is
+one of the most widely used AutoML systems.
+2 PROBLEM STATEMENT
+The general neural architecture search problem we studied in this
+paper is defined as: Given a neural architecture search space F, the
+input data Ddivided into Dtrain andDval, and the cost function
+Cost(·), we aim at finding an optimal neural network f∗∈ F ,
+which could achieve the lowest cost on dataset D. The definition is
+equivalent to finding f∗satisfying:
+f∗=argmin
+f∈FCost(f(θ∗),Dval), (1)θ∗=argmin
+θL(f(θ),Dtrain). (2)
+where Cost(·,·)is the evaluation metric function, e.g., accuracy,
+mean sqaured error, θ∗is the learned parameter of f.
+The search spaceFcovers all the neural architectures, which
+can be morphed from the initial architectures. The details of the
+morph operations are introduced in 3.3. Notably, the operations
+can change the number of filters in a convolutional layer, which
+makesFlarger than methods with fixed layer width [31].
+3 NETWORK MORPHISM GUIDED BY
+BAYESIAN OPTIMIZATION
+The key idea of the proposed method is to explore the search space
+via morphing the neural architectures guided by Bayesian optimiza-
+tion (BO) algorithm. Traditional Bayesian optimization consists
+of a loop of three steps: update, generation, and observation. In
+the context of NAS, our proposed Bayesian optimization algorithm
+iteratively conducts: (1) Update : train the underlying Gaussian pro-
+cess model with the existing architectures and their performances;
+(2)Generation : generate the next architecture to observe by opti-
+mizing a delicately defined acquisition function; (3) Observation:
+obtain the actual performance by training the generated neural ar-
+chitecture. There are three main challenges in designing a method
+for morphing the neural architectures with Bayesian optimization.
+We introduce three key components separately in the subsequent
+sections coping with the three challenges.
+3.1 Edit-Distance Neural Network Kernel for
+Gaussian Process
+The first challenge we need to address is that the NAS space is
+not a Euclidean space, which does not satisfy the assumption of
+traditional Gaussian process (GP). Directly vectorizing the neural
+architecture is impractical due to the uncertain number of layers
+and parameters it may contain. Since the Gaussian process is a
+kernel method, instead of vectorizing a neural architecture, we
+propose to tackle the challenge by designing a neural network
+kernel function. The intuition behind the kernel function is the edit-
+distance for morphing one neural architecture to another. More
+edits needed from one architecture to another means the further
+distance between them, thus less similar they are. The proof of the
+validity of the kernel function is presented in Appendix E.
+Kernel Definition : Suppose faandfbare two neural networks.
+Inspired by Deep Graph Kernels [ 48], we propose an edit-distance
+kernel for neural networks. Edit-distance here means how many
+operations are needed to morph one neural network to another.
+The concrete kernel function is defined as:
+κ(fa,fb)=e−ρ2(d(fa,fb)), (3)
+where function d(·,·)denotes the edit-distance of two neural net-
+works, whose range is [0,+∞),ρis a mapping function, which
+maps the distance in the original metric space to the corresponding
+distance in the new space. The new space is constructed by em-
+bedding the original metric space into a new one using Bourgain
+Theorem [4], which ensures the validity of the kernel.
+Calculating the edit-distance of two neural networks can be
+mapped to calculating the edit-distance of two graphs, which is
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1947
+
+==== Page 3 ====
+Auto-Keras: An Efficient Neural Architecture Search System KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+Figure 1: Neural Network Kernel. Given two neural networks fa,fb, and matchings between the similar layers, the figure
+shows how the layers of facan be changed to the same as fb. Similarly, the skip-connections in faalso need to be changed to
+the same as fbaccording to a given matching.
+an NP-hard problem [ 49]. Based on the search space Fdefined in
+Section 2, we tackle the problem by proposing an approximated
+solution as follows:
+d(fa,fb)=Dl(La,Lb)+λDs(Sa,Sb), (4)
+where Dldenotes the edit-distance for morphing the layers, i.e., the
+minimum edits needed to morph fatofbif the skip-connections
+are ignored, La={l(1)
+a,l(2)
+a, . . .}andLb={l(1)
+b,l(2)
+b, . . .}are the
+layer sets of neural networks faandfb,Dsis the approximated
+edit-distance for morphing skip-connections between two neural
+networks, Sa={s(1)
+a,s(2)
+a, . . .}andSb={s(1)
+b,s(2)
+b, . . .}are the skip-
+connection sets of neural network faandfb, andλis the balancing
+factor between the distance of the layers and the skip-connections.
+Calculating Dl: We assume|La|<|Lb|, the edit-distance for
+morphing the layers of two neural architectures faandfbis calcu-
+lated by minimizing the follow equation:
+Dl(La,Lb)=min|La|Õ
+i=1dl(l(i)
+a,φl(l(i)
+a))+|Lb|−|La|, (5)
+whereφl:La→Lbis an injective matching function of layers
+satisfying: ∀i<j,φl(l(i)
+a) ≺φl(l(j)
+a)if layers in LaandLbare
+all sorted in topological order. dl(·,·)denotes the edit-distance of
+widening a layer into another defined in Equation (6),
+dl(la,lb)=|w(la)−w(lb)|
+max[w(la),w(lb)], (6)
+where w(l)is the width of layer l.
+The intuition of Equation (5)is consistent with the idea of net-
+work morphism shown in Figure 1. Suppose a matching is provided
+between the nodes in two neural networks. The sizes of the tensors
+are indicators of the width of the previous layers (e.g., the output
+vector length of a fully-connected layer or the number of filters
+of a convolutional layer). The matchings between the nodes are
+marked by light blue. So a matching between the nodes can be seen
+as matching between the layers. To morph fatofbwith the given
+matching, we need to first widen the three nodes in fato the same
+width as their matched nodes in fb, and then insert a new node of
+width 20 after the first node in fa. Based on this morphing scheme,
+the edit-distance of the layers is defined as Dlin Equation (5).Since there are many ways to morph fatofb, to find the best
+matching between the nodes that minimizes Dl, we propose a
+dynamic programming approach by defining a matrix A|La|×|Lb|,
+which is recursively calculated as follows:
+Ai,j=max[Ai−1 ,j+1,Ai,j−1+1,Ai−1 ,j−1+dl(l(i)
+a,l(j)
+b)],(7)
+where Ai,jis the minimum value of Dl(L(i)
+a,L(j)
+b), where L(i)
+a=
+{l(1)
+a,l(2)
+a, . . . , l(i)
+a}andL(j)
+b={l(1)
+b,l(2)
+b, . . . , l(j)
+b}.
+Calculating Ds: The intuition of Dsis the sum of the the edit-
+distances of the matched skip-connections in two neural networks
+into pairs. As shown in Figure 1, the skip-connections with the
+same color are matched pairs. Similar to Dl(·,·),Ds(·,·)is defined
+as follows:
+Ds(Sa,Sb)=min|Sa|Õ
+i=1ds(s(i)
+a,φs(s(i)
+a))+|Sb|−|Sa|, (8)
+where we assume|Sa|<|Sb|.(|Sb|−|Sa|)measures the total edit-
+distance for non-matched skip-connections since each of the non-
+matched skip-connections in Sbcalls for an edit of inserting a new
+skip connection into fa. The mapping function φs:Sa→Sbis
+an injective function. ds(·,·)is the edit-distance for two matched
+skip-connections defined as:
+ds(sa,sb)=|u(sa)−u(sb)|+|δ(sa)−δ(sb)|
+max[u(sa),u(sb)]+max[δ(sa),δ(sb)], (9)
+where u(s)is the topological rank of the layer the skip-connection
+sstarted from, δ(s)is the number of layers between the start and
+end point of the skip-connection s.
+This minimization problem in Equation (8)can be mapped to
+a bipartite graph matching problem, where faandfbare the two
+disjoint sets of the graph, each skip-connection is a node in its
+corresponding set. The edit-distance between two skip-connections
+is the weight of the edge between them. The weighted bipartite
+graph matching problem is solved by the Hungarian algorithm
+(Kuhn-Munkres algorithm) [26].
+3.2 Optimization for Tree Structured Space
+The second challenge of using Bayesian optimization to guide net-
+work morphism is the optimization of the acquisition function. The
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1948
+
+==== Page 4 ====
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA H. Jin et al.
+traditional acquisition functions are defined in Euclidean space.
+The optimization methods are not applicable to the tree-structured
+search via network morphism. To optimize our acquisition func-
+tion, we need a method to efficiently optimize the acquisition func-
+tion in the tree-structured space. To deal with this problem, we
+propose a novel method to optimize the acquisition function on
+tree-structured space.
+Upper-confidence bound (UCB) [ 1] is selected as our acquisition
+function, which is defined as:
+α(f)=µ(yf)−βσ(yf), (10)
+whereyf=Cost(f,D),βis the balancing factor, µ(yf)andσ(yf)
+are the posterior mean and standard deviation of variable yfpre-
+dicted by the Gaussian process. It has two important properties,
+which fit our problem. First, it has an explicit balance factor βfor ex-
+ploration and exploitation. Second, α(f)is directly comparable with
+the cost function value c(i)in search historyH={(f(i),θ(i),c(i))}.
+The UCB estimates the lowest possible cost given the neural net-
+work f.ˆf=arдminfα(f)is the generated neural architecture for
+next observation.
+The tree-structured space is defined as follows. During the op-
+timization of α(f),ˆfshould be obtained from f(i)andO, where
+f(i)is an observed architecture in the search history H,Ois a
+sequence of operations to morph the architecture into a new one.
+Morph ftoˆfwith Ois denoted as ˆf←M( f,O), whereM(·,·)is
+the function to morph fwith the operations in O. Therefore, the
+search can be viewed as a tree-structured search, where each node
+is a neural architecture, whose children are morphed from it by
+network morphism operations.
+The most common defect of network morphism is it only grows
+the size of the architecture instead of shrinking them. Using network
+morphism for NAS may end up with a very large architecture
+without enough exploration on the smaller architectures. However,
+in our tree-structure search, we not only expand the leaves but also
+the inner nodes, which means the smaller architectures found in
+the early stage can be selected multiple times to morph to more
+comparatively small architectures.
+Inspired by various heuristic search algorithms for exploring
+the tree-structured search space and optimization methods balanc-
+ing between exploration and exploitation, a new method based
+on A* search [ 19] and simulated annealing [ 23] is proposed. A*
+algorithm is widely used for tree-structure search. It maintains a
+priority queue of nodes and keeps expanding the best node in the
+queue. Since A* always exploits the best node, simulated annealing
+is introduced to balance the exploration and exploitation by not
+selecting the estimated best architecture with a probability.
+As shown in Algorithm 1, the algorithm takes minimum temper-
+ature Tlow, temperature decreasing rate rfor simulated annealing,
+and search historyHdescribed in Section 2 as the input. It outputs
+a neural architecture f∈H and a sequence of operations Oto
+morph finto the new architecture. From line 2 to 6, the searched
+architectures are pushed into the priority queue, which sorts the
+elements according to the cost function value or the acquisition
+function value. Since UCB is chosen as the acquisiton function,
+α(f)is directly comparable with the history observation values c(i).
+From line 7 to 18, it is the loop optimizing the acquisition function.Algorithm 1 Optimize Acquisition Function
+1:Input:H,r,Tlow
+2:T←1,Q←PriorityQueue()
+3:cmin←lowest cinH
+4:for(f,θf,c)∈H do
+5: Q.Push(f)
+6:end for
+7:while Q,∅andT>Tlowdo
+8: T←T×r,f←Q.Pop()
+9:foro∈Ω(f)do
+10: f′←M( f,{o})
+11: ifecmin−α(f′)
+T >Rand()then
+12: Q.Push( f′)
+13: end if
+14: ifcmin >α(f′)then
+15: cmin←α(f′),fmin←f′
+16: end if
+17: end for
+18:end while
+19:Return The nearest ancestor of fmininH, the operation se-
+quence to reach fmin
+Following the setting in A* search, in each iteration, the architec-
+ture with the lowest acquisition function value is popped out to be
+expanded on line 8 to 10, where Ω(f)is all the possible operations
+to morph the architecture f,M(f,o)is the function to morph the
+architecture fwith the operation sequence o. However, not all the
+children are pushed into the priority queue for exploration purpose.
+The decision of whether it is pushed into the queue is made by
+simulated annealing on line 11, where ecmin−α(f′)
+T is a typical accep-
+tance function in simulated annealing. cminandfminare updated
+from line 14 to 16, which record the minimum acquisition function
+value and the corresponding architecture.
+3.3 Graph-Level Network Morphism
+The third challenge is to maintain the intermediate output tensor
+shape consistency when morphing the architectures. Previous work
+showed how to preserve the functionality of the layers the operators
+applied on, namely layer-level morphism. However, from a graph-
+level view, any change of a single layer could have a butterfly effect
+on the entire network. Otherwise, it would break the input and
+output tensor shape consistency. To tackle the challenge, a graph-
+level morphism is proposed to find and morph the layers influenced
+by a layer-level operation in the entire network.
+Follow the four network morphism operations on a neural net-
+work f∈F defined in [ 13], which can all be reflected in the change
+of the computational graph G. The first operation is inserting a
+layer to fto make it deeper denoted as deep(G,u), where uis
+the node marking the place to insert the layer. The second one is
+widening a node in fdenoted as wide(G,u), where uis the node
+representing the intermediate output tensor to be widened. Widen
+here could be either making the output vector of the previous fully-
+connected layer of ulonger, or adding more filters to the previous
+convolutional layer of u, depending on the type of the previous
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1949
+
+==== Page 5 ====
+Auto-Keras: An Efficient Neural Architecture Search System KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+layer. The third is adding an additive connection from node uto
+nodevdenoted as add(G,u,v). The fourth is adding an concatena-
+tive connection from node uto nodevdenoted as concat(G,u,v).
+Fordeep(G,u), no other operation is needed except for initializing
+the weights of the newly added layer. However, for all other three
+operations, more changes are required to G.
+First, we define an effective area of wide(G,u0)asγto better
+describe where to change in the network. The effective area is a
+set of nodes in the computational graph, which can be recursively
+defined by the following rules: 1. u0∈γ. 2.v∈γ, if∃eu→v<Ls,
+u∈γ. 3.v∈γ, if∃ev→u<Ls,u∈γ.Lsis the set of fully-connected
+layers and convolutional layers. Operation wide(G,u0)needs to
+change two set of layers, the previous layer set Lp={eu→v∈
+Ls|v∈γ}, which needs to output a wider tensor, and next layer
+setLn={eu→v∈Ls|u∈γ}, which needs to input a wider tensor.
+Second, for operator add(G,u0,v0), additional pooling layers may
+be needed on the skip-connection. u0andv0have the same number
+of channels, but their shape may differ because of the pooling layers
+between them. So we need a set of pooling layers whose effect is
+the same as the combination of all the pooling layers between
+u0andv0, which is defined as Lo={e∈Lpool|e∈pu0→v0}.
+where pu0→v0could be any path between u0andv0,Lpool is the
+pooling layer set. Another layer Lcis used after to pooling layers
+to process u0to the same width as v0. Third, in concat(G,u0,v0),
+the concatenated tensor is wider than the original tensor v0. The
+concatenated tensor is input to a new layer Lcto reduce the width
+back to the same width as v0. Additional pooling layers are also
+needed for the concatenative connection.
+3.4 Time Complexity Analysis
+As described at the start of Section 3, Bayesian optimization can
+be roughly divided into three steps: update, generation, and obser-
+vation. The bottleneck of the algorithm efficiency is observation,
+which involves the training of the generated neural architecture.
+Letnbe the number of architectures in the search history. The time
+complexity of the update is O(n2log2n). In each generation, the ker-
+nel is computed between the new architectures during optimizing
+acquisition function and the ones in the search history, the number
+of values in which is O(nm), where mis the number of architectures
+computed during the optimization of the acquisition function. The
+time complexity for computing d(·,·)once is O(l2+s3), where l
+andsare the number of layers and skip-connections. So the overall
+time complexity is O(nm(l2+s3)+n2log2n). The magnitude of
+these factors is within the scope of tens. So the time consumption
+of update and generation is trivial comparing to the observation.
+4 AUTO-KERAS
+Based on the proposed neural architecture search method, we de-
+veloped an open-source AutoML system, namely Auto-Keras. It
+is named after Keras [ 11], which is known for its simplicity in
+creating neural networks. Similar to SMAC [ 21], TPOT [ 35], Auto-
+WEKA [ 44], and Auto-Sklearn [ 15], the goal is to enable domain
+experts who are not familiar with machine learning technologies
+to use machine learning techniques easily. However, Auto-Keras
+is focusing on the deep learning tasks, which is different from the
+systems focusing on the shallow models mentioned above.
+Figure 2: Auto-Keras System Overview. (1) The user calls the
+API. (2) The Searcher generates neural architectures on CPU.
+(3) Graph builds real neural networks with parameters on
+RAM from the neural architectures. (4) The neural network
+is copied to GPU for training. (5) Trained neural networks
+are saved on storage devices. The Searcher is updated based
+on the training results. Step (2) to (5) will repeat until it
+reaches the time limit.
+Although, there are several AutoML services available on large
+cloud computing platforms, three things are prohibiting the users
+from using them. First, cloud services are not free to use, which
+may not be affordable for everyone who wants to use AutoML
+techniques. Second, the cloud-based AutoML usually requires com-
+plicated configurations of Docker containers and Kubernetes, which
+is not easy for people without a rich computer science background.
+Third, the AutoML service providers are honest-but-curious [ 9],
+which cannot guarantee the security and privacy of the data. An
+open-source software, which is easily downloadable and runs lo-
+cally, would solve these problems and make the AutoML accessible
+to everyone. To bridge the gap, we developed Auto-Keras.
+It is challenging, to design an easy-to-use and locally deploy-
+able system. First, we need a concise and configurable application
+programming interface (API). For the users who don’t have rich
+experience in programming, they could easily learn how to use the
+API. For the advanced users, they can still configure the details of
+the system to meet their requirements. Second, local computation
+resources may be limited. We need to make full use of the local
+computation resources to speed up the search. Third, the available
+GPU memory may be of different sizes in different environments.
+We need to adapt the neural architecture sizes to the GPU memory
+during the search.
+4.1 System Overview
+The system architecture of Auto-Keras is shown in Figure 2. We
+design this architecture to fully make use of the computational
+resource of both CPU and GPU, and utilize the memory efficiently
+by only placing the currently useful information on the RAM, and
+save the rest on the storage devices, e.g., hard drives. The top part
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1950
+
+==== Page 6 ====
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA H. Jin et al.
+is the API, which is directly called by the users. It is responsible
+for calling corresponding middle-level modules to complete certain
+functionalities. The Searcher is the module of the neural architec-
+ture search algorithm containing Bayesian Optimizer and Gaussian
+Process. These search algorithms run on CPU. The Model Trainer is
+a module responsible for the computation on GPUs. It trains given
+neural networks with the training data in a separate process for
+parallelism. The Graph is the module processing the computational
+graphs of neural networks, which is controlled by the Searcher for
+the network morphism operations. The current neural architecture
+in the Graph is placed on RAM for faster access. The Model Storage
+is a pool of trained models. Since the size of the neural networks
+are large and cannot be stored all in memory, the model storage
+saves all the trained models on the storage devices.
+A typical workflow for the Auto-Keras system is as follows. The
+user initiated a search for the best neural architecture for the dataset.
+The API received the call, preprocess the dataset, and pass it to the
+Searcher to start the search. The Bayesian Optimizer in the Searcher
+would generate a new architecture using CPU. It calls the Graph
+module to build the generated neural architecture into a real neural
+network in the RAM. The new neural architecture is copied the
+GPU for the Model Trainer to train with the dataset. The trained
+model is saved in the Model Storage. The performance of the model
+is feedback to the Searcher to update the Gaussian Process.
+4.2 Application Programming Interface
+The design of the API follows the classic design of the Scikit-Learn
+API [ 6,36], which is concise and configurable. The training of a
+neural network requires as few as three lines of code calling the
+constructor, the fit and predict function respectively. To accommo-
+date the needs of different users, we designed two levels of APIs.
+The first level is named as task-level. The users only need to know
+their task, e.g., Image Classification, Text Regression, to use the API.
+The second level is named search-level, which is for advanced users.
+The user can search for a specific type of neural network architec-
+tures, e.g., multi-layer perceptron, convolutional neural network.
+To use this API, they need to preprocess the dataset by themselves
+and know which type of neural network, e.g., CNN or MLP, is the
+best for their task.
+Several accommodations have been implemented to enhance the
+user experience with the Auto-Keras package. First, the user can
+restore and continue a previous search which might be accidentally
+killed. From the users’ perspective, the main difference of using
+Auto-Keras comparing with the AutoML systems aiming at shallow
+models is the much longer time consumption, since a number of
+deep neural networks are trained during the neural architecture
+search. It is possible for some accident to happen to kill the pro-
+cess before the search finishes. Therefore, the search outputs all
+the searched neural network architectures with their trained pa-
+rameters into a specific directory on the disk. As long as the path
+to the directory is provided, the previous search can be restored.
+Second, the user can export the search results, which are neural
+architectures, as saved Keras models for other usages. Third, for
+advanced users, they can specify all kinds of hyperparameters of
+the search process and neural network optimization process by the
+default parameters in the interface.
+Searcher Queue GPU CPU
+Pop Graph
+Train Model
+Update GPGenerate 
+Graph
+Generated 
+Graph
+Push GraphFigure 3: CPU and GPU Parallelism. The Searcher obtains
+the next neural architecture to be trained and starts the
+training on GPU in a separate process. Then, instead of wait-
+ing for the training to finish, it directly starts to generate the
+next neural architecture on CPU.
+4.3 CPU and GPU Parallelism
+To make full use of the limited local computation resources, the pro-
+gram can run in parallel on the GPU and the CPU at the same time.
+If we do the observation (training of the current neural network),
+update, and generation of Bayesian optimization in sequential or-
+der. The GPUs will be idle during the update and generation. The
+CPUs will be idle during the observation. To improve efficiency,
+the observation is run in parallel with the generation in separated
+processes. A training queue is maintained as a buffer for the Model
+Trainer. Figure 3 shows the Sequence diagram of the parallelism
+between the CPU and the GPU. First, the Searcher requests the
+queue to pop out a new graph and pass it to GPU to start training.
+Second, while the GPU is busy, the searcher requests the CPU to
+generate a new graph. At this time period, the GPU and the CPU
+work in parallel. Third, the CPU returns the generated graph to the
+searcher, who pushes the graph into the queue. Finally, the Model
+Trainer finished training the graph on the GPU and returns it to the
+Searcher to update the Gaussian process. In this way, the idle time
+of GPU and CPU are dramatically reduced to improve the efficiency
+of the search process.
+4.4 GPU Memory Adaption
+The size of the neural networks needs to be limited according to
+the GPU memory. Otherwise, the system would crash because of
+running out of GPU memory. Many approaches have been taken
+to search for memory-efficient neural architectures [ 42]. In Auto-
+Keras, we implement a memory estimation function on our own
+data structure for the neural architectures. An integer value is
+used to mark the upper bound of the neural architecture size. Any
+new computational graph whose estimated size exceeds the upper
+bound is discarded. However, the system may still crash because
+the management of the GPU memory is very complicated, which
+cannot be precisely estimated. So whenever it runs out of GPU
+memory, the upper bound is lowered down to further limit the size
+of the generated neural networks.
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1951
+
+==== Page 7 ====
+Auto-Keras: An Efficient Neural Architecture Search System KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+5 EXPERIMENTS
+In the experiments, we aim at answering the following questions.
+1) How effective is the search algorithm with limited running time?
+2) How much efficiency is gained from Bayesian optimization and
+network morphism? 3) Does the proposed kernel function correctly
+measure the similarity among neural networks in terms of their
+actual performance?
+Datasets Three benchmark datasets, MNIST [ 27], CIFAR10 [ 25],
+and FASHION [ 46] are used in the experiments to evaluate our
+method. They prefer very different neural architectures to achieve
+good performance.
+Baselines Four categories of baseline methods are used for com-
+parison, which are elaborated as follows:
+•Straightforward Methods: random search (RAND) and grid search
+(GRID). They search the number of convolutional layers and the
+width of those layers.
+•Conventional Methods: SPMT [ 40] and SMAC [ 21]. Both SPMT
+and SMAC are designed for general hyperparameters tuning
+tasks of machine learning models instead of focusing on the deep
+neural networks. They tune the 16 hyperparameters of a three-
+layer convolutional neural network, including the width, dropout
+rate, and regularization rate of each layer.
+•State-of-the-art Methods: SEAS [ 13], NASBOT [ 22]. We carefully
+implemented the SEAS as described in their paper. For NAS-
+BOT, since the experimental settings are very similar, we directly
+trained their searched neural architecture in the paper. They did
+not search architectures for MNIST and FASHION dataset, so the
+results are omitted in our experiments.
+•Variants of the proposed method: BFS and BO. Our proposed
+method is denoted as AK. BFS replaces the Bayesian optimization
+in AK with the breadth-first search. BO is another variant, which
+does not employ network morphism to speed up the training. For
+AK,βis set to 2.5, while λis set to 1 according to the parameter
+sensitivity analysis.
+In addition, the performance of the deployed system of Auto-Keras
+(AK-DP) is also evaluated in the experiments. The difference from
+the AK above is that AK-DP uses various advanced techniques
+to improve the performance including learning rate scheduling,
+multiple manually defined initial architectures.
+Experimental Setting The general experimental setting for
+evaluation is described as follows: First, the original training data
+of each dataset is further divided into training and validation sets
+by 80-20. Second, the testing data of each dataset is used as the
+testing set. Third, the initial architecture for SEAS, BO, BFS, and
+AK is a three-layer convolutional neural network with 64 filters in
+each layer. Fourth, each method is run for 12 hours on a single GPU
+(NVIDIA GeForce GTX 1080 Ti) on the training and validation set
+with batch size of 64. Fifth, the output architecture is trained with
+both the training and validation set. Sixth, the testing set is used
+to evaluate the trained architecture. Error rate is selected as the
+evaluation metric since all the datasets are for classification. For a
+fair comparison, the same data processing and training procedures
+are used for all the methods. The neural networks are trained for 200
+epochs in all the experiments. Notably, AK-DP uses a real deployed
+system setting, whose result is not directly comparable with theTable 1: Classification Error Rate
+Methods MNIST CIFAR10 FASHION
+RANDOM 1.79% 16 .86% 11 .36%
+GRID 1.68% 17 .17% 10 .28%
+SPMT 1.36% 14 .68% 9 .62%
+SMAC 1.43% 15 .04% 10 .87%
+SEAS 1.07% 12 .43% 8 .05%
+NASBOT NA 12.30% NA
+BFS 1.56% 13 .84% 9 .13%
+BO 1.83% 12 .90% 7 .99%
+AK 0.55% 11 .44% 7 .42%
+AK-DP 0.60% 3 .60% 6 .72%
+rest of the methods. Except for AK-DP, all other methods are fairly
+compared using the same initial architecture to start the search.
+5.1 Evaluation of Effectiveness
+We first evaluate the effectiveness of the proposed method. The
+results are shown in Table 1. The following conclusions can be
+drawn based on the results.
+(1) AK-DP is evaluated to show the final performance of our
+system, which shows the deployed system (AK-DP) achieved state-
+of-the-art performance on all three datasets.
+(2) The proposed method AK achieves the lowest error rate on
+all the three datasets, which demonstrates that AK is able to find
+simple but effective architectures on small datasets (MNIST) and can
+explore more complicated structures on larger datasets (CIFAR10).
+(3) The straightforward approaches and traditional approaches
+perform well on the MNIST dataset, but poorly on the CIFAR10
+dataset. This may come from the fact that: naive approaches like
+random search and grid search only try a limited number of archi-
+tectures blindly while the two conventional approaches are unable
+to change the depth and skip-connections of the architectures.
+(4) Though the two state-of-the-art approaches achieve accept-
+able performance, SEAS could not beat our proposed model due
+to its subpar search strategy. The hill-climbing strategy it adopts
+only takes one step at each time in morphing the current best archi-
+tecture, and the search tree structure is constrained to be unidirec-
+tionally extending. Comparatively speaking, NASBOT possesses
+stronger search expandability and also uses Bayesian optimization
+as our proposed method. However, the low efficiency in training the
+neural architectures constrains its power in achieving comparable
+performance within a short time period. By contrast, the network
+morphism scheme along with the novel searching strategy ensures
+our model to achieve desirable performance with limited hardware
+resources and time budges.
+(5) For the two variants of AK, BFS preferentially considers
+searching a vast number of neighbors surrounding the initial archi-
+tecture, which constrains its power in reaching the better architec-
+tures away from the initialization. By comparison, BO can jump
+far from the initial architecture. But without network morphism, it
+needs to train each neural architecture with a much longer time,
+which limits the number of architectures it can search within a
+given time.
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1952
+
+==== Page 8 ====
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA H. Jin et al.
+Figure 4: Evaluation of Efficiency. The two figures plot the
+same result with different X-axis. BFS uses network mor-
+phism. BO uses Bayesian optimization. AK uses both.
+5.2 Evaluation of Efficiency
+In this experiment, we try to evaluate the efficiency gain of the pro-
+posed method in two aspects. First, we evaluate whether Bayesian
+optimization can really find better solutions with a limited number
+of observations. Second, we evaluated whether network morphism
+can enhance training efficiency.
+We compare the proposed method AK with its two variants, BFS
+and BO, to show the efficiency gains from Bayesian optimization
+and network morphism, respectively. BFS does not adopt Bayesian
+optimization but only network morphism, and use breadth-first
+search to select the network morphism operations. BO does not
+employ network morphism but only Bayesian optimization. Each
+of the three methods is run on CIFAR10 for twelve hours. The two
+figures in Figure 4 shows the same results but with different X-axes.
+The Y-axis is the lowest error rate achieved. The X-axes are the
+number of neural networks searched and the searching time.
+Two conclusions can be drawn by comparing BFS and AK. First,
+Bayesian optimization can efficiently find better architectures with
+a limited number of observations. When searched the same num-
+ber of neural architectures, AK could achieve a much lower error
+rate than BFS. It demonstrates that Bayesian optimization could
+effectively guide the search in the right direction, which is much
+more efficient in finding good architectures than the naive BFS
+approach. Second, the overhead created by Bayesian optimization
+during the search is low. In the left part of Figure 4, it shows BFS and
+AK searched similar numbers of neural networks within twelve
+hours. BFS is a naive search strategy, which does not consume
+much time during the search besides training the neural networks.
+AK searched slightly less neural architectures than BFS because of
+higher time complexity.
+Two conclusions can be drawn by comparing BO and AK. First,
+network morphism does not negatively impact search performance.
+In the left part of Figure 4, when BO and AK search a similar
+number of neural architectures, they achieve similar lowest error
+rates. Second, network morphism increases training efficiency, thus
+improve the performance. As shown in the left part of Figure 4,
+AK could search much more architectures than BO within the
+same amount of time due to the adoption of network morphism.
+Since network morphism does not degrade the search performance,
+searching more architectures results in finding better architectures.
+This could also be confirmed in the right part of Figure 4. At the
+end of the searching time, AK achieves lower error rate than BO.
+(a) Kernel Matrix
+ (b) Performance Similarity
+Figure 5: Kernel and Performance Matrix Visualization. (a)
+shows the proposed kernel matrix. (b) is a matrix of similar-
+ity in the performance of the neural architectures.
+To show the quality of the edit-distance neural network kernel,
+we investigate the difference between the two matrices KandP.
+K∈Rn×nis the kernel matrix, where Ki,j=κ(f(i),f(j)).P∈
+Rn×ndescribes the similarity of the actual performance between
+neural networks, where Pi,j=−|c(i)−c(j)|, where c(i)is the cost
+function value in the search history Hdescribed in Section 3. We
+use CIFAR10 as an example here, and adopt error rate as the cost
+metric. Since the values in KandPare in different scales, both
+matrices are normalized to the range [−1,1]. The difference between
+KandPare measured quantitatively with mean square error, which
+is1.12×10−1.
+KandPare visualized in Figure 5a and 5b. Lighter color means
+larger values. There are two patterns can be observed in the figures.
+First, the white diagonal of Figure 5a and 5b. According to the
+definiteness property of the kernel, κ(fx,fx)=1,∀fx∈F, thus
+the diagonal of Kis always 1. It is the same for Psince no difference
+exists in the performance of the same neural network. Second,
+there is a small light square area on the upper left of Figure 5a.
+These are the initial neural architectures to train the Bayesian
+optimizer, which are neighbors to each other in terms of network
+morphism operations. A similar pattern is reflected in Figure 5b,
+which indicates that when the kernel measures two architectures
+as similar, they tend to have similar performance.
+6 CONCLUSION AND FUTURE WORK
+In this paper, a novel method for efficient neural architecture search
+with network morphism is proposed. It enables Bayesian optimiza-
+tion to guide the search by designing a neural network kernel, and
+an algorithm for optimizing acquisition function in tree-structured
+space. The proposed method is wrapped into an open-source Au-
+toML system, namely Auto-Keras, which can be easily downloaded
+and used with an extremely simple interface. The method has shown
+good performance in the experiments and outperformed several
+traditional hyperparameter-tuning methods and state-of-the-art
+neural architecture search methods. The following open questions
+may be studied in future work. (1) Tune the neural architecture
+and the hyperparameters of the training process jointly. (2) Design
+task-oriented NAS to solve specific machine learning problems,
+e.g., image segmentation [ 28], object detection [ 16,32], network
+analysis [20, 43].
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1953
+
+==== Page 9 ====
+Auto-Keras: An Efficient Neural Architecture Search System KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+ACKNOWLEDGMENTS
+The authors thank the anonymous reviewers for their helpful com-
+ments, and all the contributors from the open-source community.
+This work is, in part, supported by DARPA (#FA8750-17- 2-0116) and
+NSF (#IIS-1718840 and #IIS-1750074). The views, opinions, and/or
+findings expressed are those of the author(s) and should not be
+interpreted as representing the official views or policies of the De-
+partment of Defense or the U.S. Government.
+REFERENCES
+[1] Peter Auer, Nicolo Cesa-Bianchi, and Paul Fischer. 2002. Finite-time analysis of
+the multiarmed bandit problem. Machine learning (2002).
+[2]Bowen Baker, Otkrist Gupta, Nikhil Naik, and Ramesh Raskar. 2016. Design-
+ing neural network architectures using reinforcement learning. arXiv preprint
+arXiv:1611.02167 (2016).
+[3]James Bergstra, Dan Yamins, and David D Cox. 2013. Hyperopt: A python library
+for optimizing the hyperparameters of machine learning algorithms. In Python
+in Science Conference.
+[4]Jean Bourgain. 1985. On Lipschitz embedding of finite metric spaces in Hilbert
+space. Israel Journal of Mathematics (1985).
+[5]Andrew Brock, Theodore Lim, James M Ritchie, and Nick Weston. 2017. SMASH:
+one-shot model architecture search through hypernetworks. arXiv preprint
+arXiv:1708.05344 (2017).
+[6]Lars Buitinck, Gilles Louppe, Mathieu Blondel, Fabian Pedregosa, Andreas
+Mueller, Olivier Grisel, Vlad Niculae, Peter Prettenhofer, Alexandre Gramfort,
+Jaques Grobler, et al .2013. API design for machine learning software: experi-
+ences from the scikit-learn project. In ECML PKDD Workshop: Languages for Data
+Mining and Machine Learning.
+[7]Han Cai, Tianyao Chen, Weinan Zhang, Yong Yu, and Jun Wang. 2018. Efficient
+architecture search by network transformation. In AAAI Conference on Artificial
+Intelligence.
+[8]Han Cai, Ligeng Zhu, and Song Han. 2019. ProxylessNAS: Direct neural architec-
+ture search on target task and hardware. In International Conference on Learning
+Representations.
+[9]Qi Chai and Guang Gong. 2012. Verifiable symmetric searchable encryption for
+semi-honest-but-curious cloud servers. In International Conference on Communi-
+cations.
+[10] Tianqi Chen, Ian Goodfellow, and Jonathon Shlens. 2015. Net2net: Accelerating
+learning via knowledge transfer. arXiv preprint arXiv:1511.05641 (2015).
+[11] François Chollet et al. 2015. Keras. https://keras.io.
+[12] Travis Desell. 2017. Large scale evolution of convolutional neural networks
+using volunteer computing. In Genetic and Evolutionary Computation Conference
+Companion.
+[13] Thomas Elsken, Jan-Hendrik Metzen, and Frank Hutter. 2017. Simple And Ef-
+ficient Architecture Search for Convolutional Neural Networks. arXiv preprint
+arXiv:1711.04528 (2017).
+[14] Thomas Elsken, Jan Hendrik Metzen, and Frank Hutter. 2018. Neural Architecture
+Search: A Survey. arXiv preprint arXiv:1808.05377 (2018).
+[15] Matthias Feurer, Aaron Klein, Katharina Eggensperger, Jost Springenberg, Manuel
+Blum, and Frank Hutter. 2015. Efficient and robust automated machine learning.
+InAdvances in Neural Information Processing Systems.
+[16] Golnaz Ghiasi, Tsung-Yi Lin, Ruoming Pang, and Quoc V Le. 2019. NAS-FPN:
+Learning Scalable Feature Pyramid Architecture for Object Detection. arXiv
+preprint arXiv:1904.07392 (2019).
+[17] Zichao Guo, Xiangyu Zhang, Haoyuan Mu, Wen Heng, Zechun Liu, Yichen
+Wei, and Jian Sun. 2019. Single Path One-Shot Neural Architecture Search with
+Uniform Sampling. arXiv preprint arXiv:1904.00420 (2019).
+[18] Bernard Haasdonk and Claus Bahlmann. 2004. Learning with distance substitu-
+tion kernels. In Joint Pattern Recognition Symposium.
+[19] Peter E Hart, Nils J Nilsson, and Bertram Raphael. 1968. A formal basis for the
+heuristic determination of minimum cost paths. IEEE transactions on Systems
+Science and Cybernetics (1968).
+[20] Xiao Huang, Qiangquan Song, Fan Yang, and Xia Hu. 2019. Large-scale hetero-
+geneous feature embedding. In AAAI Conference on Artificial Intelligence.
+[21] Frank Hutter, Holger H Hoos, and Kevin Leyton-Brown. 2011. Sequential Model-
+Based Optimization for General Algorithm Configuration. In International Con-
+ference on Learning and Intelligent Optimization.
+[22] Kirthevasan Kandasamy, Willie Neiswanger, Jeff Schneider, Barnabas Poczos,
+and Eric Xing. 2018. Neural Architecture Search with Bayesian Optimisation and
+Optimal Transport. Advances in Neural Information Processing Systems (2018).
+[23] Scott Kirkpatrick, C Daniel Gelatt, and Mario P Vecchi. 1983. Optimization by
+simulated annealing. science (1983).
+[24] Lars Kotthoff, Chris Thornton, Holger H Hoos, Frank Hutter, and Kevin Leyton-
+Brown. 2016. Auto-WEKA 2.0: Automatic model selection and hyperparameteroptimization in WEKA. Journal of Machine Learning Research (2016).
+[25] Alex Krizhevsky and Geoffrey Hinton. 2009. Learning multiple layers of features
+from tiny images. Technical Report. Citeseer.
+[26] Harold W Kuhn. 1955. The Hungarian method for the assignment problem. Naval
+Research Logistics (1955).
+[27] Yann LeCun, Léon Bottou, Yoshua Bengio, and Patrick Haffner. 1998. Gradient-
+based learning applied to document recognition. Proc. IEEE (1998).
+[28] Chenxi Liu, Liang-Chieh Chen, Florian Schroff, Hartwig Adam, Wei Hua, Alan
+Yuille, and Li Fei-Fei. 2019. Auto-DeepLab: Hierarchical Neural Architecture
+Search for Semantic Image Segmentation. arXiv preprint arXiv:1901.02985 (2019).
+[29] Chenxi Liu, Barret Zoph, Jonathon Shlens, Wei Hua, Li-Jia Li, Li Fei-Fei, Alan
+Yuille, Jonathan Huang, and Kevin Murphy. 2017. Progressive neural architecture
+search. In European Conference on Computer Vision.
+[30] Hanxiao Liu, Karen Simonyan, Oriol Vinyals, Chrisantha Fernando, and Koray
+Kavukcuoglu. 2017. Hierarchical representations for efficient architecture search.
+arXiv preprint arXiv:1711.00436 (2017).
+[31] Hanxiao Liu, Karen Simonyan, and Yiming Yang. 2018. Darts: Differentiable
+architecture search. arXiv preprint arXiv:1806.09055 (2018).
+[32] Wei Liu, Dragomir Anguelov, Dumitru Erhan, Christian Szegedy, Scott Reed,
+Cheng-Yang Fu, and Alexander C Berg. 2016. Ssd: Single shot multibox detector.
+InEuropean Conference on Computer Vision.
+[33] Renqian Luo, Fei Tian, Tao Qin, Enhong Chen, and Tie-Yan Liu. 2018. Neural
+architecture optimization. In Advances in Neural Information Processing Systems.
+[34] Hiroshi Maehara. 2013. Euclidean embeddings of finite metric spaces. Discrete
+Mathematics (2013).
+[35] Randal S. Olson, Nathan Bartley, Ryan J. Urbanowicz, and Jason H. Moore. 2016.
+Evaluation of a Tree-based Pipeline Optimization Tool for Automating Data
+Science. In Genetic and Evolutionary Computation Conference 2016.
+[36] Fabian Pedregosa, Gaël Varoquaux, Alexandre Gramfort, Vincent Michel,
+Bertrand Thirion, Olivier Grisel, Mathieu Blondel, Peter Prettenhofer, Ron Weiss,
+Vincent Dubourg, et al .2011. Scikit-learn: Machine Learning in Python. Journal
+of Machine Learning Research (2011).
+[37] Hieu Pham, Melody Y Guan, Barret Zoph, Quoc V Le, and Jeff Dean. 2018.
+Efficient Neural Architecture Search via Parameter Sharing. arXiv preprint
+arXiv:1802.03268 (2018).
+[38] Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V Le. 2018. Reg-
+ularized Evolution for Image Classifier Architecture Search. arXiv preprint
+arXiv:1802.01548 (2018).
+[39] Esteban Real, Sherry Moore, Andrew Selle, Saurabh Saxena, Yutaka Leon Sue-
+matsu, Quoc Le, and Alex Kurakin. 2017. Large-scale evolution of image
+classifiers, In International Conference on Machine Learning. arXiv preprint
+arXiv:1703.01041.
+[40] Jasper Snoek, Hugo Larochelle, and Ryan P Adams. 2012. Practical bayesian
+optimization of machine learning algorithms. In Advances in Neural Information
+Processing Systems.
+[41] Masanori Suganuma, Shinichi Shirakawa, and Tomoharu Nagao. 2017. A genetic
+programming approach to designing convolutional neural network architectures.
+InGenetic and Evolutionary Computation Conference.
+[42] Mingxing Tan, Bo Chen, Ruoming Pang, Vijay Vasudevan, and Quoc V Le. 2018.
+Mnasnet: Platform-aware neural architecture search for mobile. arXiv preprint
+arXiv:1807.11626 (2018).
+[43] Qiaoyu Tan, Ninghao Liu, and Xia Hu. 2019. Deep Representation Learning for
+Social Network Analysis. arXiv preprint arXiv:1904.08547 (2019).
+[44] Chris Thornton, Frank Hutter, Holger H Hoos, and Kevin Leyton-Brown. 2013.
+Auto-WEKA: Combined selection and hyperparameter optimization of classifi-
+cation algorithms. In International Conference on Knowledge Discovery and Data
+Mining.
+[45] Tao Wei, Changhu Wang, Yong Rui, and Chang Wen Chen. 2016. Network
+morphism. In International Conference on Machine Learning.
+[46] Han Xiao, Kashif Rasul, and Roland Vollgraf. 2017. Fashion-MNIST:
+a Novel Image Dataset for Benchmarking Machine Learning Algorithms.
+arXiv:cs.LG/cs.LG/1708.07747
+[47] Sirui Xie, Hehui Zheng, Chunxiao Liu, and Liang Lin. 2019. SNAS: stochastic
+neural architecture search. In International Conference on Learning Representa-
+tions.
+[48] Pinar Yanardag and SVN Vishwanathan. 2015. Deep graph kernels. In Interna-
+tional Conference on Knowledge Discovery and Data Mining.
+[49] Zhiping Zeng, Anthony KH Tung, Jianyong Wang, Jianhua Feng, and Lizhu Zhou.
+2009. Comparing stars: On approximating graph edit distance. In International
+Conference on Very Large Data Bases.
+[50] Zhao Zhong, Junjie Yan, and Cheng-Lin Liu. 2017. Practical Network Blocks
+Design with Q-Learning. arXiv preprint arXiv:1708.05552 (2017).
+[51] Barret Zoph and Quoc V Le. 2016. Neural architecture search with reinforcement
+learning. In International Conference on Learning Representations.
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1954
+
+==== Page 10 ====
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA H. Jin et al.
+APPENDIX: REPRODUCIBILITY
+In this section, we provide the details of our implementation and
+proofs for reproducibility.
+•The default architectures used to initialized are introduced.
+•The details of the implementation of the four network mor-
+phism operations are provided.
+•The details of preprocessing the datasets are shown.
+•The details of the training process are described.
+•The proof of the validity of the kernel function is provided.
+•The process of using ρ(·)to distort the approximated edit-
+distance of the neural architectures d(·,·)is introduced.
+Notably, the code and detailed documentation are available at Auto-
+Keras official website (https://autokeras.com).
+A DEFAULT ARCHITECTURES
+As we introduced in the experiment section, for all other methods
+except AK-DP, are using the same three-layer convolutional neural
+network as the default architecture. The AK-DP is initialized with
+ResNet, DenseNet and the three-layer CNN. In the current imple-
+mentation, ResNet18 and DenseNet121 specifically are chosen as
+the among all the ResNet and DenseNet architectures.
+The three-layer CNN is constructed as follows. Each convolu-
+tional layer is actually a convolutional block of a ReLU layer, a
+batch-normalization layer, the convolutional layer, and a pooling
+layer. All the convolutional layers are with kernel size equal to
+three, stride equal to one, and number of filters equal to 64.
+All the default architectures share the same fully-connected
+layers design. After all the convolutional layers, the output tensor
+passes through a global average pooling layer followed by a dropout
+layer, a fully-connected layer of 64 neurons, a ReLU layer, another
+fully-connected layer, and a softmax layer.
+B NETWORK MORPHISM IMPLEMENTATION
+The implementation of the network morphism is introduced from
+two aspects. First, we describe how the new weights are initial-
+ized. Second, we introduce a pool of possible operations which the
+Bayesian optimizer can select from, e.g.the possible start and end
+points of a skip connection.
+The four network morphism operations all involve adding new
+weights during inserting new layers and expanding existing lay-
+ers. We initialize the newly added weights with zeros. However,
+it would create a symmetry prohibiting the newly added weights
+to learn different values during backpropagation. We follow the
+Net2Net [ 10] to add noise to break the symmetry. The amount of
+noise added is the largest noise possible not changing the output.
+There are a large amount of possible network morphism op-
+erations we can choose. Although there are only four types of
+operations we can choose, a parameter of the operation can be set
+to a large number of different values. For example, when we use the
+deep(G,u)operation, we need to choose the location uto insert the
+layer. In the tree-structured search, we actually cannot exhaust all
+the operations to get all the children. We will keep sampling from
+the possible operations until we reach eight children for a node.
+For the sampling, we randomly sample an operation from deep ,
+wide and skip ( addandconcat ), with equally likely probability. Theparameters of the corresponding operation are sampled accord-
+ingly. If it is the deep operation, we need to decide the location to
+insert the layer. In our implementation, any location except right
+after a skip-connection. Moreover, we support inserting not only
+convolutional layers, but activation layers, batch-normalization
+layers, dropout layer, and fully-connected layers as well. They are
+randomly sampled with equally likely probability. If it is the wide
+operation, we need to choose the layer to be widened. It can be any
+convolutional layer or fully-connected layer, which are randomly
+sampled with equally likely probability. If it is the skip operations,
+we need to decide if it is addorconcat . The start point and end
+point of a skip-connection can be the output of any layer except
+the already-exist skip-connection layers. So all the possible skip-
+connections are generated in the form of tuples of the start point,
+end point and type ( addorconcat ), among which we randomly
+sample a skip-connection with equally likely probability.
+C PREPROCESSING THE DATASETS
+The benchmark datasets, e.g., MNIST, CIFAR10, FASHION, are pre-
+processed before the neural architecture search. It involves nor-
+malization and data augmentation. We normalize the data to the
+standard normal distribution. For each channel, a mean and a stan-
+dard deviation are calculated since the values in different channels
+may have different distributions. The mean and standard deviation
+are calculated using the training and validation set together. The
+testing set is normalized using the same values. The data augmen-
+tation includes random crop, random horizontal flip, and cutout,
+which can improve the robustness of the trained model.
+D PERFORMANCE ESTIMATION
+During the observation phase, we need to estimate the perfor-
+mance of a neural architecture to update the Gaussian process
+model in Bayesian optimization. Since the quality of the observed
+performances of the neural architectures is essential to the neural
+architecture search algorithm, we propose to train the neural ar-
+chitectures instead of using the performance estimation strategies
+used in literatures [ 5,14,37]. The quality of the observations is
+essential to the neural architecture search algorithm. So the neural
+architectures are trained during the search in our proposed method.
+There two important requirements for the training process. First,
+it needs to be adaptive to different architectures. Different neu-
+ral networks require different numbers of epochs in training to
+converge. Second, it should not be affected by the noise in the
+performance curve. The final metric value, e.g., mean squared er-
+ror or accuracy, on the validation set is not the best performance
+estimation since there is random noise in it.
+To be adaptive to architectures of different sizes, we use the same
+strategy as the early stop criterion in the multi-layer perceptron
+algorithm in Scikit-Learn [ 36]. It sets a maximum threshold τ. If the
+loss of the validation set does not decrease in τepochs, the training
+stops. Comparing with the methods using a fixed number of training
+epochs, it is more adaptive to different neural architectures.
+To avoid being affected by the noise in the performance, the
+mean of metric values of the last τepochs on the validation set is
+used as the estimated performance for the given neural architecture.
+It is more accurate than the final metric value on the validation set.
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1955
+
+==== Page 11 ====
+Auto-Keras: An Efficient Neural Architecture Search System KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+E VALIDITY OF THE KERNEL
+Theorem 1. d(fa,fb)is a metric space distance.
+Proof of Theorem 1:
+Theorem 1 is proved by proving the non-negativity, definiteness,
+symmetry, and triangle inequality of d.
+Non-negativity:
+∀fxfy∈F,d(fx,fy)≥0.
+From the definition of w(l)in Equation (6),∀l,w(l)>0.∴
+∀lxly,dl(lx,ly)≥0.∴∀LxLy,Dl(Lx,Ly)≥0. Similarly, ∀sxsy,
+ds(sx,sy)≥0, and ∀SxSy,Ds(Sx,Sy)≥0. In conclusion, ∀fxfy∈
+F,d(fx,fy)≥0.
+Definiteness:
+fa=fb⇐⇒ d(fa,fb)=0.
+fa=fb=⇒d(fa,fb)=0is trivial. To prove d(fa,fb)=0=⇒
+fa=fb, letd(fa,fb)=0.∵∀LxLy,Dl(Lx,Ly)≥0and∀SxSy,
+Ds(Sx,Sy)≥0. Let LaandLbbe the layer sets of faandfb. Let Sa
+andSbbe the skip-connection sets of faandfb.
+∴Dl(La,Lb)=0andDs(Sa,Sb)=0.∵∀lxly,dl(lx,ly)≥0
+and∀sxsy,ds(sx,sy)≥0.∴|La|=|Lb|,|Sa|=|Sb|,∀la∈La,
+lb=φl(la) ∈ Lb,dl(la,lb)=0,∀sa∈Sa,sb=φs(sa) ∈ Sb,
+ds(sa,sb)=0. According to Equation (6), each of the layers in fa
+has the same width as the matched layer in fb, According to the
+restrictions of φl(·), the matched layers are in the same order, and all
+the layers are matched, i.e.the layers of the two networks are exactly
+the same. Similarly, the skip-connections in the two neural networks
+are exactly the same. ∴fa=fb. Sod(fa,fb)=0=⇒fa=fb, let
+d(fa,fb)=0. Finally, fa=fb⇐⇒ d(fa,fb).
+Symmetry:
+∀fxfy∈F,d(fx,fy)=d(fy,fx).
+Letfaandfbbe two neural networks in F, Let LaandLbbe the
+layer sets of faandfb. If|La|,|Lb|,Dl(La,Lb)=Dl(Lb,La)since
+it will always swap LaandLbifLahas more layers. If |La|=|Lb|,
+Dl(La,Lb)=Dl(Lb,La)sinceφl(·)is undirected, and dl(·,·)is
+symmetric. Similarly, Ds(·,·)is symmetric. In conclusion, ∀fxfy∈
+F,d(fx,fy)=d(fy,fx).
+Triangle Inequality:
+∀fxfyfz∈F,d(fx,fy)≤d(fx,fz)+d(fz,fy).
+Letlx,ly,lzbe neural network layers of any width. If w(lx)<
+w(ly)<w(lz),dl(lx,ly)=w(ly)−w(lx)
+w(ly)=2−w(lx)+w(ly)
+w(ly)≤2−
+w(lx)+w(ly)
+w(lz)=dl(lx,lz)+dl(lz,ly). Ifw(lx) ≤ w(lz) ≤ w(ly),
+dl(lx,ly)=w(ly)−w(lx)
+w(ly)=w(ly)−w(lz)
+w(ly)+w(lz)−w(lx)
+w(ly)≤w(ly)−w(lz)
+w(ly)+
+w(lz)−w(lx)
+w(lz)=dl(lx,lz)+dl(lz,ly). Ifw(lz) ≤ w(lx) ≤ w(ly),
+dl(lx,ly)=w(ly)−w(lx)
+w(ly)=2−w(ly)
+w(ly)−w(lx)
+w(ly)≤2−w(lz)
+w(lx)−w(lx)
+w(ly)≤
+2−w(lz)
+w(lx)−w(lz)
+w(ly)=dl(lx,lz)+dl(lz,ly). By the symmetry property
+ofdl(·,·), the rest of the orders of w(lx),w(ly)andw(lz)also satisfy
+the triangle inequality. ∴∀lxlylz,dl(lx,ly)≤dl(lx,lz)+dl(lz,ly).
+∀LaLbLc, givenφl:a→candφl:c→bused to compute Dl(La,
+Lc)andDl(Lc,Lb), we are able to construct φl:a→bto compute
+Dl(La,Lb)satisfies Dl(La,Lb)≤Dl(La,Lc)+Dl(Lc,Lb).
+LetLa1={l|φl:a→c(l),∅∧φl:c→b(φl:c→a(l)),∅}.
+Lb1={l|l=φl:c→b(φl:a→c(l′)),l′∈La1},Lc1={l|l=
+φl:a→c(l′),∅,l′∈La1},La2=La−La1,Lb2=Lb−Lb1,
+Lc2=Lc−Lc1.From the definition of Dl(·,·), with the current matching func-
+tionsφl:a→candφl:c→b,Dl(La,Lc)=Dl(La1,Lc1)+Dl(La2,Lc2)
+andDl(Lc,Lb)=Dl(Lc1,Lb1)+Dl(Lc2,Lb2). First, ∀la∈La1is
+matched to lb=φl:c→b(φl:a→c(la))∈ Lb. Since the triangle in-
+equality property of dl(·,·),Dl(La1,Lb1)≤Dl(La1,Lc1)+Dl(Lc1,
+Lb1). Second, the rest of the la∈Laandlb∈Lbare free to match
+with each other.
+LetLa21={l|φl:a→c(l),∅∧φl:c→b(φl:c→a(l))=∅},
+Lb21={l|l=φl:c→b(l′),∅,l′∈Lc2},Lc21={l|l=
+φl:a→c(l′),∅,l′∈La2},La22=La2−La21,Lb22=Lb2−Lb21,
+Lc22=Lc2−Lc21.
+From the definition of Dl(·,·), with the current matching func-
+tionsφl:a→candφl:c→b,Dl(La2,Lc2)=Dl(La21,Lc21)+Dl(La22,
+Lc22)andDl(Lc2,Lb2)=Dl(Lc22,Lb21)+Dl(Lc21,Lb22).
+∵Dl(La22,Lc22)+Dl(Lc21,Lb22)≥|La2|
+andDl(La21,Lc21)+Dl(Lc22,Lb21)≥|Lb2|
+∴Dl(La2,Lb2)≤|La2|+|Lb2|≤Dl(La2,Lc2)+Dl(Lc2,Lb2).
+SoDl(La,Lb)≤Dl(La,Lc)+Dl(Lc,Lb).
+Similarly, Ds(Sa,Sb)≤Ds(Sa,Sc)+Ds(Sc,Sb).
+Finally, ∀fxfyfz∈F,d(fx,fy)≤d(fx,fz)+d(fz,fy).
+In conclusion, d(fa,fb)is a metric space distance. □
+Theorem 2. κ(fa,fb)is a valid kernel.
+Proof of Theorem 2: The kernel matrix of generalized RBF ker-
+nel in the form of e−γD2(x,y)is positive definite if and only if there
+is an isometric embedding in Euclidean space for the metric space
+with metric D[18]. Any finite metric space distance can be isomet-
+rically embedded into Euclidean space by changing the scale of the
+distance measurement [ 34]. By using Bourgain theorem [ 4], metric
+space dis embedded to Euclidean space with distortion. ρ(d(fa,fb))
+is the embedded distance for d(fa,fb). Therefore, e−ρ2(d(fa,fb))is
+always positive definite. So κ(fa,fb)is a valid kernel. □
+F DISTANCE DISTORTION
+In this section, we introduce how Bourgain theorem is used to
+distort the learned calculated edit-distance into an isometrically
+embeddable distance for Euclidean space in the Bayesian optimiza-
+tion process.
+From Bourgain theorem, a Bourgain embedding algorithm is
+designed. The input for the algorithm is a metric distance matrix.
+Here we use the edit-distance matrix of neural architectures. The
+outputs of the algorithm are some vectors in Euclidean space cor-
+responding to the instances. In our case, the instances are neural
+architectures. From these vectors, we can calculate a new distance
+matrix using Euclidean distance. The objective of calculating these
+vectors is to minimize the difference between the new distance
+matrix and the input distance matrix, i.e., minimize the distortions
+on the distances.
+We apply this Bourgain algorithm during the update process of
+the Bayesian optimization. The edit-distance matrix of previous
+training examples, i.e., the neural architectures, is stored in memory.
+Whenever new examples are used to train the Bayesian optimiza-
+tion, the edit-distance is expanded to include the new distances.
+The distorted distance matrix is computed using Bourgain algo-
+rithm from the expanded edit-distance matrix. It is isometrically
+embeddable to the Euclidean space. The kernel matrix computed
+using the distorted distance matrix is a valid kernel.
+Applied Data Science Track Paper
+KDD ’19, August 4–8, 2019, Anchorage, AK, USA
+1956
+

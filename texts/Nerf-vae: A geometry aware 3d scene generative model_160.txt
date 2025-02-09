@@ -1,0 +1,936 @@
+==== Page 1 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+Adam R. Kosiorek* 1Heiko Strathmann* 1Daniel Zoran1Pol Moreno1Rosalia Schneider1Soˇna Mokrá1
+Danilo J. Rezende1
+Abstract
+We propose NeRF-VAE, a 3D scene generative
+model that incorporates geometric structure via
+Neural Radiance Fields ( NeRF) and differentiable
+volume rendering. In contrast to NeRF, our model
+takes into account shared structure across scenes,
+and is able to infer the structure of a novel scene—
+without the need to re-train—using amortized in-
+ference. NeRF-VAE’s explicit 3D rendering pro-
+cess further contrasts previous generative models
+with convolution-based rendering which lacks ge-
+ometric structure. Our model is a VAE that learns
+a distribution over radiance ﬁelds by condition-
+ing them on a latent scene representation. We
+show that, once trained, NeRF-VAE is able to in-
+fer and render geometrically-consistent scenes
+from previously unseen 3D environments of syn-
+thetic scenes using very few input images. We
+further demonstrate that NeRF-VAE generalizes
+well to out-of-distribution cameras, while convo-
+lutional models do not. Finally, we introduce and
+study an attention-based conditioning mechanism
+ofNeRF-VAE’s decoder, which improves model
+performance.
+1 Introduction
+The ability to infer the structure of scenes from visual inputs,
+and to render high quality images from different viewpoints,
+has vast implications for computer graphics and virtual real-
+ity.
+This problem has traditionally been tackled with 3D
+reconstruction-based on matching visual keypoints, e. g.
+Lowe (2004); Schönberger & Frahm (2016). While these
+methods incorporate structure through multi-view geometry
+(Hartley & Zisserman, 2003), very few existing methods
+adopt learned scene-priors such as types of objects or statis-
+*Equal contribution1DeepMind, London. Corre-
+spondence to: ARK < adamrk@deepmind.com >, HS
+<strathmann@deepmind.com >.
+Proceedings of the 38thInternational Conference on Machine
+Learning , PMLR 139, 2021. Copyright 2021 by the author(s).tics of the background. The resulting representations are
+usually discrete: they consist of meshes (Dai et al., 2017),
+point clouds (Engel et al., 2014), or discretized volumes
+(Ulusoy et al., 2016), and are difﬁcult to integrate with
+neural networks. An alternative approach to scene genera-
+tion uses light-ﬁeld rendering (Levoy & Hanrahan, 1996;
+Srinivasan et al., 2017) and multiplane image representa-
+tions (Zhou et al., 2018; Mildenhall et al., 2019). While
+these methods allow image-based rendering, they do not
+estimate scene geometry. Hence, they are not directly useful
+for the purpose of 3D scene understanding. More recent
+deep-learning-based novel view synthesis methods have the
+advantages of end-to-end training, and producing distributed
+representations that can be easily used in other neural-net-
+based downstream tasks. These models, however, often have
+little embedded geometrical knowledge (Dosovitskiy et al.,
+2014) and are either geometrically inconsistent (Nguyen-
+Phuoc et al., 2020) or provide insufﬁcient visual quality
+(Tatarchenko et al., 2015). Moreover, many of these meth-
+ods are deterministic and cannot manage uncertainty in the
+inputs (Sitzmann et al., 2019; Trevithick & Yang, 2021).
+This work attempts to address these shortcomings. We
+introduce NeRF-VAE—a deep generative model with the
+knowledge of 3D geometry as well as complex scene priors.
+Our work builds on Neural Radiance Fields ( NeRF, Milden-
+hall et al. (2020)). Ne RFcombines implicit neural network
+representations of radiance ﬁelds, or scene functions , with
+a volumetric rendering process. NeRFneeds to undergo a
+lengthy optimization process on many views of each single
+scene separately and does not generalize to novel scenes.
+In contrast, NeRF-VAE—a variational auto-encoder ( VAE)—
+models multiple scenes, while its constant-time amortized
+inference allows reasoning about novel scenes. Unlike NeRF,
+our model is also generative, and therefore capable of han-
+dling missing data and imagining completely new scenes. In
+that, our work closely follows Generative Query Networks
+(GQN, Eslami et al. (2018)). Like GQN,NeRF-VAE deﬁnes
+a distribution over scene functions. Once sampled, a scene
+function allows rendering arbitrary views of the underlying
+scene. Where GQN relies on convolutional neural networks
+(CNNs) with no knowledge of 3D geometry, leading to geo-
+metrical inconsistencies, NeRF-VAEachieves consistency by
+leveraging NeRF’s implicit representations and volumetric
+
+==== Page 2 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+prior
+conditional scene 
+function 
+image 
+likelihood 
+camera position/orientation context views 
+set encoder approx. 
+posterior 
+ image 
+position 
+orientation 
+inference 
+inference generation training 
+dataset  of scenes 
+inference 
+generation 
+ context view(s) 
+(a) During training , we embed common
+scene properties (across the dataset) in
+the parameters ;ofNeRF-VAE.(b) Once the model is trained, we can infer parameters
+of a scene in constant time, even from a single view.(c) We can sample novel scenes from
+NeRF-VAE generative model and ren-
+der them from various viewpoints.
+Figure 1: An overview of NeRF-VAE: a geometry-aware 3D scene generative model. NeRF-VAE is trained on a dataset of several views
+(images and camera positions/orientations) from multiple synthetic scenes. Once trained, it allows for efﬁcient inference of scene
+parameters (colours and geometry, including depth-maps) and sampling novel scenes from the prior.
+rendering. We note that while these representations do not
+model the scene geometry explicitly (as e. g. mesh-based
+representations), the subsequent volumetric rendering pro-
+cess explicitly uses 3D rays and 3D geometry to produce
+output images.
+NeRFrepresents a scene by the values of multilayer percep-
+tron ( MLP) parameters. Being extremely high-dimensional,
+this representation precludes using amortized inference. We
+change NeRF’s formulation to a scene function shared be-
+tween scenes, and conditioned on a per-scene latent vari-
+able. Intuitively, the latent variable captures scene-speciﬁc
+information (e. g. position and kind of objects, colours, light-
+ing, etc.), while shared information (e. g. available textures
+and shapes, properties of common elements, sky) is stored
+in the parameters of the scene function. A prior over latent
+variables (and therefore scene functions) allows sampling
+novel scenes from the model, and rendering arbitrary view-
+points within them. NeRF-VAEparameters are learned using
+a collection of images from different scenes, with known
+camera position and orientation. Since these parameters are
+shared between scenes (unlike in NeRF),NeRF-VAE can in-
+fer scene structure from very few views of an unseen scene.
+This is in contrast to NeRF, where using few views results
+in poor performance. A high level overview of NeRF-VAE
+is depicted in Fig. 1.
+In summary, NeRF-VAE introduces four key beneﬁts com-
+pared to existing models. First, due to its amortized in-
+ference, it removes the need for costly optimization from
+scratch for every new scene. Second, as it learns shared
+information between multiple scenes, it is able reconstruct
+unobserved scenes from a much smaller number of input
+views. Third, compared to existing convolutional generative
+models for view synthesis, such as GQN, it generalizes much
+better when evaluated on out-of-distribution camera views.
+Finally, NeRF-VAE is the only amortized NeRFvariant that
+uses compact scene representation in the form of a latent
+variable and that can handle uncertainty in the inputs.2 Neural Radiance Fields ( NeRF)
+NeRF’s scene function is represented as a 6D continuous
+vector-valued function whose inputs are ray coordinates
+(x;d)partitioned into position x2R3and orientation1
+d2R3. Its outputs are an emitted colour (r;g;b )2R3
+and a volume density 0. The scene function is approxi-
+mated by a neural network F: (x;d)7!((r;g;b );)with
+weights. In order to encourage multi-view consistency,
+the architecture of this network is such that volume density
+only depends on position while the emitted colour (r;g;b )
+depends on both position and ray orientation.
+V olumetric image rendering works by casting rays from the
+camera’s image plane into the scene, one ray per pixel. The
+colour that each ray produces is the weighted average of
+colours along the ray, with weights given by their accumu-
+lated volume densities. NeRF’s renderer uses a differentiable
+approximation to this accumulation process. For details, we
+refer to Mildenhall et al. (2020); Curless & Levoy (1996).
+We denote the image rendering process whose inputs are a
+camera c(position and orientation) and a scene function
+F, and which outputs the rendered image2^I, by
+^I=render (F();c): (1)
+Note that computation of the camera’s image plane and cor-
+responding rays for each pixel requires camera parameters
+(e. g. ﬁeld of view, focal length, etc).
+3 Ne RF-VAE
+We build a generative model over scenes by introduc-
+ing a view-independent latent variable zwith priorp(z)
+and a conditional scene function G(;z) : (x;d)7!
+((r;g;b );).Gis much like NeRF’sF, but is additionally
+1It is also possible to parameterize orientation using two an-
+gles, as e. g. done by Mildenhall et al. (2020), but we follow their
+implementation in using a vector.
+2Note that it is easily possible to compute depth estimates for
+each rendered ray. We use this for visualization and evaluation
+purposes.
+
+==== Page 3 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+camera position/orientation image 
+camera 
+context views 
+ prior
+conditional scene 
+function 
+image 
+likelihood 
+set encoder approximate 
+posterior 
+inference 
+(a) Inference in NeRF-VAE. (b) The generative model of NeRF-VAE.
+Figure 2: Inference and generative model of NeRF-VAE. For inference, a set Cof context images Ictx
+kand cameras ckfrom a scene are
+encoded into an approximate posterior distribution over the latent variable z. This conditions a scene function G(;z), which is used by
+theNeRFrenderer to reconstruct images from arbitrary cameras within the scene. We can sample novel scenes by sampling the latent z
+from the prior. During training, the reconstruction MSE and the KLdivergence are used in a variational optimization objective to learn the
+parametersof the conditional scene function and the parameters of the encoder.
+conditioned on z, as will be detailed in Section 3.2.
+It is now the latent variable zthat deﬁnes a speciﬁc scene,
+out of all the scenes that Gis able to represent, where
+are model parameters that capture shared structure
+across scenes. The generative process of NeRF-VAE in-
+volves sampling zp(z)and using the resulting con-
+ditional scene function G(;z)to render an image ^I=
+render (G(;z);c)from a camera cwith volumetric ren-
+dering from Eq. (1).
+The individual pixel colours ^I(i;j)are used to deﬁne the
+mean parameter of a Gaussian image likelihood
+p(Ijz;c) =Y
+i;jN
+I(i;j)j^I(i;j);2
+lik
+with ﬁxed or learned variance 2
+lik, and we assume condi-
+tional independence of individual pixels I(i;j)givenz.
+Since the posterior over zis intractable, we approximate
+it—we frame NeRF-VAE as a variational auto-encoder ( VAE,
+Kingma & Welling (2014); Rezende et al. (2014)) with
+conditional NeRFas its decoder.
+3.1 Amortized Inference for NeRF-VAE
+Estimating the scene function parameters in NeRFis done
+separately for every scene, with no information sharing be-
+tween scenes, which is time-consuming, compute-intensive,
+and data-hungry.
+In contrast, NeRF-VAE introduces an encoder network E
+with parameters , which amortizes inference of the la-
+tent variable z. Input for the encoder is a collection of
+Nctxcontext views , where each view consists of an im-
+ageIctx2RHW3and corresponding camera position
+and orientation c. These views correspond to different
+viewpoints of a particular scene, forming a context set
+C:=fIctx
+k;ckgNctx
+k=1. Each context element (concatenated
+camera ckwith image Ictx
+k) is separately encoded using a
+shared encoder—we use a ResNet adapted from Vahdat &
+Kautz (2020), details in Appendix C. The resulting Nctxout-puts are subsequently averaged3and mapped to parameters
+of the approximate posterior distribution q(zjC)over
+the latent variable z. We use diagonal Gaussian posteriors.
+We ﬁt the parameters f;gof the NeRF-VAE by maximiz-
+ing the following evidence lower bound ( ELBO ) on images,
+LNeRF-VAE(I;c;C;;) =
+Ezq[logp(Ijz;c)] KL(q(zjC)jjp(z)):(2)
+In practice, we approximate the ELBO by uniformly subsam-
+pling pixels from each image, see Appendix E for details.
+Iterative Amortized Inference Amortized inference suf-
+fers from amortization gap (Cremer et al., 2018)—
+contrasting the gradient-based learning in NeRF. To bridge
+this gap, we employ iterative (amortized) inference (Kim
+et al., 2018; Marino et al., 2018), which trades-off additional
+compute for improved inference.
+Iterative inference starts with an arbitrary guess for the
+posterior parameters, e. g. 0=0, and iteratively reﬁnes
+them. At each step t, a latent is sampled from the current
+posterior zqt(zjC). The sample is then used to
+render an image and to evaluate the gradient of the ELBO
+in Eq. (2) w. r. t. t. The gradient is passed to a recurrent
+reﬁnement network ( LSTM followed by a linear layer)4f,
+which updates the posterior parameters tfor a given C:
+ztqt(zjC);
+t+1 t+f(E(C);rtLNeRF-VAE):
+See Appendix C for further details.
+We emphasize that NeRF-VAE’s decoder uses explicit ge-
+ometric structure, which consequently is used by iterative
+inference. While this is only in an implicit manner (through
+ELBO gradients), it differs from a geometry-agnostic feed-
+forward encoder typically used with VAEs.
+3We choose this method for its conceptual simplicity and note
+that more sophisticated options, such as attention-based mecha-
+nisms, might lead to better results as in Trevithick & Yang (2021)—
+exploration of which we leave for future work.
+4Note that in this case, only contains parameters of the con-
+text encoder Eas well as the reﬁnement network.
+
+==== Page 4 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+circ(x) =0
+BBBB@sin (20x)
+cos (20x)
+:::
+sin (2L 1x)
+cos (2L 1x)1
+CCCCA
+circ(x) =0
+@circ(x1)
+:::
+circ(xN)1
+A
+Figure 3: Attention-based scene function. Input points (x;d),
+along rays corresponding to each pixel in the camera plane, attend
+to different locations of the spatial latent variable zof size [Hz
+WzDz]using multi-head attention. The density part ( ) depends
+only on the position xas in NeRF. Each attention block receives a
+different slice of the latent along its channel dimension. The inputs
+are projected to a lower-dimension space to save computation and
+memory; is concatenation.
+3.2 Conditioning the Scene Function
+We now describe NeRF-VAE’s conditional scene function
+G(;z), which is conditioned on the per-scene latent vari-
+ablezand has additional across-scene parameters .
+A simple way to condition NeRF’s scene function MLP is to
+usezto shift and scale the inputs and activations at different
+layers—this mechanism resembles AINof Dumoulin et al.
+(2017); Brock et al. (2019) and is referred to as an MLP
+scene function henceforth.
+We further introduce an attention-based scene function,
+see Fig. 3 for an overview. Attention (Vaswani et al., 2017)
+allows using a high-dimensional spatial [HzWzDz]with
+latent variable over which inputs of the scene function can
+attend. The spatial structure arises from removing the ﬁnal
+average pooling across locations in the ResNet encoder.5
+Since the scene function is evaluated many times (e. g. 256
+in Mildenhall et al. (2020); 128 in our experiments) for
+every pixel, it has to be computationally cheap with low
+memory footprint. Consequently, we use only one linear
+layer per attention block and no layer norm. Additionally,
+our attention blocks are bottlenecks, i.e. keys, queries and
+values are low dimensional c. f. Srinivas et al. (2021). We
+ﬁnd that these choices are a good trade-off between com-
+putation, memory and capacity, and used throughout our
+experiments.
+In order to model correlations between spatial locations,
+otherwise unaccounted for by an independent prior p(z),
+we apply a small CNN to the latent before it is fed into the
+scene function, see Appendix C for further details.
+5Since the feature maps are averaged over context elements,
+locations in the latent do not necessarily correspond to parts of the
+scene; we use Hz=Wz= 84 Related Work
+NeRF-VAE is closely related to amortized neural rendering
+approaches. Trevithick & Yang (2021); Yu et al. (2020) use
+NeRFas their decoder but require projecting all rendered
+points into the input space and thus do not formulate any
+compact scene representation. Tancik et al. (2020) suffers
+from a similar issue: it meta-learns good initializations for
+NeRF, but requires updating all parameters before it can
+render target observations. Sitzmann et al. (2019) uses se-
+quential ray-marching instead of volumetric rendering, and
+represents scenes using a hyper-network, which is in con-
+trast to NeRF-VAE’s compact representation. NeRF-VAE has
+many similarities with GQN of Eslami et al. (2018), with the
+difference that GQN uses a CNN for rendering and is there-
+fore not necessarily consistent across views. Mescheder et al.
+(2019) show impressive single-image 3D reconstructions by
+modelling space occupancy with an implicit representation,
+though not modeling colours. Henderson & Lampert (2020)
+describe an object-centric, voxel-based generative model
+for videos that is able to segment scenes in 3D and produce
+samples of novel scenes.
+The above approaches work only when camera poses for
+input images are known. This is not true for GANs, where it
+is enough to approximate the marginal distribution of poses
+in the training set if appropriate inductive biases are in
+place (Nguyen-Phuoc et al., 2019)—an approach that also
+scales to an explicit multi-object setting (Nguyen-Phuoc
+et al., 2020). GRAF (Schwarz et al., 2020) and GIRAFFE
+(Niemeyer & Geiger, 2020) reuse the same idea for single-
+and multi-object settings, respectively, but use NeRFas the
+generator, which improves multi-view consistency. Both
+approaches are related to NeRF-VAE in the sense that they
+use NeRFas a decoder which is conditioned on a latent
+variable—although NeRF-VAE introduces a more advanced
+conditioning mechanism. Finally, in contrast to the GAN ap-
+proaches, NeRF-VAE has an associated inference procedure.
+A limitation of NeRFis that it can only model static scenes
+and does not support varying lighting conditions nor tran-
+sient effects (e. g. moving objects) often visible in the real
+world. NeRF-W(Martin-Brualla et al., 2020) addresses these
+shortcomings by adding per-view latent variables. While
+our model makes latent variables explicit, it maintains a
+single latent per scene; an extension towards NERF -Wis
+an interesting research direction. Pumarola et al. (2020);
+Park et al. (2020); Du et al. (2020); Li et al. (2020); Xian
+et al. (2020) further extend NeRFto dynamic scenes and
+videos: they formulate ﬂow-ﬁelds that augment the original
+radiance ﬁeld with a temporal component. This complicated
+approach is necessary due to the high-dimensional nature
+ofNeRF’s representation. Since NeRF-VAE introduce a la-
+tent variable, it is possible to extend it to videos by simply
+adding a latent dynamics model (e. g. Hafner et al. (2020)).
+
+==== Page 5 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+We provide a tabular comparison of NeRF-VAE and dis-
+cussed models in terms of desirable scene model properties
+in Appendix A.
+5 Experiments
+To evaluate NeRF-VAE, we ﬁrst analyze its ability to re-
+construct novel viewpoints given a small number of input
+views, and contrast that with NeRF. Second, we compare our
+model with a Generative Query Network-like autoregressive
+convolutional model, (Eslami et al., 2018, GQN) and show
+that while NeRF-VAE achieves comparably low reconstruc-
+tions errors, it has a much improved generalization ability,
+in particular when being evaluated on camera views not
+seen during training. Third, we provide an ablation study
+ofNeRF-VAE variants, with a focus on the conditioning
+mechanisms of the scene function described in Section 3.2.
+Finally, we showcase samples of NeRF-VAE.
+5.1 Datasets
+We use three datasets, each consisting of 64 64 coloured
+images, along with camera position and orientation for each
+image, and camera parameters used to extract ray position
+and orientation for each pixel.
+GQN (Eslami et al., 2018)6, consists of 200k scenes each
+with 10 images of rooms with a variable number of objects.
+Camera positions and orientations are randomly distributed
+along a plane within the rooms, always facing the horizon.
+Note that this dataset does not contain reﬂections or specu-
+larities, which we discuss in Section 5.4
+CLEVR We created a custom CLEVR dataset (Johnson
+et al., 2017) with 100k scenes, each with 10 views. Each
+scene consist of one to three randomly coloured and shaped
+objects on a plane. Camera positions are randomly sampled
+from a dome. Orientations are such that all objects are
+always present, making inference from a limited number of
+views easier than in the GQN data. The dataset is of higher
+visual quality than GQN, e. g. it includes reﬂections.
+Jaytracer In order to have more control over individual
+aspects of the data (e. g. complexity, distribution of camera
+views, etc.), we also created a custom raytraced dataset
+which consists of 200k randomly generated scenes, each
+with 10 views, with a ﬁxed number of objects in random
+orientations on a plane. Shapes, colours, textures, and light
+position are random, an example can be seen in Fig. 4.
+For both CLEVR and Jaytracer, we generate 10 additional
+6We use the rooms_free_camera_no_object_rotations variant
+publicly available at https://github.com/deepmind/
+gqn-datasetsscenes each with 200 views and ground-truth depth maps for
+evaluation purposes and for training NeRF. See Appendix B
+for more details.
+5.2 Implementation Details
+The conditional scene functions’ architecture follows NeRF,
+ﬁrst processing position xto produce volume density and
+then additionally receiving orientation dto produce the
+output colours. Both position and orientation use circular
+encoding whereby we augment the network input values
+with a Fourier basis, c. f. Fig. 3.
+We follow Mildenhall et al. (2020, Section 5.2) in using
+hierarchical volume sampling in order to approximate the
+colour of each pixel. This means we maintain a second
+instance of the conditional scene function (conditioned on
+the same latent z), which results in an additional likelihood
+term in the model log-likelihood in Eq. (2).
+We use Adam (Kingma & Ba, 2014) and -annealing of the
+KL term in Eq. (2). Full details can be found in Appendix C.
+5.3 Comparison with Ne RF
+NeRF-VAE, unlike NeRF, can infer scene structure without
+re-training—through the introduction of a per-scene latent
+variable and shared across-scene parameters. Our ﬁrst exper-
+iment explores the following questions: 1. Can NeRF-VAE
+leverage parameter sharing to infer novel scenes from very
+few views? 2. Is NeRF-VAE’s capacity affected by having a
+much smaller scene representation (a latent variable instead
+of an MLP). 3. At what number of views do both models
+reach comparable errors?
+To focus on these conceptual differences between NeRF
+and NeRF-VAE, we use NeRF-VAE with the simple MLP
+scene function and without iterative inference. We train
+NeRF-VAE on the Jaytracer data using Nctx= 4 context
+images (with corresponding cameras). We evaluate on 10
+held-out scenes, with an increasing number of context views
+Ntest
+ctx= 1;:::; 6.
+We train a separate instance of NeRFon each of these same
+10 evaluation scenes, with an increasing number of training
+views 5;:::; 100. Both models are evaluated on images
+of 100 unseen views from the 10 evaluation scenes. We
+train and evaluate both models using 10 different seeds. See
+Appendix F for further training details.
+RESULTS
+Fig. 4 (a) shows reconstruction MSEs (mean and 95% per-
+centiles) across the 100 test views. NeRF-VAE achieves a
+signiﬁcantly lower MSE and uniformly lower worst case er-
+rors compared to NeRFtrained on less than 100 views. This
+is despite NeRF-VAE’s amortized inference, which is many
+
+==== Page 6 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+0.00 0.02 0.04 0.06 0.08 0.10
+MSE0.00.10.20.40.5
+AB C(b) MSE histogram, NeRF
+5 views
+20 views
+100 views
+0.00 0.02 0.04 0.06 0.08 0.10
+MSE0.00.10.20.40.5(b) MSE histogram, NeRF-VAE
+2 views
+4 views
+6 views
+1 234610 203050100
+Number of views0.00.20.50.81.0MSE [10−1]
+(a) MSE
+NeRF
+NeRF-VAE
+Predictions for NeRF error level A 
+Ground truth NeRF NeRF-V AE Predictions for NeRF error level B 
+Ground truth NeRF NeRF-V AE Predictions for NeRF error level C 
+Ground truth NeRF NeRF-V AE 
+Figure 4: Error analysis of NeRFand a minimalistic version (see text) of NeRF-VAE on Jaytracer data. (a):MSE decreases with increasing
+number of training ( NeRF) and context ( NeRF-VAE) views. We show the mean and 95% percentiles across 100 test views averaged over
+10 scenes and 10 seeds. Despite its minimal version, NeRF-VAE performs much better for fewer ( 6) views; NeRFneeds many more
+views ( 100) to reach comparable error. (b, c) :MSEhistograms. Compared to NeRF-VAE,NeRFneeds a large number of training
+views to consistently achieve low errors, and even then incurs a small number of larger errors. Bottom : An example scene, where views
+correspond to three error levels, indicated in (b), of NeRFtrained on 100 views. NeRF’s predictions for level A are near perfect, but the
+model fails catastrophically for level C—which regularly happens when training on fewer views, see (b). NeRF-VAE’s predictions are
+more consistent, despite its simple decoder and inference.
+orders of magnitude faster than running the full optimiza-
+tion in NeRF.NeRFachieves lower MSE than our model
+only when sufﬁcient training data is available (here = 100
+views). We emphasize that while NeRF-VAE was trained
+usingNctx= 4context views, the model generalizes well to
+different numbers of context views at test time.
+Taking a look at the distribution of errors and the corre-
+sponding predictions in Fig. 4 (b, c), we see that NeRF’s
+MSE distributions are extremely wide when trained on fewer
+than 100 views. Even for 100 views, NeRFsuffers from
+a long tail of large errors. NeRF-VAE’s errors concentrate
+on a small positive value for all evaluated Ntest
+ctx, with tails
+comparable to NeRFwith 100 training views.
+Fig. 4, bottom, shows predictions from both models on
+an example scene, for views corresponding to error levels
+attained by NeRFtrained on 100 views: near-perfect (A),
+medium (B), and catastrophic (C), marked in Fig. 4 (b).
+NeRF’s A-level predictions are near perfect, but signiﬁcantly
+deteriorate in error levels B, C. As seen above, however,
+NeRFconsistently (but not exclusively) attains level A only
+when trained with 100 views. We stress that in these simple
+scenes, this effect is not7due to incomplete scene coverage
+from a limited number of views— NeRFis simply not able
+to interpolate well between few training views. In contrast,
+NeRF-VAE captures the scene structure well on all error
+levels—though the simple version used here ( MLP scene
+function, no iterative inference) misses high frequency de-
+7Similar results, including catastrophic failures of NeRFtrained
+with few views, can be obtained on CLEVR data where most of
+the scene is visible in all views, see Appendix F.1.tails such as sharp object boundaries and textures. This
+suggests that while amortized inference from few views is
+possible, NeRF-VAE could beneﬁt from a more expressive
+scene function and a better inference mechanism.
+5.4 Comparison with a Convolution-Based
+Generative Model
+Our next set of experiments compares NeRF-VAEto a CONV -
+AR-VAE—a model that is very closely related to GQN of
+Eslami et al. (2018), but with slight modiﬁcations to make
+it comparable to NeRF-VAE, see Appendix D for details.
+Both NeRF-VAE and CONV -AR-VAE are able to infer novel
+scenes from few input images, and to subsequently synthe-
+size novel views within those scenes. The key difference
+between the models is their decoder, responsible for render-
+ing images given camera and latent scene representation:
+convolutional for CONV -AR-VAE and geometry informed
+forNeRF-VAE.
+INTERPOLATIONS & G ENERALIZATION
+We ﬁrst illustrate that NeRF-VAE’s explicit knowledge of 3D
+geometry allows it to generalize well to out-of-distribution
+camera positions and orientations compared to CONV -AR-
+VAE.
+We train both NeRF-VAE and CONV -AR-VAE on the GQN
+dataset, using similar settings, which are detailed in Ap-
+pendix F.2. For the this experiment, we restrict NeRF-VAE’s
+scene function’s access to orientations, which we will moti-
+vate below. For evaluation, we select a held-out scene and
+
+==== Page 7 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+CONV -AR-V AE 
+NeRF-V AE 
+CONV -AR-V AE 
+NeRF-V AE W ithin-distribution
+Out-of-distribution
+Figure 5: Generalization ability for interpolations along two trajectories. Top: the camera is moving parallel to the ground, facing the
+horizon ( within-distribution (WD) , both models were trained using such views). While convolutional autoregressive VAE (CONV -AR-
+VAE) predicts the room consistently, it is inconsistent regarding the presence of the blue object. In contrast, NeRF-VAE produces fully
+consistent predictions, as further illustrated by visualizations of its inferred scene geometry. Bottom : the camera is further lifted off the
+ground, along a quadratic curve, facing downwards ( out-of-distribution (OOD) ).CONV -AR-VAE fails to account for downward camera
+orientations and outputs distorted colours, whereas NeRF-VAE produces plausible and consistent predictions and scene geometry.
+let each model infer the latent representation given the same
+Ntest
+ctx= 4views. We pick two arbitrary views and generate
+a sequence of camera positions and orientations that interpo-
+lates between them8. We do this twice: once with a simple
+linear interpolation across the plane, changing only the yaw
+of the camera ( within-distribution (WD) views ), and once
+with the camera lifting off the plane, along a quadratic curve,
+and looking down, changing both pitch and yaw ( out-of-
+distribution (OOD) views ); see Fig. 14 in Appendix F.2
+for an illustration. We note that out-of-distribution here
+means that these camera positions lie outside the support of
+the training data distribution.
+Fig. 5 shows each models’ outputs along the within-
+distribution trajectories and out-of-distribution views trajec-
+tories. Both models produce plausible within-distribution
+interpolations, although CONV -AR-VAE has problems with
+object persistency. When evaluated on out-of-distribution
+views, CONV -AR-VAE completely fails to produce plausi-
+ble outputs: ignoring the downward camera angle and in-
+stead distorting colours of the scene. In contrast, NeRF-VAE
+renders the inferred scene geometry properly from out-of-
+distribution viewpoints. Fig. 5 further shows depth estimates
+forNeRF-VAE’s outputs, revealing the inferred scene geom-
+etry.
+We now investigate generalization on CLEVR data, where
+we again focus on out-of-distribution camera views, and
+additionally investigate generalization across the number of
+visible objects. We compare CONV -AR-VAE to variants of
+NeRF-VAE, namely MLP,ATTN and II+ATTN .
+We again see a clear advantage of NeRF-VAE. For instance,
+Fig. 6 (left) shows almost perfect predictions when using
+theii+attn model as the camera gets closer to the object,
+8Note that the GQN dataset does not contain ground truth
+images for these interpolated views.compared to CONV -AR-VAE.
+When evaluated on scenes that contain more objects than
+visible during training (here: 5 vs. 4, Fig. 6 (right) ), NeRF-
+VAE using the attention-based scene function described in
+Section 3.2 correctly reconstructs all objects in the scenes,
+while the NeRF-VAE with the MLP scene function misses
+objects. Appendix F.2 contains quantitative results for this
+experiment.
+Ground truth C-AR-V AE ITT+ATTN 
+Ground truth MLP        ATTN 
+Figure 6: Left: Generalization to out-of-distribution camera views.
+While CONV -AR-VAE fails to produce plausible predictions, NeRF-
+VAE generalizes well. Right: Generalization to larger number
+of objects. The MLP scene function misses objects, while ATTN
+captures all objects.
+DEGENERATE ORIENTATIONS IN THE GQN DATA
+Recall that camera views in the GQN data lie within a plane
+parallel to the ground. Consequently, certain points in the
+scene are only observed from orientations within this plane.
+When trained on this degenerate data, evaluating a neural-
+network-based scene function on different (e. g. when look-
+ing down) orientations inputs leads to unpredictable outputs.
+A simple way to circumvent the resulting rendering artifacts
+is to remove orientations from the scene function’s inputs,
+as done in the above interpolations. In the case of the GQN
+data, which does not contain viewpoint dependent colours
+(reﬂections or specularities), this restriction does not impair
+visual output quality. We replicate the interpolations from
+
+==== Page 8 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+Figure 7: Variants of NeRF-VAE compared with CONV -AR-VAE on
+CLEVR and GQN datasets. We trained NeRF-VAE with a range
+ofvalues to investigate reconstruction/ KLtrade-offs. Iterative
+inference ( II) improves MLP-based scene functions, but has a small
+effect on attentive ( ATT) ones.
+Fig. 5 with orientation inputs in Appendix F.3.
+QUANTITATIVE COMPARISON & M ODEL ABLATIONS
+Fig. 7 shows MSE and Kullback-Leibler ( KL)-divergence of
+NeRF-VAE variants using amortized or iterative amortized
+(II) inference and MLP or attentive ( ATT) scene functions,
+and juxtaposes them against the CONV -AR-VAE. We focus
+on CLEVR and GQN datasets. All NeRF-VAEs are trained
+with increasing values of to trace out the available trade-
+offs between MSE and KL.
+CLEVR contains simple objects visible from every view-
+point, and has no complicated textures. Consequently, the
+MLP scene function achieves good MSE and KL. Iterative in-
+ference further increases reconstruction performance while
+decreasing KL. It is interesting that MLP-based models
+tend to have lower KLvalues than attentive models while
+still maintaining good reconstruction. However, attentive
+models do obtain lower reconstruction errors in high- KL
+regimes, which suggests that they have higher capacity to
+model complicated data. CONV -AR-VAEis not able to model
+the CLEVR data well—the model attains high KLvalues
+despite manually setting a high MSE threshold.
+The GQN dataset contains high-frequency textures and
+rooms which are not fully visible from every view, caus-
+ing both a more difﬁcult inference problem and more com-
+plicated rendering compared to CLEVR. The MLP scene
+function without iterative inference achieves low KLalbeit
+generally higher MSE.ATT can achieve lower errors than
+MLP at similar KLlevels, despite also reaching very large KL
+values, indicating a peaked posterior for certain values of .
+Using iterative inference helps both decoders, and allowsthe model to achieve both lowest KLand MSE. We note that
+while CONV -AR-VAE achieves slightly lower MSE and KL
+on this within-distribution evaluation, it fails to generalize
+to out-of-distribution views as discussed above.
+5.5 Samples & Uncertainty
+We now demonstrate NeRF-VAE’s capability to learn an
+unconditional prior over scenes (as opposed to images).
+We ﬁrst sample the latent variable zp(z), and then
+render a number of views of the induced scene function
+G(;z). Samples from NeRF-VAE trained on the GQN
+and CLEVR datasets are shown in Fig. 8. These samples
+resemble the training data distribution to a high degree,
+both in appearance and variability. Furthermore, the depth
+estimates (example in last row) reveal a consistent geometric
+structure of the sampled scene.
+Fig. 9 shows an example where NeRF-VAE infers a scene
+from a single context image containing a barely-visible pink
+object. The model is able to accurately predict a view that
+contains the full object. At the same time, the model main-
+tains uncertainty about the exact shape (sphere vs. icosa-
+hedron), as can be seen in the predictive variance of depth
+estimate.
+Figure 8: Sampled scenes from NeRF-VAE, trained on GQN (left)
+and CLEVR (right). Each row shows interpolated views in a
+different scene, corresponding to a sample of the latent variable.
+The last row shows a rendered depth map of the images in the
+above row (other depth maps omitted for space reasons).
+Context image Ground truth Predictive mean Predictive variance Predictive mean 
+Figure 9: An example of predictions under limited information in
+the context view. We show colour and depth predictions. NeRF-
+VAE is able to reconstruct a plausible explanation of the object
+which is only marginally visible in the single context view. The
+predictive variance of depth estimates (averaged over 100 samples
+from the posterior over the latent variable) accounts for object
+boundaries not clearly visible in the context.
+
+==== Page 9 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+6 Discussion
+We presented NeRF-VAE, a geometry-aware scene gener-
+ative model that leverages NeRFas a decoder in a VAE-
+framework. Thanks to an explicit rendering procedure,
+NeRF-VAE is view-consistent and generalizes to out-of-
+distribution cameras, unlike convolutional models such as
+GQN . Additionally, the learned prior over scene functions
+allows NeRF-VAE to infer scene structure from very few
+views. This is in contrast to NeRF, where too few views
+may result in contrived explanations of a scene that work
+for some views but not for others. The combination of geo-
+metric structure and a prior over scene functions, however,
+is not a panacea: if the data is degenerate (e. g. cameras
+restricted to a plane) and the model is overparameterized
+(e. g. unnecessarily accounting for view-dependent colours),
+NeRF-VAE might still explain the data in implausible ways.
+One of the limitations of NeRF-VAE is its limited per-
+scene expressivity. NeRFallocates allof its capacity to
+a single scene, and is able to capture high levels of com-
+plexity. NeRF-VAE, however, splits its capacity between
+shared across-scene information (conditional scene func-
+tion) and per-scene information (latent). In order to allow
+for amortized inference, the capacity of the latent needs
+to be limited—resulting in reduced per-scene expressivity
+compared to NeRF.
+At the same time, a low-dimensional latent variable opens
+interesting possibilities for future work, e. g. interpolation
+between scenes, extensions to dynamic scenes and videos,
+and a latent representation that dynamically grows with
+input complexity.
+ACKNOWLEDGMENTS
+We thank Hyunjik Kim, Mehdi S. M. Sajjadi, Karl Stelzner,
+Adam Goli ´nski, Alex X. Lee, Theophane Weber, and the
+anonymous reviewers for their comments on initial versions
+of this paper. We also thank Jony Hudson, Bojan Vujatovic,
+Yotam Doron, and Alex Goldin for their support throughout
+the project.References
+Brock, A., Donahue, J., and Simonyan, K. Large scale
+gan training for high ﬁdelity natural image synthesis. In
+International Conference on Representation Learning ,
+2019.
+Cremer, C., Li, X., and Duvenaud, D. Inference suboptimal-
+ity in variational autoencoders. In International Confer-
+ence on Machine Learning , 2018. arXiv/1801.03558.
+Curless, B. and Levoy, M. A volumetric method for building
+complex models from range images. In Annual Confer-
+ence on Computer graphics and Interactive Techniques ,
+pp. 303–312, 1996.
+Dai, A., Nießner, M., Zollöfer, M., Izadi, S., and Theobalt,
+C. BundleFusion: Real-time globally consistent 3d re-
+construction using on-the-ﬂy surface re-integration. ACM
+Transactions on Graphics , 2017.
+Dosovitskiy, A., Springenberg, J. T., Tatarchenko, M., and
+Brox, T. Learning to generate chairs, tables and cars with
+convolutional networks. IEEE Transactions on Pattern
+Analysis and Machine Intelligence , 2014.
+Du, Y ., Zhang, Y ., Yu, H.-X., Tenenbaum, J., and Wu, J.
+Neural radiance ﬂow for 4d view synthesis and video
+processing. arXiv/2012.09790 , 2020.
+Dumoulin, V ., Shlens, J., and Kudlur, M. A learned repre-
+sentation for artistic style. In International Conference
+on Representation Learning , 2017. arXiv/1610.07629.
+Engel, J., Schöps, T., and Cremers, D. LSD-SLAM: Large-
+scale direct monocular slam. In European Conference on
+Computer Vision , 2014.
+Engelcke, M., Kosiorek, A. R., Jones, O. P., and Posner,
+I. GENESIS: Generative scene inference and sampling
+with object-centric latent representations. In International
+Conference on Learning Representations , 2019.
+Eslami, S. A., Rezende, D. J., Besse, F., Viola, F., Morcos,
+A. S., Garnelo, M., Ruderman, A., Rusu, A. A., Dani-
+helka, I., Gregor, K., et al. Neural scene representation
+and rendering. Science , (6394):1204–1210, 2018. 360.
+Hafner, D., Lillicrap, T., Ba, J., and Norouzi, M. Dream
+to control: Learning behaviors by latent imagination. In
+International Conference on Learning Representations ,
+2020. arXiv/1912.01603.
+Hartley, R. and Zisserman, A. Multiple view geometry in
+computer vision (2. ed.) . 2003.
+He, K., Zhang, X., Ren, S., and Sun, J. Identity mappings
+in deep residual networks. In European Conference on
+Computer Vision , 2016. arXiv/1603.05027.
+
+==== Page 10 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+Henderson, P. and Lampert, C. H. Unsupervised object-
+centric video generation and decomposition in 3d. In
+Larochelle, H., Ranzato, M., Hadsell, R., Balcan, M. F.,
+and Lin, H. (eds.), Advances in Neural Information Pro-
+cessing Systems , volume 33, pp. 3106–3117. Curran As-
+sociates, Inc., 2020.
+Hu, J., Shen, L., Albanie, S., Sun, G., and Wu, E. Squeeze-
+and-excitation networks. IEEE Transactions on Pattern
+Analysis and Machine Intelligence , 42:2011–2023, 2020.
+Johnson, J., Hariharan, B., van der Maaten, L., Fei-Fei, L.,
+Lawrence Zitnick, C., and Girshick, R. CLEVR: A diag-
+nostic dataset for compositional language and elementary
+visual reasoning. In Conference on Computer Vision and
+Pattern Recognition , July 2017.
+Kim, Y ., Wiseman, S., Miller, A., Sontag, D., and Rush,
+A. M. Semi-amortized variational autoencoders. In Inter-
+national Conference on Machine Learning , 2018.
+Kingma, D. P. and Ba, J. Adam: A method for stochastic
+optimization. arXiv/1412.6980 , 2014.
+Kingma, D. P. and Welling, M. Auto-encoding variational
+bayes. In International Conference on Learning Repre-
+sentations , 2014.
+Levoy, M. and Hanrahan, P. Light ﬁeld rendering. In An-
+nual Conference on Computer Graphics and Interactive
+Techniques , pp. 31–42, 1996.
+Li, Z., Niklaus, S., Snavely, N., and Wang, O. Neural
+scene ﬂow ﬁelds for space-time view synthesis of dy-
+namic scenes. arXiv/2011.13084 , 2020.
+Lowe, D. Distinctive image features from scale-invariant
+keypoints. International Journal of Computer Vision , pp.
+91–110, 2004. 60.
+Marino, J., Yue, Y ., and Mandt, S. Iterative amortized
+inference. arXiv/1807.09356 , 2018.
+Martin-Brualla, R., Radwan, N., Sajjadi, M. S., Barron, J. T.,
+Dosovitskiy, A., and Duckworth, D. NeRF in the Wild:
+Neural radiance ﬁelds for unconstrained photo collections.
+arXiv/2008.02268 , 2020.
+Mescheder, L. M., Oechsle, M., Niemeyer, M., Nowozin, S.,
+and Geiger, A. Occupancy networks: Learning 3d recon-
+struction in function space. In Conference on Computer
+Vision and Pattern Recognition , pp. 4455–4465, 2019.
+Mildenhall, B., Srinivasan, P. P., Ortiz-Cayon, R., Kalantari,
+N. K., Ramamoorthi, R., Ng, R., and Kar, A. Local light
+ﬁeld fusion: Practical view synthesis with prescriptive
+sampling guidelines. ACM Transactions on Graphics ,
+2019.Mildenhall, B., Srinivasan, P. P., Tancik, M., Barron, J. T.,
+Ramamoorthi, R., and Ng, R. NeRF: Representing scenes
+as neural radiance ﬁelds for view synthesis. In European
+Conference on Computer Vision , 2020.
+Nguyen-Phuoc, T., Li, C., Theis, L., Richardt, C., and Yang,
+Y . HoloGAN: Unsupervised learning of 3d representa-
+tions from natural images. In International Conference
+on Computer Vision , pp. 7587–7596, 2019.
+Nguyen-Phuoc, T., Richardt, C., Mai, L., Yang, Y .,
+and Mitra, N. BlockGAN: Learning 3d object-aware
+scene representations from unlabelled images. In Ad-
+vances in Neural Information Processing Systems , 2020.
+arXiv/2002.08988.
+Niemeyer, M. and Geiger, A. Giraffe: Representing
+scenes as compositional generative neural feature ﬁelds.
+arXiv/2011.12100 , 2020.
+Park, K., Sinha, U., Barron, J., Bouaziz, S., Goldman, D.,
+Seitz, S., and Brualla, R.-M. Deformable neural radiance
+ﬁelds. arXiv/2011.12948 , 2020.
+Pumarola, A., Corona, E., Pons-Moll, G., and Moreno-
+Noguer, F. D-NeRF: Neural radiance ﬁelds for dynamic
+scenes. arXiv/ 2011.13961 , 2020.
+Rezende, D. J. and Viola, F. Generalized elbo with con-
+strained optimization, geco. In NeurIPS Bayesian Deep
+Learning Workshop , 2018.
+Rezende, D. J., Mohamed, S., and Wierstra, D. Stochastic
+backpropagation and approximate inference in deep gen-
+erative models. In International Conference on Machine
+Learning , pp. 1278–1286, 2014.
+Schönberger, J. L. and Frahm, J.-M. Structure-from-motion
+revisited. In Conference on Computer Vision and Pattern
+Recognition , 2016.
+Schwarz, K., Liao, Y ., Niemeyer, M., and Geiger, A. GRAF:
+Generative radiance ﬁelds for 3d-aware image synthesis.
+arXiv/2007.02442 , 2020.
+Sitzmann, V ., Zollhöfer, M., and Wetzstein, G. Scene repre-
+sentation networks: Continuous 3d-structure-aware neu-
+ral scene representations. In Advances in Neural Informa-
+tion Processing Systems , 2019. arXiv/1906.01618.
+Srinivas, A., Lin, T.-Y ., Parmar, N., Shlens, J., Abbeel,
+P., and Vaswani, A. Bottleneck transformers for visual
+recognition. 2021.
+Srinivasan, P. P., Wang, T., Sreelal, A., Ramamoorthi, R.,
+and Ng, R. Learning to synthesize a 4d RGBD light
+ﬁeld from a single image. In International Conference on
+Computer Vision , 2017.
+
+==== Page 11 ====
+NeRF-V AE: A Geometry Aware 3D Scene Generative Model
+Tancik, M., Mildenhall, B., Wang, T., Schmidt, D., Srini-
+vasan, P. P., Barron, J., and Ng, R. Learned initializations
+for optimizing coordinate-based neural representations.
+arXiv/2012.02189 , 2020.
+Tatarchenko, M., Dosovitskiy, A., and Brox, T. Single-
+view to multi-view: Reconstructing unseen views with a
+convolutional network. arXiv/1511.06702 , 2015.
+Trevithick, A. and Yang, B. GRF: Learning a general radi-
+ance ﬁeld for 3d scene representation and rendering. In
+International Conference on Learning Representations ,
+2021. arXiv/2010.04595.
+Ulusoy, A. O., Black, M. J., and Geiger, A. Patches, planes
+and probabilities: A non-local prior for volumetric 3d
+reconstruction. In Conference on Computer Vision and
+Pattern Recognition , pp. 3280–3289, 2016.
+Vahdat, A. and Kautz, J. NV AE: A deep hierarchical varia-
+tional autoencoder. arXiv/2007.03898 , 2020.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. Atten-
+tion is all you need. Advances in Neural Information
+Processing Systems , pp. 5998–6008, 2017. 30.
+Xian, W., Huang, J., Kopf, J., and Kim, C. Space-
+time neural irradiance ﬁelds for free-viewpoint video.
+arXiv/2011.12950 , 2020.
+Yu, A., Ye, V ., Tancik, M., and Kanazawa, A. pixel-
+NeRF: Neural radiance ﬁelds from one or few images.
+arXiv/2012.02190 , 2020.
+Zhou, T., Tucker, R., Flynn, J., Fyffe, G., and Snavely, N.
+Stereo magniﬁcation: learning view synthesis using mul-
+tiplane images. ACM Transactions on Graphics , 2018.
+

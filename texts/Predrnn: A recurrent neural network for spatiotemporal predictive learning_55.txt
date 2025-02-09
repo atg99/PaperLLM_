@@ -1,0 +1,1760 @@
+==== Page 1 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 1
+PredRNN: A Recurrent Neural Network for
+Spatiotemporal Predictive Learning
+Yunbo Wang, Haixu Wu, Jianjin Zhang, Zhifeng Gao, Jianmin Wang,
+Philip S. Yu, Fellow, IEEE , Mingsheng Long, Member, IEEE
+Abstract —The predictive learning of spatiotemporal sequences aims to generate future images by learning from the historical context,
+where the visual dynamics are believed to have modular structures that can be learned with compositional subsystems. This paper
+models these structures by presenting PredRNN, a new recurrent network, in which a pair of memory cells are explicitly decoupled,
+operate in nearly independent transition manners, and ﬁnally form uniﬁed representations of the complex environment. Concretely,
+besides the original memory cell of LSTM, this network is featured by a zigzag memory ﬂow that propagates in both bottom-up and
+top-down directions across all layers, enabling the learned visual dynamics at different levels of RNNs to communicate. It also leverages a
+memory decoupling loss to keep the memory cells from learning redundant features. We further propose a new curriculum learning
+strategy to force PredRNN to learn long-term dynamics from context frames, which can be generalized to most sequence-to-sequence
+models. We provide detailed ablation studies to verify the effectiveness of each component. Our approach is shown to obtain highly
+competitive results on ﬁve datasets for both action-free and action-conditioned predictive learning scenarios.
+Index Terms —Predictive learning, spatiotemporal modeling, recurrent neural networks
+F
+1 I NTRODUCTION
+As a key application of predictive learning, generating future
+frames from historical consecutive frames has received growing
+interest in machine learning and computer vision communities.
+It beneﬁts many practical applications and downstream tasks,
+such as the precipitation forecasting [ 1,2], trafﬁc ﬂow prediction
+[3,4], physical scene understanding [ 5,6,7,8], early activity
+recognition [ 9], deep reinforcement learning [ 10,11], and the
+vision-based model predictive control [ 12,13]. Many of these
+existing approaches suggested leveraging RNNs [ 14,15] with
+stacked LSTM units [ 16] to capture the temporal dependencies of
+spatiotemporal data. This architecture is mainly inspired by similar
+ideas from other well-explored tasks of sequential data, such as
+neural machine translation [ 17,18], speech recognition [ 19], video
+action recognition [20, 21], and video captioning [21].
+For stacked LSTMs, a network structure named memory cell
+plays an important role in alleviating the vanishing gradient
+problem of RNNs. Strong theoretical and empirical evidence has
+shown that it can latch the gradients of hidden states inside each
+LSTM unit in the training process and thereby preserve valuable
+information of underlying temporal dynamics [ 16]. However, the
+state transition pathway of LSTM memory cells may not be
+optimal for spatiotemporal predictive learning, as this task requires
+different focuses on the learned representations in many aspects
+from other tasks of sequential data. First, most predictive networks
+for language or speech modeling [ 17,18,19] focus on capturing the
+long-term, non-Markovian properties of sequential data, rather than
+Y. Wang is with MoE Key Lab of Artiﬁcial Intelligence, AI Institute, Shanghai
+Jiao Tong University, China.
+H. Wu, Z. Gao, J. Wang, P . S. Yu, and M. Long are with the School of
+Software, BNRist, Tsinghua University, China.
+J. Zhang is with the Microsoft Corporation, China.
+Y. Wang and H. Wu contributed equally to this work.
+Corresponding author: Mingsheng Long, mingsheng@tsinghua.edu.cn.spatial deformations of visual appearance. But for future frames
+prediction, both data structures in space-time are crucial and need to
+be carefully considered. Second, in other supervised tasks of video
+data, such as action recognition, high-level semantical features can
+be informative enough, and the low-level features are less important
+to ﬁnal outputs. Due to the absence of complex structures of
+supervision signals, the stacked LSTMs don’t need to preserve ﬁne-
+grained representations from the bottom up. Although the existing
+recurrent architecture based on inner-layer memory transitions can
+be sufﬁcient to capture temporal variations at each level of the
+network, it may not be the best choice for predictive learning,
+where low-level details and high-level semantics of spatiotemporal
+data are both signiﬁcant to generating future frames.
+To jointly model the spatial correlations and temporal dy-
+namics at different levels of RNNs, we propose a new memory-
+prediction framework named Predictive Recurrent Neural Network
+(PredRNN), which extends the inner-layer transition function of
+memory states in LSTMs to spatiotemporal memory ﬂow . The
+spatiotemporal memory ﬂow traverses all nodes of PredRNN in
+a zigzag path of bi-directional hierarchies: At each timestep, the
+low-level information is delivered vertically from the input to the
+output via a newly-designed memory cell, while at the top layer, the
+spatiotemporal memory ﬂow brings the high-level memory state to
+the bottom layer at the next timestep. By this means, the top-down
+expectations interact with the bottom-up signals to both analyze
+those inputs and generate predictions of subsequently expected
+inputs, which is different from stacked LSTMs, where the memory
+state is latched inside each recurrent unit.
+Accordingly, we deﬁne the central building block of PredRNN
+as the Spatiotemporal LSTM (ST-LSTM), in which the proposed
+spatiotemporal memory ﬂow interacts with the original, unidirec-
+tional memory state of LSTMs. The intuition is that if we expect
+a vivid imagination of multiple future images, we need a uniﬁed
+memory mechanism to cope with both short-term deformations
+of spatial details and long-term dynamics: On one hand, the newarXiv:2103.09504v4  [cs.LG]  9 Apr 2022
+
+==== Page 2 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 2
+TABLE 1: The evolution of convolutional recurrent units in video prediction models. The “ Standard ” training scheme is to follow the
+conventional sequence-to-sequence framework [ 23] that feeds the historical real observations to the sequence encoder and feeds the
+previously generated frames to the decoder during the entire training phase. “ SS” is short for scheduled sampling [24].
+Model Architecture Recurrent unit Training (Encoder + Decoder)
+ConvLSTM [1] Seq-to-Seq with stacked layers [23] Convolutional LSTM Standard [23] + Standard [23]
+TrajGRU [25] Seq-to-Seq with reversed forecasting layers Trajectory GRU Standard + Standard
+CDNA [26] Action-conditioned ConvLSTM network ConvLSTM [1] Standard + SS [24]
+PredRNN [2] ( Conf. version ) Spatiotemporal memory ﬂow Spatiotemporal LSTM Standard + SS
+PredRNN++ [27] Gradient highway Causal LSTM Standard + SS
+E3D-LSTM [9] Temporal self-attention on memory cells Eidetic 3D LSTM Standard + SS
+CrevNet [28] Two-way autoencoder + Reversible prediction ConvLSTM [1]; ST-LSTM [2] Standard + Standard
+Conv-TT-LSTM [29] Seq-to-Seq with stacked layers Conv. Tensor-Train LSTM Standard + SS
+PredRNN-V2 ( Ours ) Spatiotemporal memory ﬂow ST-LSTM (decoupled memory) Reverse scheduled sampling + SS
+design of the spatiotemporal memory cell enables the network to
+learn complex transition functions within short neighborhoods of
+consecutive frames by increasing the depth of non-linear neurons
+between time-adjacent RNN states. It thus signiﬁcantly improves
+the modeling capability of ST-LSTM for short-term dynamics. On
+the other hand, ST-LSTM still retains the temporal memory cell of
+LSTMs and closely combines it with the proposed spatiotemporal
+memory cell, in pursuit of both long-term coherence of hidden
+states and their quick response to short-term dynamics.
+This journal paper extends our previous work [ 2] in three
+technical aspects: First, we propose a decoupling loss to maximize
+the distance of memory states between the two memory cells
+in ST-LSTM. It is largely inspired by the theoretical argument
+that distributed representation has a great potential to match the
+underlying properties of data distribution [ 22]. In other words,
+we implicitly train the two memory cells to focus on different
+aspects of spatiotemporal variations. Second, we extend PredRNN
+to support action-conditioned video prediction, such that it models
+the effects of various actions taken by an agent in high-dimensional
+pixel observations. Third, another challenge we observed for
+video prediction is that the widely used sequence-to-sequence
+training procedure [ 17] prevents the models from learning long-
+term dynamics in the context frames. To this end, we introduce
+a new curriculum learning procedure named Reverse Scheduled
+Sampling, which forces our model to learn more about jumpy
+frame dependencies by randomly hiding real observations in the
+input sequence with certain probabilities changing over the training
+phase. We believe that the proposed training procedure can be
+easily extended to other video prediction models that also follow
+the sequence-to-sequence framework [17].
+Our approach achieves state-of-the-art performance on ﬁve
+datasets: the Moving MNIST dataset, the KTH action dataset, a
+radar echo dataset for precipitation forecasting, the Trafﬁc4Cast
+dataset of high-resolution trafﬁc ﬂows, and the action-conditioned
+BAIR dataset with robot-object interactions. The last two of them
+are new in this version of the manuscript. We perform ablation
+studies to understand the effectiveness of each component of
+PredRNN, which is complementary to existing methods and further
+improves them when integrated. We release the code to facilitate
+future research at https://github.com/thuml/predrnn-pytorch.
+2 R ELATED WORK
+For spatiotemporal predictive learning, different inductive biases
+are encoded into neural networks by using different network
+architectures [ 30], which, in general, can be roughly divided into
+three groups: feed-forward models based on CNNs [ 31,32,33],
+recurrent models [ 1,34,35], and other models including thecombinations of the convolutional and recurrent networks, as well
+as the Transformer-based and ﬂow-based methods [36, 37].
+Feed-forward models based on CNNs. The use of convolutional
+layers has introduced the inductive bias of group invariance
+over space to spatiotemporal prediction. Oh et al. [31] deﬁned
+a convolutional autoencoder for next-frame prediction in Atari
+games. Xue et al. [38] presented a probabilistic model that
+encodes motion information as convolutional kernels and learns
+to produce a probable set of future frames by learning their
+conditional distribution. Zhang et al. [39] used a CNN with
+residual connections for trafﬁc prediction, which considers the
+closeness, period, trend, and external factors of the trafﬁc ﬂows.
+Recent literature proposed to train the predictive CNNs with
+adversarial learning [ 40,41] to reduce the uncertainty of the
+learning process and improve the sharpness of the generated
+frames [ 32,33,42,43,44,45,46]. Compared with the recurrent
+models, feed-forward models typically show higher computational
+efﬁciency on large-scale GPUs. However, these models learn
+complicated state transitions as compositions of simpler ones by
+stacking convolutional layers, thus often failing to capture long-
+term dependency between distant frames.
+Recurrent models. Recent advances in RNNs typically show a
+greater ability to model the dynamics of historical observations.
+Ranzato et al. [47] deﬁned an RNN inspired by language modeling,
+predicting future frames in a discrete space of patch clusters.
+Srivastava et al. [34] proposed a sequence-to-sequence video
+prediction model borrowed from neural machine translation [ 17].
+Later on, some work improved the modeling of temporal relations
+and extended the prediction horizon by organizing 2D recurrent
+states in hierarchical architectures [ 48,49,50]. To model the
+temporal uncertainty, some work proposed to integrate variational
+inference with 2D recurrence [ 35,51,52,53,54,55,56]. Another
+line of work is to factorize the content and motion of videos. Typical
+approaches include using optical ﬂows [ 57,58], adversarial training
+schemes [ 59], reasoning about object-centric content and pose
+vectors [ 60,61], differentiable clustering methods [ 6], amortized
+inference [ 62,63], and solvers of neural differential equations [ 64].
+However, the above methods mainly used 2D RNNs to model video
+dynamics in low-dimensional space, which inevitably causes the
+loss of visual information in real scenarios. In this paper, we are
+more focused on improving the spatiotemporal modeling capability
+of the recurrent predictive backbones.
+Convolutional RNNs. Table 1 summarizes the evolution of
+recent video prediction models that combine the advantages of
+convolutional and recurrent architectures. Shi et al. [1] proposed
+the Convolutional LSTM (ConvLSTM), which uses convolutions
+
+==== Page 3 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 3
+to replace the matrix multiplication in the recurrent transitions of
+the original LSTM. Finn et al. [26] designed an action-conditioned
+ConvLSTM network for visual planning and control. Shi et al. [25]
+combined convolutions with GRUs [ 18] and extended the receptive
+ﬁelds of state-to-state transitions with non-local neural connections.
+Wang et al. [9] enriched each RNN state by incorporating a
+time dimension that covers a short snippet, and proposed to
+model the dynamics using 3D convolutions and temporal self-
+attention. Su et al. [29] improved the efﬁciency of higher-order
+ConvLSTMs based on low-rank tensor factorization. In summary,
+the convolutional RNNs jointly model the visual appearances and
+temporal dynamics, and is also a foundation for the follow-up
+approaches [ 4,9,25,26,27,28,29,65,66,67,68,69,70,71].
+This paper improves upon the existing video prediction models with
+(i) a zigzag recurrent transition mechanism named spatiotemporal
+memory ﬂow , (ii) a new convolutional recurrent unit with a pair
+of decoupled memory cells, and (iii) a new training procedure for
+sequence-to-sequence predictive learning.
+3 P RELIMINARIES
+3.1 Spatiotemporal Predictive Learning
+Suppose we are monitoring a dynamical system of Jmeasurements
+over time, where each measurement is recorded at all locations
+in a spatial region represented by an MNgrid. From the
+spatial view, the observation of these Jmeasurements at any time
+can be represented by a tensor of X 2RJMN. From the
+temporal view, the observations over Ttimesteps form a sequence
+ofXin=fX1;:::;XTg. GivenXin, the spatiotemporal predictive
+learning is to predict the most probable length- Ksequence in
+the future,bXout=fbXT+1;:::;bXT+Kg. In this paper, we train
+neural networks parametrized by . Concretely, we use stochastic
+gradient descent to ﬁnd a set of parameters ?that maximizes the
+log-likelihood of producing the true target sequence Xoutgiven the
+input dataXinfor all training pairs f(Xn
+in;Xn
+out)gn:
+?= arg max
+X
+(Xn
+in;Xn
+out)logP(Xn
+outjXn
+in;):(1)
+In this paper, we take video prediction as a typical experimental
+domain, where the observed data at each timestep is an RGB image
+and the number of measured channels is 3. Another domain is
+precipitation nowcasting, where the observed data is a sequence of
+radar echo maps in a certain geographic region1.
+3.2 Convolutional LSTM
+The Convolutional LSTM (ConvLSTM) [ 1] models the spatial and
+temporal data structures simultaneously by explicitly encoding the
+spatial information into tensors, and applying convolution operators
+to both the state-to-state and input-to-state recurrent transitions.
+It overcomes the limitation of vector-variate representations in
+standard LSTM, where the spatial correlation is not explicitly
+modeled. The input state Xt, memory stateCt, and hidden stateHt
+at each timestep are 3D tensors in RJMN. The ﬁrst dimension
+is either the number of measurements (for input states) or the
+number of feature maps (otherwise), and the last two dimensions
+are the numbers of spatial rows Mand columns N. Like standard
+LSTM, the input gate it, forget gate ft, output gate ot, and input-
+modulation gate gtcontrol the information ﬂow across Ct, such
+1. We usually visualize radar echoes by mapping them to color images.that the gradient will be kept from quickly vanishing by being
+trapped in the memory cell. ConvLSTM determines the future state
+of a certain cell in the MNgrid based on the input frame and
+past states of its local neighbors:
+gt= tanh(WxgXt+WhgHt 1+bg)
+it=(WxiXt+WhiHt 1+WciCt 1+bi)
+ft=(WxfXt+WhfHt 1+WcfCt 1+bf)
+Ct=ftCt 1+itgt
+ot=(WxoXt+WhoHt 1+WcoCt+bo)
+Ht=ottanh(Ct);(2)
+whereis the Sigmoid activation function, anddenote the
+convolution operator and the Hadamard product. We observe that
+the ConvLSTM network can be improved from three aspects.
+Challenge I. For a stacked ConvLSTM network, the input sequence
+Xinis fed into the bottom layer, and the output sequence Xoutis
+generated at the top one. With hidden states Htbeing delivered
+from the bottom up, spatial representations are encoded layer by
+layer. However, the memory states Ctare merely updated along the
+arrow of time within each ConvLSTM layer, being less dependent
+on the hierarchical visual features at other layers. Thus, the ﬁrst
+layer at the current timestep may largely ignore what had been
+memorized by the top layer at the previous timestep.
+Challenge II. In ConvLSTM, the output hidden state Htis
+dependent on the memory state Ctand the output gate ot, which
+means that the memory cell is forced to cope with long-term
+and short-term dynamics simultaneously. Therefore, the modeling
+capability ofCtmay greatly limit the overall performance of the
+model for complex spatiotemporal variations.
+Challenge III. The ConvLSTM network follows the training
+procedure of sequence-to-sequence RNNs [ 23]. During training, it
+always takes as inputs real observations at encoding timesteps but
+has to rely more on the long-term information from the previous
+context frames at the forecasting timesteps. Since both the encoding
+and forecasting parts of ConvLSTM use the same set of model
+parameters, the one-step training in the encoding phase may prevent
+the forecaster from learning the jumpy frame dependencies, thus
+affecting the performance of long-term prediction.
+4 M ETHOD
+To tackle the above challenging problems, we propose the Predic-
+tive Recurrent Neural Network (PredRNN). For Challenge I , we
+present a new RNN architecture named the spatiotemporal memory
+ﬂow, which improves the state transition functions of convolutional
+RNNs. For Challenge II , we propose the Spatiotemporal LSTM
+(ST-LSTM) which serves as the building block of PredRNN. It
+leverages a pair of memory cells that are jointly learned and
+explicitly decoupled to cover long- and short-term dynamics of
+spatiotemporal variations. For Challenge III , we improve the
+training procedure to encourage the predictive network to learn non-
+Markovian dynamics from longer periods of observation frames.
+Furthermore, we present an action-conditioned PredRNN, which
+allows simulating the spatiotemporal variations of the environment
+in response to the actions of the agent in decision-making scenarios.
+4.1 Spatiotemporal Memory Flow
+PredRNN employs a stack of convolutional recurrent units to learn
+uniﬁed representations of the spatial correlations and temporal
+
+==== Page 4 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 4
+ConvLSTM4ConvLSTM4ConvLSTM4ConvLSTM4ConvLSTM4ConvLSTM3ConvLSTM3ConvLSTM3ConvLSTM3ConvLSTM3ConvLSTM2ConvLSTM1ConvLSTM2ConvLSTM2ConvLSTM2ConvLSTM2ConvLSTM1ConvLSTM1ConvLSTM1ConvLSTM1bXt+2bXt+1bXt
+XtXt 1Xt+1C4tC2tC3tC1tM1tM2tM3tbXt+2bXt+1
+XtXt+1H2tH3tH1tH4tH1tH2tH3tH1tH2tH3tM4t 1H4t 1M4tH4t
+Fig. 1: Left: the spatiotemporal memory ﬂow architecture that uses ConvLSTM as the building block. The orange arrows show the
+deep-in-time path of memory state transitions. Right: the original ConvLSTM network proposed by Shi et al. [1].
+dynamics from the input sequence, and then transforms these
+features back to the data space to predict future spatiotemporal
+frames. We initially adopt the original ConvLSTM layer as the
+basic building block of PredRNN and apply a novel memory state
+transition method between the recurrent nodes. In the original
+ConvLSTM network [ 1] shown in Fig. 1 (right), the memory states
+Cl
+tare constrained inside individual recurrent layers and updated
+along the arrow of time. Only the hidden states Hl
+tcan be delivered
+from the observation to the ﬁnal prediction. This temporal memory
+ﬂow has been widely used in supervised learning tasks such as
+video classiﬁcation, where the hidden representations are more and
+more abstract and class-speciﬁc, starting at the bottom. However,
+in predictive learning, the input frames and the expected outputs
+share the same data space, i.e., they may have very close data
+distributions in the spatial domain and very related underlying
+dynamics in the temporal domain. Therefore, it becomes important
+to make the predictions more effectively dependent on the memory
+representations learned at different levels of recurrent layers. If
+we want to frame the future vividly, we need both high-level
+understandings of global motions and more detailed memories of
+the subtle variations in the input sequence.
+Considering that the memory cell of ConvLSTM can latch the
+gradients2and thereby store valuable information across recurrent
+nodes, we improve the above horizontal memory ﬂow by updating
+the memory state in the zigzag direction, so that it can better deliver
+knowledge from input to output. We show the key equations of this
+memory ﬂow using ConvLSTM as the building block:
+gt= tanh(WxgXt 1fl=1g+WhgHl 1
+t)
+it=(WxiXt 1fl=1g+WhiHl 1
+t+WciMl 1
+t)
+ft=(WxfXt 1fl=1g+WhfHl 1
+t+WcfMl 1
+t)
+Ml
+t=ftMl 1
+t+itgt
+ot=(WxoXt 1fl=1g+WhoHl 1
+t+WcoMl
+t)
+Hl
+t=ottanh(Ml
+t):
+(3)
+We name this new memory state transition method the spa-
+tiotemporal memory ﬂow , and show its transition direction by the
+orange arrows in Fig. 1 (left). In this way, the memory states in
+different ConvLSTM layers are no longer independent, and all
+nodes in the entire recurrent network jointly maintain a memory
+2.Like the standard LSTM, the memory cell of ConvLSTM was originally
+designed to alleviate the gradient vanishing problem during training.bank denoted byM. The input gate, input modulation gate, forget
+gate, and output gate are no longer dependent on the hidden state
+and the temporal memory state from the previous timestep at the
+same layer. Instead, they rely on the hidden state Hl 1
+tand the
+spatiotemporal memory state Ml 1
+t(l2f1;:::;Lg)supplied by
+the previous layer at current timestep (see Fig. 1 (left)). In particular,
+the bottom recurrent unit ( l= 1) receives state values from the top
+layer at the previous timestep: Hl 1
+t=HL
+t 1,Ml 1
+t=ML
+t 1.
+The four layers in this ﬁgure have different sets of convolutional
+parameters regarding the input-to-state and state-to-state transitions.
+They thereby read and update the values of the memory state based
+on their individual understandings of the spatiotemporal dynamics
+as the information ﬂows through the current node. Note that we
+replace the notation for memory state from CtoMto emphasize
+that it ﬂows in the zigzag direction in PredRNN, instead of the
+horizontal direction in standard recurrent networks. Different from
+ConvLSTM which uses Hadamard product for the computation
+of the gates, we adopt convolution operators for ﬁner-grained
+memory transitions. An additional beneﬁt of this change is that the
+learned PredRNN can be deployed directly on the input sequence
+of different spatial resolutions.
+The spatiotemporal memory ﬂow provides a recurrent highway
+for hierarchical visual representations that can reduce the loss of
+information from the bottom layers to the top of the network.
+Besides, by introducing more nonlinear gated neurons within
+temporal neighborhoods, it expands the deep transition path of
+hidden states and enhances the modeling capability of the network
+for short-term dynamics. In contrast, the original ConvLSTM
+network requires larger convolution kernels for input-to-state and
+state-to-state transitions in order to capture faster motion, resulting
+in an unnecessary increase in model parameters.
+Alternatively, we can understand the spatiotemporal memory
+ﬂow from the perspective of memory networks [72,73,74]. Here,
+the proposed spatiotemporal memory state Mcan be viewed as a
+simple version of the so-called external memory with continuous
+memory representations, and the stacked recurrent layers can be
+viewed as multiple computational steps. The layer-wise forget gates,
+input gates, and input modulation gates respectively determine the
+read and write functions, as well as the content to be written.
+One advantage of the classic memory networks is to capture
+long-term structure (even with multiple temporal hops) within
+sequences. Our spatiotemporal memory ﬂow is analogous to their
+mechanism, as it enables our model to consider different levels of
+video representations before making a prediction.
+
+==== Page 5 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 5
+ST-LSTM1ST-LSTM1ST-LSTM1ST-LSTM2ST-LSTM2ST-LSTM2ST-LSTM3ST-LSTM3ST-LSTM3ST-LSTM4ST-LSTM4ST-LSTM4⊗⊗⊗⊗Input GateOutput Gate
+Forget GateModulation GateTemporalMemorygtitftot′ftSpatiotemporalMemory⊗′it′gtbXt+2bXt+1bXt
+XtMlt
+Ml 1tCltClt 1Hlt 1HltH1tH2tH3tC4tC2tC3tC1tM1tM2tM3t
+M4tXtXt 1Xt+1Ll,tdecouple=  cos( Clt, Mlt)  
+H1tH2tH3tH4t
+M4t 1
+Fig. 2: Left: the main architecture of PredRNN, in which the orange arrows denote the state transition paths of Ml
+t, namely the
+spatiotemporal memory ﬂow. Right: the ST-LSTM unit with twisted memory states that serves as the building block of the proposed
+PredRNN, where the orange circles denote the unique structures compared with ConvLSTM.
+4.2 Spatiotemporal LSTM with Memory Decoupling
+As described previously, the spatiotemporal memory state is
+updated ﬁrst upwards across layers then forwards to the next
+timestep. It stretches the state transition path across time and adds
+extra neurons between horizontally adjacent nodes at the same
+level of the network. It thus enables the network to learn complex
+non-linear transition functions of short-term motions. However, this
+deep-in-time architecture may also bring in the gradient vanishing
+problem. The roundabout memory transition path may make it
+difﬁcult to capture long-term dependencies. For both short-term
+recurrence depth and long-term coherence, we introduce a double-
+ﬂow memory transition mechanism that combines the original
+memory cellCand the new memory cell M, which derives a
+recurrent unit named Spatiotemporal LSTM (ST-LSTM):
+gt= tanh(WxgXt+WhgHl
+t 1)
+it=(WxiXt+WhiHl
+t 1)
+ft=(WxfXt+WhfHl
+t 1)
+Cl
+t=ftCl
+t 1+itgt
+g0
+t= tanh(W0
+xgXt+WmgMl 1
+t)
+i0
+t=(W0
+xiXt+WmiMl 1
+t)
+f0
+t=(W0
+xfXt+WmfMl 1
+t)
+Ml
+t=f0
+tMl 1
+t+i0
+tg0
+t
+ot=(WxoXt+WhoHl
+t 1+WcoCl
+t+WmoMl
+t)
+Hl
+t=ottanh(W11[Cl
+t;Ml
+t]):
+(4)
+In Fig. 2, we present the ﬁnal PredRNN model by taking ST-
+LSTM as the building block in place of ConvLSTM. There are
+two memory states: First, Cl
+tis the temporal memory that transits
+within each ST-LSTM unit from the previous node at t 1to
+the current timestep. We adopt the original gates for Cl
+tfrom the
+standard LSTM, but remove the Hadamard terms WCl
+t 1
+from the computation of itandft, due to empirical performance
+and model efﬁciency. Second, Ml
+tis the spatiotemporal memory,
+which transits vertically to the current node from the lower l 1ST-
+LSTM unit at the same timestep. In particular, we assign ML
+t 1toM0
+tfor the bottom ST-LSTM where l= 1. We construct another
+set of input gate i0
+t, forget gatef0
+t, and input modulation gate g0
+tfor
+Ml
+t, because the memory transition functions in distinct directions
+are supposed to be controlled by different signals.
+The ﬁnal hidden states Hl
+tof each node are dependent on
+a combination of the horizontal and zigzag memory states: we
+concatenate theCl
+tandMl
+t, and then apply the 11convolutional
+layer for dimensionality reduction, which makes the hidden state
+Hl
+thave the same dimensions as the memory states. In addition to
+simple concatenation, pairs of memory states are ﬁnally twisted and
+uniﬁed by output gates with bidirectional control signals (horizontal
+and vertical), resulting in comprehensive modeling of long-term
+and short-term dynamics. This dual-memory mechanism beneﬁts
+from the compositional advantage with distributed representations
+[75,76]. Intuitively, due to different mechanisms of state transitions,
+the pair of memory cells in ST-LSTM are expected to deal with
+different aspects of spatiotemporal variations:
+Mintroduces a deeper transition path that zigzags across ST-
+LSTM units. With the forget gate f0
+tand the input-related
+modulesi0
+tg0
+t, it improves the ability to model complex short-
+term dynamics from one timestep to the next, and allows Hto
+transit adaptively at different rates.
+Coperates on a slower timescale. It provides a shorter gradient
+path between distant hidden states, thus facilitating the learning
+process of long-term dependencies.
+However, as shown in Fig. 3, we visualized the increments
+of memory states at each timestep ( i.e.,Cl
+tandMl
+t) using
+t-SNE [ 77], and found that they were not automatically separated
+as expected. In fact, the two memory states are often so intertwined
+that they are difﬁcult to decouple spontaneously through their
+respective network architectures. To some extent, it results in the
+inefﬁcient utilization of network parameters.
+Building upon the ﬁrst version of ST-LSTM [ 2], we present a
+new decoupling loss, as shown in Fig. 2 (right), that keeps Cand
+Mfrom learning redundant features. In each ST-LSTM unit, we
+ﬁrst add the convolutional layer upon the increments of Cl
+tandMl
+t
+at every timestep, and leverage a new decoupling loss to explicitly
+extend the distance between them in latent space. By this means,
+different memory states are trained to focus on different aspects of
+
+==== Page 6 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 6
+t = 1t = 3t = 5t = 7t = 9PredRNNPredRNNwithMemory DecouplingVideo Frame
+!=1!=3!=5!=7!=9
+ST-LSTMST-LSTMwithmemorydecouplingInputframes
+Fig. 3: Visualization of Cl
+t(red points) and Ml
+t(black
+points) using t-SNE [ 77] on the KTH action dataset. Models are
+respectively trained without or with memory decoupling.
+spatiotemporal variations. The overall memory decoupling method
+can be formulated as follows:
+Cl
+t=Wdecouple(itgt)
+Ml
+t=Wdecouple(i0
+tg0
+t)
+Ldecouple =X
+tX
+lX
+cj
+Cl
+t;Ml
+t
+cj
+kCl
+tkckMl
+tkc;(5)
+whereWdecouple denotes 11convolutions shared by all ST-LSTM
+units;h;icandkkcare respectively dot product and `2norm of
+ﬂattened feature maps, which are calculated for each channel c. At
+training time, the increments of memory states, itgtandi0
+tg0
+t,
+are derived from Eq. (4). Notably, the new parameters are only used
+at training time and are removed from the entire model at inference.
+That is, there is no increase in model size compared to the previous
+version of ST-LSTM [ 2]. By deﬁning the decoupling loss with the
+cosine similarity, our approach encourages the increments of the
+two memory states to be orthogonal at any timestep. It unleashes
+the respective strengths of CandMfor long-term and short-term
+dynamic modeling. As shown by t-SNE visualization in Fig. 3, at
+test time, Cl
+tandMl
+tcan be easily separated.
+The decoupling loss is largely inspired by the theoretical evi-
+dence that using reasonable inductive bias to construct distributed
+representations can bring a great performance boost if it matches
+properties of the underlying data distribution [ 22]. There is a similar
+idea in ensemble learning that generally, to form a good ensemble,
+the base learners should be as more accurate as possible, and
+as more diverse as possible [ 78]. The diversity of base learners
+can be enhanced in different ways, such as sub-sampling the
+training examples, manipulating the input attributes, and employing
+randomness into training procedures [ 79]. It is worth noting that
+the proposed memory decoupling method has not been used by
+existing ensemble learning algorithms, though it is inspired by the
+general idea of enhancing the diversity of base learners. We use it
+to diversify the pairs of memory states, intuitively in pursuit of a
+more disentangled representation of long- and short-term dynamics
+in predictive learning.
+The ﬁnal PredRNN model is trained end-to-end in a fully
+unsupervised manner. The overall training objective is:
+Lﬁnal=T+KX
+t=2bXt Xt2
+2+Ldecouple; (6)
+where the ﬁrst term is the frame reconstruction loss that works on
+the network output at each timestep, the second term is the memory
+decoupling regularization from Eq. (5).
+H3H3
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+H1H1X1X1a1a1S1S1
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+H2H2X2X2V2V2a2a2S2S2
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+X3X3V3V3S3S3Fig. 4: Graphical model of the action-conditioned PredRNN. For
+simplicity, we display only one ST-LSTM layer and use Stas the
+combination of the memory states CtandMtin Eq. (7).
+4.3 Action-Conditioned ST-LSTM
+Action-conditioned video prediction models allow for ﬂexibility
+in learning the policies of agent-based decision making systems
+[11,13,26,31,35,80,81]. Inspired by the work of Recur-
+rent Environment Simulator [ 80], we extend ST-LSTMs, which
+can be denoted by ST-LSTM (Xt;Hl
+t 1;Cl
+t 1;Ml 1
+t), to action-
+conditioned video prediction with
+Action fusion:Vl
+t= (WhvHl
+t 1)(WavAt 1)
+Hl
+t;Cl
+t;Ml
+t=ST-LSTM (Xt;Vl
+t;Cl
+t 1;Ml 1
+t);(7)
+whereVl
+tencodes previous hidden state Hl
+t 1and the action
+taken at the previous timestep At 1. In our experiments, Athas
+continuous values and has been transformed to the same resolution
+as the hidden state. By incorporating Vl
+tin each ST-LSTM unit,
+at both encoding and forecasting timesteps, PredRNN learns to
+simulate the consequences of future action sequences over long
+time periods. Different from the original Recurrent Environment
+Simulator, we validate the effectiveness of action-conditioned ST-
+LSTM on a dataset collected with a real robot [13].
+4.4 Training with Reverse Scheduled Sampling
+As shown in Fig. 5, we propose a new curriculum learning strategy
+for PredRNN, which consists of two components:
+Reverse scheduled sampling (RSS) : It is used at the encoding
+timesteps and forces the model to learn more about long-term
+dynamics by randomly hiding real observations with decreasing
+probabilities as the training phase progresses.
+Scheduled sampling (SS) [24]: It is used at the forecasting
+timesteps to alleviate the inconsistency of data ﬂow between the
+training and inference phases.
+Difﬁculty in learning long-term dynamics. We follow the com-
+mon practice [ 26,51] that uses a uniﬁed predictive model f()for
+sequence encoding and forecasting. We use Xin=fX1;:::;XTg
+to denote the context frames and Xout=fXT+1;:::;XT+Kgfor
+ground-truth output frames. We use bXt+1,t2f1;:::;T +K 1g,
+to denote the prediction at each timestep. During inference, as well
+as in the typical training scheme, we have
+bXt+1=(
+f(Xt;Ht 1;St 1)iftT;
+f(bXt;Ht 1;St 1)otherwise;(8)
+whereSt 1=fCt 1;Mt 1grepresents the temporal dynamics
+as a combination of previous memory states. The main difference
+
+==== Page 7 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 7
+ST-LSTMs✓ST-LSTMs✓Sequence Forecaster: Use the true previous frame witha decreasing probability over training iterationsSequence Encoder: Use the true previous frame withan increasing probability εk over training iterations✓……ScheduledsamplingScheduledsamplingXTXT+K 1bXT+K 1bXTbXT+KbXT+2ST-LSTMs✓Reversescheduled samplingXT+1bXT+1bXtST-LSTMs✓Reversescheduled samplingbXt+1
+Xt………bXT+1
+Fig. 5: In the training phase, we apply the reverse scheduled sampling at the encoding timesteps to force the model to learn long-term
+dynamics from context frames. This training scheme can be easily combined with the original scheduled sampling strategy, which is
+used to close the training-inference gap at forecasting timesteps. Both the encoder and the forecaster are parametrized by .
+between the encoding part ( tT) and the forecasting part ( t>T )
+is whether to use the true frame Xtor the previous prediction bXt.
+In the encoder, the model is mainly learned to make a one-step
+prediction, because Xttends to be a more informative signal than
+Ht 1andSt 1, keeping PredRNN from digging deeper into the
+non-Markovian properties of historical observations. But for the
+forecaster, since bXtdoes not contain new observations, the model
+has to learn long-term dynamics from the latter. Such a training
+inconsistency between the encoder and the forecaster may lead
+to an ineffective optimization of and hamper the model from
+learning long-term dynamics from Xin.
+Reverse scheduled sampling. To force the recurrent model to
+learn long-term dynamics from historical observations, we propose
+the reverse scheduled sampling, a curriculum learning strategy
+applied to the input frames at encoding timesteps. At forecasting
+timesteps, we follow the previous literature [ 26,51] to apply the
+original schedule sampling [24] to the inputs. Finally, we have
+bXt+1=(
+f(bXtRSS7  !Xt;Ht 1;St 1)iftT;
+f(XtSS7 !bXt;;Ht 1St 1)otherwise;(9)
+whereRSS7  ! indicates a gradual change throughout the training
+phase from taking the previous prediction bXtas the input to taking
+the true frameXt. At encoding timesteps, the changing schedule
+is in the reverse order of the scheduled sampling strategy denoted
+bySS7 !at forecasting timesteps. Concretely, for RSS, there is a
+probability (k2[0;1]) of sampling the true frame Xt2X inor a
+corresponding probability ( 1 k) of sampling bXt, such that over
+the entire encoder, a sequence of sampling outcomes can be seen as
+a Bernoulli process with Tindependent trials. kis an increasing
+function of the number of training iterations k, starting from s
+and increasing to e, which has the following forms:
+Linear increase: k= minfs+lk;eg;
+Exponential increase: k=e (e s)exp( k
+e);
+Sigmoid increase: k=s+ (e s)1
+1+exp(s k
+s),
+wherel;e;s>0denote the increasing factors and s>0
+denotes the starting point of the sigmoid function. These hyper-
+parameters jointly decide the increasing curve of k. Examples
+of such schemes are shown in Fig. 6 in the red curves. The
+encoder is trained with a progressively simpliﬁed curriculum. It
+gradually changes from generating multi-step future frames, which
+IterationSampling probabilityof linear RSSof exponential RSSof Sigmoid RSSof scheduled sampling
+IterationSampling probability✏k✏k✏k⌘k0.00.20.40.60.81.0
+1.02.03.04.05.0Iteration (10  )4(a) Strategy 1
+IterationSampling probabilityof linear RSSof exponential RSSof Sigmoid RSSof scheduled sampling
+IterationSampling probability✏k✏k✏k⌘k0.00.20.40.60.81.0
+1.02.03.04.05.0Iteration (10  )4 (b) Strategy 2
+Fig. 6: Two feasible strategies to combine the reverse scheduled
+sampling (in red) and the original scheduled sampling (in blue).
+is challenging due to the absence of some historical observations,
+to making one-step predictions, just as the encoder does at test time.
+Such a training scheme encourages the model to extract long-term,
+non-Markovian dynamics from the input sequence.
+Entire training scheme. Fig. 6 shows two feasible strategies to
+jointly use RSS and the original scheduled sampling method, where
+kdenotes the probability of the original scheduled sampling at
+forecasting timesteps. For simplicity, we make kdecay linearly,
+although other scheduled sampling schemes could be employed
+(such as an exponential decay). The biggest difference between the
+two strategies lies in whether the variation ranges of the sampling
+probabilities of encoder and forecaster are close at the early stage
+of training. Empirically, the second strategy performs slightly better
+(as shown in Table 6 in Section 5.2). This suggests that in the early
+training stages, it is helpful to sample true frames with similar
+probabilities in the encoding and forecasting parts of PredRNN.
+Like scheduled sampling, the RSS training strategy can be
+widely used in most sequence-to-sequence models beyond Pre-
+dRNN to enhance the long-term modeling capability.
+5 E XPERIMENTS
+In this section, we evaluate our approach on ﬁve spatiotemporal
+prediction datasets. We strongly encourage readers to view https:
+//github.com/thuml/predrnn-pytorch for the source code.
+5.1 Experimental Setups
+Datasets. We valuate PredRNN on the following datasets for both
+synthetic and real-world scenarios:
+
+==== Page 8 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 8
+1 2 3 4 5 6 7 8 9 10Time020406080100120MSEConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V2ConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V212345678910TimeMSE020406080100120
+(a) Frame-wise MSE ( #)
+1 2 3 4 5 6 7 8 9 10Time0.50.60.70.80.91SSIMConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V2ConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V212345678910TimeSSIM0.50.60.70.80.91.0 (b) Frame-wise SSIM ( ")
+1 2 3 4 5 6 7 8 9 10Time00.050.10.150.2LPIPSConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V2ConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V212345678910TimeLPIPS00.050.100.150.20 (c) Frame-wise LPIPS ( #)
+Fig. 7: Frame-wise results on the Moving MNIST test set produced by models trained on the ﬁxed training set.
+Moving MNIST : This dataset contains handwritten digits that
+are sampled from the static MNIST, placed at random locations,
+and initialized with a random speed. They bounce off the edges
+of the image at a certain angle. For a fair comparison, we follow
+two training setup from ConvLSTM [ 1] and CrevNet [ 28]. In
+the ﬁrst setup, we use a ﬁxed training set of 10;000 samples;
+while in the second one, we generate training data on the ﬂy,
+which provides a larger number of training samples. We use a
+test set of 5;000sequences where the digits are sampled from a
+different subset of static MNIST.
+KTH [82]: This dataset contains 6types of human actions,
+i.e., walking, jogging, running, boxing, hand-waving, and hand-
+clapping, performed by 25persons in 4different scenes. The
+videos last 4seconds on average and have a frame rate of 25FPS.
+We resize the frames to a resolution of 128128. We adopt the
+protocol from [ 57],i.e., persons 1-16for training; persons 17-25
+for testing, and obtain a training set of 108;717sequences and a
+test set of 4;086sequences.
+Radar echo dataset : This dataset contains 10;000consecutive
+radar maps recorded every 6minutes at Guangzhou, China. We
+transform the radar maps to pixel values and represent them as
+128128gray-scale images. We divide the dataset into 7;800
+training sequences and 1;800test sequences.
+Trafﬁc4Cast [83]: This dataset records the GPS trajectories of
+consecutive trafﬁc ﬂows in Berlin, Moscow, and Istanbul in
+the form of video frames in 2019. The size of each frame is
+4954363. The value of each pixel corresponds to the trafﬁc
+information in an area of 100m100m in5minutes, including
+mean speed, volume, and major trafﬁc direction.
+BAIR [13]: This dataset contains the action-conditioned videos
+collected by a Sawyer robotic arm pushing a variety of objects.
+At each timestep, we have a 6464RGB image and the action
+vector of the commanded gripper pose. We have a training set of
+822;016sequences and a test set of 4;864sequences.
+Compared models. We use the ConvLSTM network [ 1] as the
+primary baseline model, and compare PredRNN with the current
+states of the art for each dataset, including:
+CrevNet [28] for Moving MNIST and Trafﬁc4Cast.
+Conv-TT-LSTM [29] for the KTH action dataset.
+TrajGRU [25] for precipitation forecasting.
+SV2P [35] for action-conditioned video prediction.
+Notably, some existing approaches have extended PredRNN in
+different aspects [ 9,27] or use ST-LSTM as the network backbone
+[28]. The differences between them are summarized in Table 1.
+Particularly for these approaches, the proposed contributions ofTABLE 2: Performance on the Moving MNIST test set, averaged
+over10prediction timesteps. All models are trained with a ﬁxed
+training set of 10;000sequences. For a fair comparison, we also
+report the model size and computation efﬁciency. ConvLSTM*
+denotes a 4-layer network with a 256-channel hidden state each.
+ModelMSE SSIM LPIPS #Params. FLOPS Mem.
+(#) (") (#) (MB) (G) (GB)
+ConvLSTM [1] 103.3 0.707 0.156 16.60 80.7 2.58
+ConvLSTM* [1] 62.8 0.846 0.126 65.96 320.8 5.62
+CDNA [26] 97.4 0.721 - - - -
+VPN Baseline [67] 64.1 0.870 - - - -
+MIM [4] 52.0 0.874 0.079 37.37 181.7 4.22
+Conv-TT-LSTM [29] 64.3 0.846 0.133 23.91 116.3 6.17
+PredRNN-M-Only 74.0 0.851 0.109 18.30 89.02 2.37
+PredRNN ( Conf. ) 56.8 0.867 0.107 23.85 115.9 3.52
+PredRNN-V2 48.4 0.891 0.071 23.86 116.6 3.97
+memory decoupling and reverse scheduled sampling are shown
+to be easily combined with them and enable them to approach
+state-of-the-art performance. To facilitate the discussion of ablation
+study, we refer to different versions of PredRNN as:
+PredRNN-M-Only : This model improves the ConvLSTM
+network with the spatiotemporal memory ﬂow ( M). The
+architecture is shown in Fig. 1 (left).
+PredRNN : This model uses ST-LSTMs as the building blocks.
+It was proposed in our conference paper [2].
+PredRNN-V2 : This is the ﬁnal proposed model that improves
+the training process of the original PredRNN with memory
+decoupling and reverse scheduled sampling.
+Implementation details. We use the ADAM optimizer [ 84] to
+train the models with a mini-batch of 2to16sequences according
+to different datasets. Unless otherwise speciﬁed, we set the learning
+rate to 10 4and stop the training process after 80;000iterations.
+We typically use four ST-LSTM layers in PredRNN to strike a
+balance between prediction quality and training efﬁciency. We set
+the number of channels of each hidden state to 128and the size of
+convolutional kernels inside the ST-LSTM unit to 55.
+5.2 Moving MNIST Dataset
+In this dataset, future trajectories of moving digits are predictable
+based on enough historical observations, where part of the challenge
+is to infer the underlying dynamics with random initial velocities.
+Moreover, the frequent occlusion of multiple digits leads to complex
+and short-term variations of local spatial information, which brings
+more difﬁculties to spatiotemporal prediction. We train the models
+to predict the next ten frames given the ﬁrst ten.
+
+==== Page 9 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 9
+Inputframes
+True futureframes
+ConvLSTMNetwork
+Conv-TT-LSTMPredRNN
+t = 12345678910 11121314151617181920
+t = 12345678910 11121314151617181920
+PredRNN-V2
+VPN Baseline
+Fig. 8: Prediction examples on the Moving MNIST test set.
+TABLE 3: We follow the setup of CrevNet to train the predictive
+models on dynamically generated Moving MNIST. The results of
+CrevNet are taken directly from the paper [ 28]. Models marked by
+* have three 64-channel ST-LSTM layers with fewer parameters.
+ModelMSE (#) SSIM (") #Params.
+2-digit 3-digit 2-digit 3-digit (MB)
+CrevNet w/ ConvLSTM 38.5 57.2 0.928 0.886 2.77
+CrevNet w/ ST-LSTM 22.3 40.6 0.949 0.916 5.00
+PredRNN* 21.5 39.6 0.931 0.884 4.40
+PredRNN-V2* 19.9 34.8 0.939 0.900 4.41
+PredRNN 15.7 26.7 0.951 0.918 23.85
+PredRNN-V2 13.4 24.7 0.958 0.928 23.86
+Quantitative results with a ﬁxed training set. Table 2 shows
+the results of all compared models averaged per frame. We adopt
+evaluation metrics that were widely used by previous methods:
+the Mean Squared Error (MSE), the Structural Similarity Index
+Measure (SSIM) [ 85], and the Learned Perceptual Image Patch
+Similarity (LPIPS) [ 86]. The difference between these metrics is
+that MSE estimates the absolute pixel-wise errors, SSIM measures
+the similarity of structural information within the spatial neighbor-
+hoods, while LPIPS is based on deep features and aligns better to
+human perceptions. Fig. 7 provides the corresponding frame-wise
+comparisons. The ﬁnal PredRNN model signiﬁcantly outperforms
+all previous approaches, and all the proposed techniques have their
+contributions. First, with the proposed spatiotemporal memory ﬂow,
+the PredRNN-M-only model reduces the per-frame MSE of the
+ConvLSTM baseline from 103:3down to 74:0. Second, by using
+the ST-LSTM in place of the ConvLSTM unit, our model further
+reduces the MSE down to 56:8. Finally, the employment of the
+memory decoupling and the reverse scheduled sampling techniques
+brings another 14:8%improvement in MSE (from 56:8to48:4). In
+Table 2, we also show the model size, computational efﬁciency, and
+memory usage for the sake of fair comparisons. Note that PredRNN
+performs better and is more efﬁcient than a large version of the
+ConvLSTM network (denoted by ConvLSTM*) with a doubled
+number of channels in the hidden states.
+Quantitative results with a dynamic training set. To further
+compare the performance of PredRNN with the state of the art on
+the Moving MNIST dataset, we follow the experimental setups of
+recent approaches [ 28,67] where models are trained on dynamically
+generated data with two or three ﬂying digits. The training processTABLE 4: An ablation study on the zigzag memory ﬂow. We
+compare the baseline PredRNN with two alternatives that truncate
+the memory ﬂow at speciﬁc positions in the transition path of Ml
+t.
+Model MSE ( #)
+PredRNN (w/o RSS or memory decoupling) 56.8
+- Truncated atM1
+t!:::!ML
+t(bottom-up) 57.6
+- Truncated atML
+t!M1
+t+1(top-down) 59.7
+is stopped after 100;000iterations. As shown in Table 3, PredRNN
+and PredRNN-V2 yield better results than those in Table 2, as they
+can have a better understanding of the spatiotemporal dynamics of
+the dataset with the growth of training steps. Notably, CrevNet also
+uses ST-LSTM as the recurrent unit. According to the results from
+its original text [ 28], it is superior to another ConvLSTM-based
+variant. More importantly, it is shown to be further improved by
+memory decoupling and reverse scheduled sampling.
+Qualitative comparison. Fig. 8 shows two examples randomly
+sampled from the test set, where most of the frames produced by
+the compared models are severely blurred, especially for long-term
+predictions. In contrast, PredRNN produces clearer images, which
+means it can be more certain of future variations due to its stronger
+long-term modeling capabilities. When we look closely, we can
+see that the most challenging issues on this dataset are to make
+accurate predictions of the future trajectories of moving digits
+and to maintain the correct shape of each digit after occlusions
+(in the second example, the compared VPN model incorrectly
+predicts the digit 8as3after the occlusion of 8and0). In both
+cases, the original PredRNN and the newly proposed PredRNN-V2
+progressively improve the quality of the prediction results.
+Ablation studies on the memory ﬂow. To understand the beneﬁt
+of the spatiotemporal memory ﬂow, we compare the performance of
+(i) truncating the bottom-up state transition path of PredRNN from
+M1
+ttoML
+tand (ii) truncating the top-down transition path from
+ML
+ttoM1
+t+1. Fig. 9(a) shows the normalized gradient values ofrH1
+tLT+Kfor1t <20, which demonstrates the beneﬁt
+of the zigzag memory ﬂow in learning long-term data trends due
+to the ability of alleviating the problem of vanishing gradients.
+Table 4 gives the quantitative results in MSE, indicating that the
+top-down transition path contributes more to the ﬁnal performance.
+Furthermore, in Fig. 10, we study the effect of the memory ﬂow
+in long-term modeling by analyzing the saturation ratio among all
+
+==== Page 10 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 10
+1 3 5 7 9 11 13 15 17 19Time00.511.52Gradient NormPredRNNPredRNN wo Top-Bottom M FlowPredRNN wo Vertical M FlowPredRNN
+10357911TimeGradient NormPredRNN w/o the top-down memory ﬂowPredRNN w/o the bottom-up memory ﬂow
+131517190.51.01.52.02.5
+(a)rH1
+tLT+K; t1;T= 10;K= 10
+1 2 3 4 5 6 7 8 9 10Time0.40.60.81Gradient NormPredRNNPredRNN-v1 + rss schedule samplingPredRNN
+110.21213141516TimeGradient NormPredRNN + Reverse scheduled sampling
+171819200.40.60.81.0 (b)1
+T 1PT
+=2rH1Lt; tT+ 1
+Fig. 9: Gradient analyses on the Moving MNIST test set. We use well-trained models and average the results over 100sequences randomly
+sampled from the test set. (a)It presents the gradients of previous states concerning the loss at the last forecasting timestep, showing that
+the proposed memory ﬂow beneﬁts long-term modeling by alleviating the vanishing gradients. (b)It presents the accumulated gradients
+of the encoding states concerning the losses over the forecasting timesteps, showing the importance of RSS in encoding long-term
+dynamics of the inputs. We here use the RSS training strategy with an exponentially increasing k(from Fig. 6(b)). Both PredRNN and
+PredRNN+RSS take as input the historical real observations at encoding timesteps during testing.
+12345678910111213141516171819Time00.10.20.30.40.50.60.70.8Saturated Rate (<0.1)PredRNNPredRNNPredRNNPredRNN12345678910111213141516171819Saturation Ratio (<0.1)00.10.20.30.40.50.60.70.8
+12345678910111213141516171819Time00.10.20.30.40.50.60.70.8Saturated Rate (<0.1)PredRNNPredRNNPredRNNPredRNNTimeConvLSTMConvLSTM + Reverse Schedule SamplingPredRNNPredRNN + Reverse Schedule Sampling
+Fig. 10: An analysis of the ratios of the saturated forget gates
+(ft<0:1) in all transitions of temporal memory states Cl
+t(l2
+f1;2;3;4g). We obtain the results by evaluating 100samples from
+the Moving MNIST test set. The results demonstrate the effect of
+the RSS and the zigzag memory ﬂow in long-term modeling.
+elements in the forget gates ( ft<0:1) for the temporal memory
+cellCl
+t. A high saturation ratio indicates that the model tends to
+block the information ﬂow of long-term trends. Compared with
+ConvLSTM, the spatiotemporal memory ﬂow releases the modeling
+capability ofCl
+tfor long-term dynamics.
+Ablation study on the memory decoupling. To show that memory
+decoupling facilitates both long-term and short-term dependencies,
+as shown in Fig. 11, we make the pixel intensity of the images
+change regularly or irregularly over time. Thanks to the decoupled
+memory cells of ST-LSTMs, our approach can respond to sudden
+changes more rapidly and adapt to video dynamics at different
+timescales. As shown by the purple curves, we also include
+the results of a larger ConvLSTM network with a model size
+signiﬁcantly larger than that of PredRNN+Memory Decoupling
+(65:96MB vs. 23:86MB). Nonetheless, our model responds more
+quickly to the rapidly changing pixel intensity. In Table 5, we use
+the MIM model [ 4], which is also based on the ST-LSTM unit, to
+speciﬁcally show the generality of the memory decoupling loss to
+different network backbones.
+Ablation study on the reverse scheduled sampling. We compare
+different combinations of the original and the reverse scheduled
+sampling techniques. From Table 6, the second strategy in Fig. 6
+with an exponentially increased kperforms best. It is becauseTABLE 5: Effect of memory decoupling and reverse scheduled
+sampling on different network backbones (sorted by publish date).
+Backbone Decoupling RSS MSE ( #) Perf. gain
+ConvLSTM [1]  103.337.8%  64.2
+PredRNN  56.8
+14.8%   51.1
+  48.4
+PredRNN++ [27]  46.53.7%  44.8
+E3D-LSTM [9]  44.24.8%  42.1
+MIM [4]  52.0
+11.9%   47.9
+  45.8
+Conv-TT-LSTM [29]  64.38.2%  59.0
+MotionRNN [71]  52.45.7%  49.4
+TABLE 6: Ablation study on the training schemes. For RSS, k
+changes from stoe. Models are trained w/o the decoupling loss.
+Method se RSS mode MSE ( #)
+PredRNN - - - 57.3
++ Scheduled sampling [24] - - - 56.8
++ 1st strategy in Fig. 6(a) 0.0 1.0Linear 51.8
+Sigmoid 53.9
+Exponential 51.8
++ 2nd strategy in Fig. 6(b) 0.5 1.0Linear 51.9
+Sigmoid 50.9
+Exponential 50.6
+the encoder-forecaster discrepancy can be effectively reduced by
+keeping their probabilities of sampling the true context frames close
+to each other in the early stage of training. To further demonstrate
+that the reverse scheduled sampling can contribute to learning long-
+term dynamics, we perform empirical analyses on the long-term
+gradients in Fig. 9(b) and the saturation ratio of forget gates in
+Fig. 10. For the gradient analysis, we evaluate the gradients of
+the encoder’s hidden states with respect to the loss functions at
+different output timesteps, and average the results over the entire
+
+==== Page 11 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 11
+1112131415161718191Time00.010.020.030.040.050.06MSEInput framesConvLSTM NetworkConvLSTM Network LargePredRNNPredRNN+Memory01020304050607080901000.010.020.030.040.050.06
+TimeMean Value10 20 30 40 50 60 70 80 90Time0.010.020.030.040.050.06Mean ValueInput FramesConvLSTMPredRNN-V1PredRNN-V1+Memory Decoupling
+252729313335…
+t=1…
+100
+10 20 30 40 50 60 70 80 90Time0.010.020.030.040.050.06Mean ValueInput FramesConvLSTMPredRNN-V1PredRNN-V1+Memory Decoupling
+252729313335…
+t=1…
+100
+Time10203040506070809010000.010.020.030.040.06t = 1t = 100253527293133Mean valueInput framesConvLSTM NetworkPredRNN-V1PredRNN-V1 + Memory decoupling10 20 30 40 50 60 70 80 90Time0.010.020.030.040.050.06Mean ValueInput FramesConvLSTMPredRNN-V1PredRNN-V1+Memory Decoupling
+252729313335…
+t=1…
+1000.05
+PredRNNPredRNN + Memory Decoupling1112131415161718191Time00.010.020.030.040.050.06MSEInput framesConvLSTM NetworkConvLSTM Network LargePredRNNPredRNN+MemoryInput FramesConvLSTM (128 channels)ConvLSTM* (256 channels)PredRNNPredRNN+Memory Decoupling
+(a) Responses to sudden step changes
+1112131415161718191Time00.010.020.030.040.05MSEInput framesConvLSTM NetworkConvLSTM Network LargePredRNNPredRNN+Memory01020304050607080901000.010.020.030.040.05
+TimeMean Value1112131415161718191Time00.010.020.030.040.050.06MSEInput framesConvLSTM NetworkConvLSTM Network LargePredRNNPredRNN+MemoryInput FramesConvLSTM (128 channels)ConvLSTM* (256 channels)PredRNNPredRNN+Memory Decoupling10 20 30 40 50 60 70 80 90Time00.010.020.030.040.05Mean ValueInput FramesConvLSTMPredRNN-V1PredRNN-V1+Memory Decoupling
+252729313335
+t=1…
+100…
+10 20 30 40 50 60 70 80 90Time00.010.020.030.040.05Mean ValueInput FramesConvLSTMPredRNN-V1PredRNN-V1+Memory Decoupling
+252729313335
+t=1…
+100…
+Time0.010.020.030.040.05t = 1t = 100253527293133Mean valueInput framesConvLSTM NetworkPredRNN-V1PredRNN-V1 + Memory decoupling10 20 30 40 50 60 70 80 90Time0.010.020.030.040.050.06Mean ValueInput FramesConvLSTMPredRNN-V1PredRNN-V1+Memory Decoupling
+252729313335…
+t=1…
+100
+1020304050607080901000PredRNNPredRNN + Memory Decoupling (b) Responses to long-term and short-term dynamics
+Fig. 11: Model performance under different types of temporal dynamics, where the models take as inputs the real observations at all
+timesteps, and the Y axis represents the mean value of predictions averaged over 100test samples. We show two ground-truth sequences
+as examples at the top of the ﬁgure for a better intuitive understanding of the two types of pixel intensity changes. For each type, we
+apply the same rate of changes to all test samples. With memory-decoupled ST-LSTMs, our model is shown to (a) respond more rapidly
+to unexpected, sudden variations, and (b) simultaneously capture temporal dynamics at different timescales.
+2 4 6 8 10 12 14 16 18 20Time20253035PSNRPredRNN-V2PredRNN-V1Conv-TT-LSTMConvLSTM NetworkConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V2
+2468101214161820TimePSNR20253035
+(a) Frame-wise PSNR ( ")
+2 4 6 8 10 12 14 16 18 20Time0.60.70.80.91SSIMPredRNN-V2PredRNN-V1Conv-TT-LSTMConvLSTM NetworkConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V2
+2468101214161820TimeSSIM0.60.70.80.91.0 (b) Frame-wise SSIM ( ")
+2 4 6 8 10 12 14 16 18 20Time00.050.10.150.20.250.3LPIPSPredRNN-V2PredRNN-V1Conv-TT-LSTMConvLSTM NetworkConvLSTM NetworkConv-TT-LSTMPredRNN-V1PredRNN-V22468101214161820TimeLPIPS00.050.100.150.200.250.30 (c) Frame-wise LPIPS ( #)
+Fig. 12: Frame-wise results on KTH. The prediction horizon is 10timesteps at training time and 20timesteps at test time.
+input sequence:1
+T 1PT
+=2rH1Lt,t2[T+ 1;T+K]. The
+normalized gradient curves show that the context information can
+be encoded more effectively by using reverse scheduled sampling.
+In Fig. 10, we ﬁnd that with RSS, both the ConvLSTM network
+and PredRNN maintain lower saturation ratios for the forget gates
+in the temporal memory cell Cl
+t, which indicates that RSS improves
+the learning process of long-term dynamics.
+Generality of the proposed techniques. Table 5 shows the results
+of applying the proposed techniques to some existing models that
+are also based on convolutional RNNs. It is worth noting that,
+ﬁrst, our original ST-LSTM has been the foundation of some
+recent architectures, thus allowing further improvements introduced
+by memory decoupling. Besides, the proposed reverse scheduled
+sampling method is shown to be a general training approach for
+recurrent models, enabling them to approach the state of the art.
+In particular, although PredRNN++ is also based on ST-LSTMs, it
+only achieves a 3%performance gain. The reason is that, on one
+hand, like RSS, the gradient highway unit of PredRNN++ is also to
+improve the long-term modeling capability; On the other hand, it
+models the state transitions from Cl
+ttoMl
+t, which implicitly allows
+Mto learn new information beyond what has been leaned by C.
+However, the two components mentioned above in PredRNN++
+introduce additional parameters and increase the computational
+burden. In contrast, memory decoupling and RSS increase the
+number of model parameters by a negligible amount but haveTABLE 7: Results on KTH averaged over 20future timesteps.
+Model PSNR ( ") SSIM (") LPIPS (#)
+ConvLSTM [1] 23.58 0.712 0.231
+MCnet + Residual [57] 26.29 0.806 -
+TrajGRU [25] 26.97 0.790 -
+DFN [87] 27.26 0.794 -
+Conv-TT-LSTM [29] 27.62 0.815 0.196
+PredRNN 27.55 0.839 0.204
+PredRNN-V2 28.37 0.838 0.139
+greater beneﬁts for the ﬁnal performance.
+5.3 KTH Action Dataset
+In this dataset, all compared models are trained across the 6action
+categories by predicting 10future frames from 10observations. At
+test time, the prediction horizon is expanded to 20timesteps.
+We adopt the Peak Signal to Noise Ratio (PSNR) from the
+previous literature as the third evaluation metric, in addition to
+SSIM and LPIPS. Like MSE, PSNR also estimates the pixel-level
+similarity of two images (higher is better). The evaluation results
+of different methods are shown in Table 7, and the corresponding
+frame-wise comparisons are shown in Fig. 12, from which we have
+two observations: First, our models show signiﬁcant improvements
+in both short-term and long-term predictions over the ConvLSTM
+network. Second, with the newly proposed memory decoupling and
+
+==== Page 12 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 12
+PredRNNConvLSTMNetworkMCnet + Residual 
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+ConvLSTMNetworkMCnet + Residual PredRNN
+PredRNN-V2
+PredRNN-V2Conv-TT-LSTMConv-TT-LSTM
+Fig. 13: Prediction examples on the KTH test set, where we predict 20frames into the future based on the past 10frames.
+Ground truth & predicted future frames  Input frames PredRNN-V2MIM
+PredRNNConvLSTMNetwork
+TrajGRU
+t = 1101214161820…
+15 dBZ20 dBZ25 dBZ30 dBZ35 dBZ45 dBZ40 dBZ50 dBZGround truth & predicted future frames  Input frames PredRNN-V2MIM
+PredRNNConvLSTMNetwork
+TrajGRU
+t = 1101214161820…
+Fig. 14: Prediction examples on the radar echo test set, in which 10future frames are generated from the past 10observations.
+reverse scheduled sampling, PredRNN-V2 improves the conference
+version by a large margin in LPIPS (from 0.204 to 0.139). As
+mentioned above, LPIPS is more sensitive to perceptual human
+judgments, indicating that PredRNN-V2 has a stronger ability to
+generate high-ﬁdelity images. In accordance with these results, we
+can see from the visual examples in Fig. 13 that our approaches
+(especially PredRNN-V2) obtain more accurate predictions of
+future movement and body details. By decoupling memory states,
+PredRNN-V2 learns to capture the complex spatiotemporal varia-
+tions from different timescales.
+5.4 Precipitation Forecasting from Radar Echoes
+The accurate prediction of the movement of radar echoes in the
+next0-2hours is the foundation of precipitation forecasting. In
+this dataset, each sequence contains 10input frames and 10output
+frames, covering the historical data for the past hour and that for
+the future hour. It is challenging because the echoes tend to have
+non-rigid shapes and may move, accumulate or dissipate rapidly
+due to complex atmospheric physics, which makes it important to
+learn the dynamics in a uniﬁed spatiotemporal feature space.TABLE 8: Quantitative results on the radar echo dataset.
+Model MSE ( #) CSI-30 (") CSI-40 (") CSI-50 (")
+TrajGRU [25] 68.3 0.309 0.266 0.211
+ConvLSTM [1] 63.7 0.381 0.340 0.286
+MIM [4] 39.3 0.451 0.418 0.372
+PredRNN 39.1 0.455 0.417 0.358
+PredRNN-V2 36.4 0.462 0.425 0.378
+TABLE 9: Quantitative results on the Trafﬁc4cast dataset.
+Backbone Recurrent unit Decoupl. RSS MSE ( 10 3)
+U-Net [88] None   6.992
+U-Net + PredRNNST-LSTM  7.035
+ST-LSTM  5.135
+CrevNet [28]ConvLSTM   6.789
+ST-LSTM  6.613
+ST-LSTM  6.506
+In Table 8, we compare PredRNN with three existing methods
+that have been shown effective for precipitation forecasting. Follow-
+
+==== Page 13 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 13
+CrevNet w/ ConvLSTM
+Ground truth (t=12)
+CrevNet w/ ST-LSTM
+U-Net + PredRNN-V2
+Fig. 15: Showcases at the last forecasting timestep on Trafﬁc4cast.
+Please note the differences in areas in the orange and red boxes.
+ing a common practice, we evaluate the predicted radar maps with
+the Critical Success Index (CSI). Concretely, we ﬁrst transform the
+pixel values back to echo intensities in dBZ, and then take 30,40
+and50dBZ as thresholds to compute: CSI=hits
+hits+misses +false alarms,
+where hitsindicates the true positive, misses indicates the false
+positive, and false alarms is the false negative. From Table 8,
+PredRNN consistently achieves the best performance over all CSI
+thresholds. In Fig. 14, we visualize the predicted radar frames by
+mapping them into RGB space, where areas with echo values over
+40dBZ tend to have severe weather.
+5.5 Trafﬁc4Cast Dataset
+We evaluate the proposed methods on Trafﬁc4Cast [ 83], a real-
+world dataset with complex and drastically changing information.
+We follow the experimental setups from CrevNet [ 28], which is
+a competitive model on this dataset and use the data of Berlin to
+construct a training set of 82;080frames and a test set of 2;160
+frames. The models are trained to predict 3future frames from 9
+context frames. All pixel values are normalized to [0;1].
+To cope with high-dimensional input frames, we apply the
+autoencoder architecture of U-Net [ 88] to the network backbone
+of PredRNN. Speciﬁcally, the decoder of U-Net contains four ST-
+LSTM layers, and the CNN encoder takes both trafﬁc ﬂow maps
+and spatiotemporal memory states as inputs. We also apply the
+proposed methods to CrevNet, which uses either ConvLSTM or
+ST-LSTM as the alternatives of recurrent units in the autoencoder
+architecture. Therefore, it can be further improved by memory
+decoupling and reverse scheduled sampling.
+In Table 9, we follow the standard evaluation metric of MSE
+from the competition and have the following observations. Initially,
+the use of ST-LSTM improves the performance of the predictive
+models based on U-Net and CrevNet. Besides, the proposed
+1 4 7 10 13 16 19 22 25 28Time0.750.80.850.90.95MSEConvLSTMSVGSV2PPredrnnPredRNN with v2SVG
+14713102219162528TimeSSIM0.750.80.850.9SV2PPredRNNPredRNN-V20.95ConvLSTM(a) Frame-wise SSIM ( ")
+1 4 7 10 13 16 19 22 25 28Time1820222426MSEConvLSTMSVGSV2PPredrnnPredRNN with v2SVG
+14713102219162528TimePSNR18202224SV2PPredRNNPredRNN-V226ConvLSTM (b) Frame-wise PSNR ( ")
+Fig. 16: Frame-wise SSIM and PSNR on the action-conditioned
+BAIR dataset. Note that the prediction time horizon is 10during
+the training phase and extended to 28during testing phase.
+TABLE 10: Quantitative results on the BAIR robot pushing dataset
+averaged over 28future timesteps in both action-free and action-
+conditioned experimental settings.
+Inputs Model SSIM ( ") PSNR (")
+Action-FreePredRNN 0.536 16.21
+PredRNN-V2 0.577 16.80
+Action-ConditionedConvLSTM [4] 0.807 20.52
+SVG [51] 0.821 19.97
+SV2P [35] 0.837 21.32
+PredRNN 0.843 21.93
+PredRNN-V2 0.861 22.74
+memory decoupling and reverse scheduled sampling achieve further
+improvements over the models based on vanilla ST-LSTMs. Fig. 15
+provides the qualitative comparisons of different variants of our
+methods based on the architecture of CrevNet. As shown in the red
+box att= 11 , the ﬁnal model with memory-decoupled ST-LSTM
+and reverse scheduled sampling predicts the rapid changes of trafﬁc
+ﬂows most accurately.
+5.6 Action-Conditioned BAIR Robot Pushing Dataset
+We evaluate the action-conditioned PredRNN on the BAIR dataset
+that is widely used by previous methods, e.g., SVG [ 51] and SV2P
+[35]. We follow the experimental setups in SV2P to train the
+models to predict 10frames into the future based on the ﬁrst 2
+visual observations, as well as the entire action sequence covering
+both encoding and forecasting timesteps. During the testing phase,
+instead, we extend the prediction time horizon to 28timesteps
+for long-term evaluation. We mainly compare the performance of
+our approach with that of SVG and SV2P, which are competitive
+probabilistic models for stochastic video prediction. Speciﬁcally
+for these models, we draw 100prediction samples from the prior
+distribution given a single testing sequence and report the results
+of the sample with the best SSIM score.
+From Table 10, by comparing the proposed models with the
+action-free PredRNN, we ﬁnd that the action information plays a
+signiﬁcant role in future image generation. The performance of
+action-free PredRNN is mainly affected by the lack of observable
+dynamics due to limited input sequence, as well as the unpredictable
+spatiotemporal changes when future actions are unknown. It can
+be concluded that Eq. (7)provides an effective method to fuse the
+action information into the predictive network.
+More importantly, in Fig. 16, we have the following observa-
+tions. First, the action-conditioned PredRNN and PredRNN-V2
+outperform SVG and SV2P signiﬁcantly, especially for long-term
+
+==== Page 14 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 14
+PredRNNSVG
+t = 12510152025t=30Input frames Ground truth & predicted future frames  
+PredRNN-V2SV2P
+(Zoom In)30
+PredRNNSVG
+PredRNN-V2SV2P
+Fig. 17: Prediction examples on the BAIR dataset, in which 28
+frames are predicted given the ﬁrst 2frames and the entire action
+sequence at both encoding and forecasting timesteps. We zoom in
+the areas bounded by red boxes for clear comparison.
+future prediction. Although probabilistic video prediction is useful
+for many downstream tasks such as epistemic POMDPs with
+implicit partial observability. The results indicate that in our cases
+in the BAIR dataset, the visual observations and action sequences
+provide rich information for future prediction. Second, the proposed
+models signiﬁcantly outperform the action-conditioned ConvLSTM
+network, where we also apply the action fusion operation in
+Eq. (7)to each ConvLSTM unit. Again, the results validate
+the effectiveness of ST-LSTM over ConvLSTM. Third, with
+memory decoupling and RSS, PredRNN-V2 presents a consistent
+improvement over PredRNN and achieves the state of the art.
+Fig. 17 shows the qualitative results, in which our model predicts
+the future position of commanded gripper more precisely and
+largely enriches the details of objects.
+5.7 Model Limitations
+To explore on what conditions the proposed model contributes the
+most, we visualize the examples that have comparable quantitative
+results in SSIM and MSE with the second-best models on the KTH,
+radar, and BAIR datasets. As shown in Fig. 18, on KTH and BAIR,
+i.e., datasets with clear visual structures, PredRNN-V2 signiﬁcantly
+outperforms the other models in the visual quality of the generated
+future images. It makes more accurate predictions about future
+positions of the character (for KTH) and the robot arm (for BAIR).
+However, as for the radar echo dataset, Fig. 18 reveals the limitation
+of our approach in dealing with the special cases of the long-tail
+distribution of the dataset. In these cases, the radar observations
+Conv-TT-LSTMSSIM: 0.797
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+Conv-TT-LSTMSSIM: 0.848
+PredRNN-V2SSIM: 0.800
+PredRNN-V2SSIM: 0.846
+Conv-TT-LSTMSSIM: 0.915
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+PredRNN-V2SSIM: 0.917
+SVGSSIM: 0.787
+PredRNN-V2SSIM: 0.788
+t = 12510152025t=30Input frames Ground truth & predicted future frames  (Zoom In)30
+Conv-TT-LSTMSSIM: 0.797
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+Conv-TT-LSTMSSIM: 0.848
+PredRNN-V2SSIM: 0.800
+PredRNN-V2SSIM: 0.846
+Conv-TT-LSTMSSIM: 0.797
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+t = 6912151821242730Input frames Ground truth & predicted future frames  
+Conv-TT-LSTMSSIM: 0.848
+PredRNN-V2SSIM: 0.800
+PredRNN-V2SSIM: 0.846Ground truth & predicted future frames  Input frames PredRNN-V2MSE: 142.3
+MIMMSE: 141.2
+t = 1101214161820…Ground truth & predicted future frames  Input frames PredRNN-V2MSE: 79.8
+MIMMSE: 80.8
+t = 1101214161820…Fig. 18: Examples that PredRNN-V2 yields comparable quantitative
+results with the previous art.
+show very sparse but still signiﬁcant areas of high intensity echoes.
+Although PredRNN-V2 still achieves a better performance than
+the compared model in the forecast of future positions of the high-
+intensity areas, it cannot perfectly model the dynamics of the sparse
+echoes. Precipitation nowcasting is an extremely difﬁcult research
+problem for existing spatiotemporal predictive learning approaches.
+A future research direction for mitigating the long-tail effect is to
+explicitly consider the complex physical properties and combine
+them with deep learning models.
+6 C ONCLUSION
+In this paper, we propose a recurrent network named PredRNN for
+spatiotemporal predictive learning. With a new Spatiotemporal
+LSTM unit, PredRNN models the short-term deformations in
+spatial appearance and the long-term dynamics over multiple
+frames simultaneously. The core of the Spatiotemporal LSTM
+is a zigzag memory ﬂow that propagates across stacked recurrent
+layers vertically and through all temporal states horizontally, which
+enables the interactions of the hierarchical memory representations
+at different levels of PredRNN. Building upon the conference
+version of this paper, we introduce a new method to decouple
+the twisted memory states along the horizontal and the zigzag
+pathway of recurrent state transitions. It enables the model to
+beneﬁt from learning distributed representations that could cover
+different aspects of spatiotemporal variations. Furthermore, we
+
+==== Page 15 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 15
+also propose a new curriculum learning strategy named reverse
+scheduled sampling, which forces the encoding part of PredRNN to
+learn temporal dynamics from longer periods of the context frames.
+Our approach achieves state-of-the-art performance on synthetic
+and natural spatiotemporal datasets, including both action-free and
+action-conditioned predictive learning scenarios.
+ACKNOWLEDGMENTS
+This work was supported by the National Natural Science Foun-
+dation of China (62022050, 62106144 and 62021002). M. Long
+was supported by Beijing Nova Program (Z201100006820041)
+and BNRist Innovation Fund (BNR2021RC01002). Y . Wang
+was supported by Shanghai Municipal Science and Technology
+Major Project (2021SHZDZX0102) and Shanghai Sailing Program
+(21Z510202133). The work was in part done when Y . Wang was
+a student at Tsinghua University. Y . Wang and H. Wu contributed
+equally to this work.
+REFERENCES
+[1] X. Shi, Z. Chen, H. Wang, D.-Y . Yeung, W.-K. Wong, and W.-
+c. Woo, “Convolutional LSTM network: A machine learning
+approach for precipitation nowcasting,” in NeurIPS , 2015, pp.
+802–810.
+[2] Y . Wang, M. Long, J. Wang, Z. Gao, and S. Y . Philip,
+“PredRNN: Recurrent neural networks for predictive learning
+using spatiotemporal lstms,” in NeurIPS , 2017, pp. 879–888.
+[3] Z. Xu, Y . Wang, M. Long, and J. Wang, “PredCNN: Predictive
+learning with cascade convolutions,” in IJCAI , 2018, pp. 2940–
+2947.
+[4] Y . Wang, J. Zhang, H. Zhu, M. Long, J. Wang, and P. S. Yu,
+“Memory in memory: A predictive neural network for learning
+higher-order non-stationarity from spatiotemporal dynamics,”
+inCVPR , 2019, pp. 9154–9162.
+[5] J. Wu, E. Lu, P. Kohli, B. Freeman, and J. Tenenbaum,
+“Learning to see physics via visual de-animation,” in NeurIPS ,
+2017, pp. 153–164.
+[6] S. Van Steenkiste, M. Chang, K. Greff, and J. Schmidhuber,
+“Relational neural expectation maximization: Unsupervised
+discovery of objects and their interactions,” in ICLR , 2018.
+[7] T. Kipf, E. Fetaya, K.-C. Wang, M. Welling, and R. Zemel,
+“Neural relational inference for interacting systems,” in ICML ,
+2018, pp. 2688–2697.
+[8] Z. Xu, Z. Liu, C. Sun, K. Murphy, W. T. Freeman, J. B.
+Tenenbaum, and J. Wu, “Unsupervised discovery of parts,
+structure, and dynamics,” in ICLR , 2019.
+[9] Y . Wang, L. Jiang, M.-H. Yang, L.-J. Li, M. Long, and L. Fei-
+Fei, “Eidetic 3D LSTM: A model for video prediction and
+beyond,” in ICLR , 2019.
+[10] D. Ha and J. Schmidhuber, “Recurrent world models facilitate
+policy evolution,” in NeurIPS , 2018, pp. 2450–2462.
+[11] D. Hafner, T. Lillicrap, I. Fischer, R. Villegas, D. Ha, H. Lee,
+and J. Davidson, “Learning latent dynamics for planning from
+pixels,” in ICML , 2019, pp. 2555–2565.
+[12] C. Finn and S. Levine, “Deep visual foresight for planning
+robot motion,” in ICRA , 2017, pp. 2786–2793.
+[13] F. Ebert, C. Finn, A. X. Lee, and S. Levine, “Self-supervised
+visual planning with temporal skip connections,” in CoRL ,
+2017.[14] D. E. Rumelhart, G. E. Hinton, and R. J. Williams, “Learn-
+ing representations by back-propagating errors,” Cognitive
+modeling , vol. 5, no. 3, p. 1, 1988.
+[15] P. J. Werbos, “Backpropagation through time: what it does
+and how to do it,” Proceedings of the IEEE , vol. 78, no. 10,
+pp. 1550–1560, 1990.
+[16] S. Hochreiter and J. Schmidhuber, “Long short-term memory,”
+Neural computation , vol. 9, no. 8, pp. 1735–1780, 1997.
+[17] I. Sutskever, J. Martens, and G. E. Hinton, “Generating text
+with recurrent neural networks,” in ICML , 2011.
+[18] K. Cho, B. Van Merri ¨enboer, D. Bahdanau, and Y . Bengio,
+“On the properties of neural machine translation: Encoder-
+decoder approaches,” arXiv preprint arXiv:1409.1259 , 2014.
+[19] A. Graves and N. Jaitly, “Towards end-to-end speech recogni-
+tion with recurrent neural networks,” in ICML , 2014.
+[20] J. Yue-Hei Ng, M. Hausknecht, S. Vijayanarasimhan,
+O. Vinyals, R. Monga, and G. Toderici, “Beyond short
+snippets: Deep networks for video classiﬁcation,” in CVPR ,
+2015, pp. 4694–4702.
+[21] J. Donahue, L. Anne Hendricks, S. Guadarrama, M. Rohrbach,
+S. Venugopalan, K. Saenko, and T. Darrell, “Long-term
+recurrent convolutional networks for visual recognition and
+description,” in CVPR , 2015, pp. 2625–2634.
+[22] R. Pascanu, G. Montufar, and Y . Bengio, “On the number of
+response regions of deep feed forward networks with piece-
+wise linear activations,” arXiv preprint arXiv:1312.6098 ,
+2013.
+[23] I. Sutskever, O. Vinyals, and Q. V . Le, “Sequence to sequence
+learning with neural networks,” in NeurIPS , 2014, pp. 3104–
+3112.
+[24] S. Bengio, O. Vinyals, N. Jaitly, and N. Shazeer, “Scheduled
+sampling for sequence prediction with recurrent neural
+networks,” in NeurIPS , 2015, pp. 1171–1179.
+[25] X. Shi, Z. Gao, L. Lausen, H. Wang, D.-Y . Yeung, W.-k. Wong,
+and W.-c. Woo, “Deep learning for precipitation nowcasting:
+A benchmark and a new model,” in NeurIPS , 2017, pp. 5617–
+5627.
+[26] C. Finn, I. Goodfellow, and S. Levine, “Unsupervised learning
+for physical interaction through video prediction,” in NeurIPS ,
+2016, pp. 64–72.
+[27] Y . Wang, Z. Gao, M. Long, J. Wang, and P. S. Yu, “Pre-
+dRNN++: Towards a resolution of the deep-in-time dilemma
+in spatiotemporal predictive learning,” in ICML , 2018, pp.
+5123–5132.
+[28] W. Yu, Y . Lu, S. Easterbrook, and S. Fidler, “Efﬁcient and
+information-preserving future frame prediction and beyond,”
+inICLR , 2020.
+[29] J. Su, W. Byeon, F. Huang, J. Kautz, and A. Anandkumar,
+“Convolutional tensor-train LSTM for spatio-temporal learn-
+ing,” in NeurIPS , 2020.
+[30] S. Oprea, P. Martinez-Gonzalez, A. Garcia-Garcia, J. A.
+Castro-Vargas, S. Orts-Escolano, J. Garcia-Rodriguez, and
+A. Argyros, “A review on deep learning techniques for
+video prediction,” IEEE Transactions on Pattern Analysis
+and Machine Intelligence , 2020.
+[31] J. Oh, X. Guo, H. Lee, R. L. Lewis, and S. Singh, “Action-
+conditional video prediction using deep networks in atari
+games,” in NeurIPS , 2015, pp. 2863–2871.
+[32] M. Mathieu, C. Couprie, and Y . LeCun, “Deep multi-scale
+video prediction beyond mean square error,” in ICLR , 2016.
+[33] S. Tulyakov, M.-Y . Liu, X. Yang, and J. Kautz, “MoCoGAN:
+
+==== Page 16 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 16
+Decomposing motion and content for video generation,” in
+CVPR , 2018, pp. 1526–1535.
+[34] N. Srivastava, E. Mansimov, and R. Salakhudinov, “Unsu-
+pervised learning of video representations using LSTMs,” in
+ICML , 2015, pp. 843–852.
+[35] M. Babaeizadeh, C. Finn, D. Erhan, R. H. Campbell, and
+S. Levine, “Stochastic variational video prediction,” in ICLR ,
+2018.
+[36] D. Weissenborn, O. T ¨ackstr ¨om, and J. Uszkoreit, “Scaling
+autoregressive video models,” in ICLR , 2019.
+[37] M. Kumar, M. Babaeizadeh, D. Erhan, C. Finn, S. Levine,
+L. Dinh, and D. Kingma, “Videoﬂow: A ﬂow-based generative
+model for video,” in ICLR , 2020.
+[38] T. Xue, J. Wu, K. Bouman, and B. Freeman, “Visual dynamics:
+Probabilistic future frame synthesis via cross convolutional
+networks,” in NeurIPS , 2016.
+[39] J. Zhang, Y . Zheng, and D. Qi, “Deep spatio-temporal residual
+networks for citywide crowd ﬂows prediction.” in AAAI , 2017,
+pp. 1655–1661.
+[40] I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-
+Farley, S. Ozair, A. Courville, and Y . Bengio, “Generative
+adversarial nets,” in NeurIPS , 2014, pp. 2672–2680.
+[41] E. Denton, S. Chintala, R. Fergus et al. , “Deep generative
+image models using a Laplacian pyramid of adversarial
+networks,” in NeurIPS , 2015, pp. 1486–1494.
+[42] P. Bhattacharjee and S. Das, “Temporal coherency based
+criteria for predicting video frames using deep multi-stage
+generative adversarial networks,” in NeurIPS , 2017, pp. 4271–
+4280.
+[43] X. Liang, L. Lee, W. Dai, and E. P. Xing, “Dual motion GAN
+for future-ﬂow embedded video prediction,” in ICCV , 2017,
+pp. 1744–1752.
+[44] Y . Wu, R. Gao, J. Park, and Q. Chen, “Future video synthesis
+with object motion prediction,” in CVPR , 2020, pp. 5539–
+5548.
+[45] S. Gur, S. Benaim, and L. Wolf, “Hierarchical patch vae-gan:
+Generating diverse videos from a single sample,” in NeurIPS ,
+2020.
+[46] B. Liu, Y . Chen, S. Liu, and H.-S. Kim, “Deep learning in
+latent space for video prediction and compression,” in CVPR ,
+2021, pp. 701–710.
+[47] M. Ranzato, A. Szlam, J. Bruna, M. Mathieu, R. Collobert,
+and S. Chopra, “Video (language) modeling: a baseline
+for generative models of natural videos,” arXiv preprint
+arXiv:1412.6604 , 2014.
+[48] R. Villegas, J. Yang, Y . Zou, S. Sohn, X. Lin, and H. Lee,
+“Learning to generate long-term future via hierarchical predic-
+tion,” in ICML , 2017, pp. 3560–3569.
+[49] N. Wichers, R. Villegas, D. Erhan, and H. Lee, “Hierarchical
+long-term video prediction without supervision,” in ICML ,
+2018, pp. 6038–6046.
+[50] T. Kim, S. Ahn, and Y . Bengio, “Variational temporal
+abstraction,” NeurIPS , vol. 32, pp. 11 570–11 579, 2019.
+[51] E. Denton and R. Fergus, “Stochastic video generation with a
+learned prior,” in ICML , 2018, pp. 1174–1183.
+[52] A. X. Lee, R. Zhang, F. Ebert, P. Abbeel, C. Finn, and
+S. Levine, “Stochastic adversarial video prediction,” arXiv
+preprint arXiv:1804.01523 , 2018.
+[53] R. Villegas, A. Pathak, H. Kannan, D. Erhan, Q. V . Le, and
+H. Lee, “High ﬁdelity video prediction with large stochastic
+recurrent neural networks,” in NeurIPS , 2019, pp. 81–91.[54] L. Castrejon, N. Ballas, and A. Courville, “Improved condi-
+tional vrnns for video prediction,” in ICCV , 2019, pp. 7608–
+7617.
+[55] J.-Y . Franceschi, E. Delasalles, M. Chen, S. Lamprier, and
+P. Gallinari, “Stochastic latent residual video prediction,” in
+ICML , 2020, pp. 3233–3246.
+[56] B. Wu, S. Nair, R. Martin-Martin, L. Fei-Fei, and C. Finn,
+“Greedy hierarchical variational autoencoders for large-scale
+video prediction,” in CVPR , 2021, pp. 2318–2328.
+[57] R. Villegas, J. Yang, S. Hong, X. Lin, and H. Lee, “Decompos-
+ing motion and content for natural video sequence prediction,”
+inICLR , 2017.
+[58] X. Bei, Y . Yang, and S. Soatto, “Learning semantic-aware
+dynamics for video prediction,” in CVPR , 2021, pp. 902–912.
+[59] E. Denton and V . Birodkar, “Unsupervised learning of
+disentangled representations from video,” in NeurIPS , 2017,
+pp. 4417–4426.
+[60] J.-T. Hsieh, B. Liu, D.-A. Huang, L. F. Fei-Fei, and J. C.
+Niebles, “Learning to decompose and disentangle representa-
+tions for video prediction,” in NeurIPS , 2018, pp. 517–526.
+[61] N. Bodla, G. Shrivastava, R. Chellappa, and A. Shrivastava,
+“Hierarchical video prediction using relational layouts for
+human-object interactions,” in CVPR , 2021.
+[62] P. Zablotskaia, E. A. Dominici, L. Sigal, and A. M. Lehrmann,
+“Unsupervised video decomposition using spatio-temporal
+iterative inference,” arXiv preprint arXiv:2006.14727 , 2020.
+[63] K. Greff, R. L. Kaufman, R. Kabra, N. Watters, C. Burgess,
+D. Zoran, L. Matthey, M. Botvinick, and A. Lerchner,
+“Multi-object representation learning with iterative variational
+inference,” in International Conference on Machine Learning .
+PMLR, 2019, pp. 2424–2433.
+[64] V . L. Guen and N. Thome, “Disentangling physical dynamics
+from unknown factors for unsupervised video prediction,” in
+CVPR , 2020.
+[65] V . Patraucean, A. Handa, and R. Cipolla, “Spatio-temporal
+video autoencoder with differentiable memory,” in ICLR
+Workshop , 2016.
+[66] W. Lotter, G. Kreiman, and D. Cox, “Deep predictive coding
+networks for video prediction and unsupervised learning,” in
+ICLR , 2017.
+[67] N. Kalchbrenner, A. Oord, K. Simonyan, I. Danihelka,
+O. Vinyals, A. Graves, and K. Kavukcuoglu, “Video pixel
+networks,” in ICML , 2017, pp. 1771–1779.
+[68] W. Byeon, Q. Wang, R. Kumar Srivastava, and P. Koumout-
+sakos, “Contextvp: Fully context-aware video prediction,” in
+ECCV , 2018, pp. 753–769.
+[69] M. Oliu, J. Selva, and S. Escalera, “Folded recurrent neural
+networks for future video prediction,” in ECCV , 2018, pp.
+716–731.
+[70] J. Xu, B. Ni, Z. Li, S. Cheng, and X. Yang, “Structure
+preserving video prediction,” in CVPR , 2018, pp. 1460–1469.
+[71] H. Wu, Z. Yao, J. Wang, and M. Long, “Motionrnn: A ﬂexible
+model for video prediction with spacetime-varying motions,”
+inCVPR , 2021.
+[72] A. Graves, G. Wayne, and I. Danihelka, “Neural turing
+machines,” arXiv preprint arXiv:1410.5401 , 2014.
+[73] S. Sukhbaatar, J. Weston, R. Fergus et al. , “End-to-end
+memory networks,” in NeurIPS , 2015, pp. 2440–2448.
+[74] A. Graves, G. Wayne, M. Reynolds, T. Harley, I. Danihelka,
+A. Grabska-Barwi ´nska, S. G. Colmenarejo, E. Grefenstette,
+T. Ramalho, J. Agapiou et al. , “Hybrid computing using a
+
+==== Page 17 ====
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE, VOL. XX, NO. X, MARCH 2021 17
+neural network with dynamic external memory,” Nature , vol.
+538, no. 7626, pp. 471–476, 2016.
+[75] G. E. Hinton, “Distributed representations,” 1984.
+[76] S. Bengio and Y . Bengio, “Taking on the curse of dimen-
+sionality in joint distributions using neural networks,” IEEE
+Transactions on Neural Networks , vol. 11, no. 3, pp. 550–557,
+2000.
+[77] L. v. d. Maaten and G. Hinton, “Visualizing data using t-SNE,”
+Journal of machine learning research , vol. 9, no. Nov, pp.
+2579–2605, 2008.
+[78] A. Krogh and J. Vedelsby, “Neural network ensembles, cross
+validation, and active learning,” in NeurIPS , 1995, pp. 231–
+238.
+[79] Z.-H. Zhou, “Ensemble learning.” Encyclopedia of biometrics ,
+vol. 1, pp. 270–273, 2009.
+[80] S. Chiappa, S. Racaniere, D. Wierstra, and S. Mohamed,
+“Recurrent environment simulators,” in ICLR , 2017.
+[81] D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi, “Dream to
+control: Learning behaviors by latent imagination,” in ICLR ,
+2020.
+[82] C. Schuldt, I. Laptev, and B. Caputo, “Recognizing human
+actions: a local svm approach,” in ICPR , 2004.
+[83] IARAI, “Trafﬁc4cast 2019: Trafﬁc map movie forecasting.”
+https://www.iarai.ac.at/trafﬁc4cast/2019-competition/, 2019.
+[84] D. Kingma and J. Ba, “Adam: A method for stochastic
+optimization,” in ICLR , 2015.
+[85] Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli,
+“Image quality assessment: from error visibility to structural
+similarity,” IEEE transactions on image processing , vol. 13,
+no. 4, pp. 600–612, 2004.
+[86] R. Zhang, P. Isola, A. A. Efros, E. Shechtman, and O. Wang,
+“The unreasonable effectiveness of deep features as a percep-
+tual metric,” in CVPR , 2018, pp. 586–595.
+[87] B. De Brabandere, X. Jia, T. Tuytelaars, and L. Van Gool,
+“Dynamic ﬁlter networks,” in NeurIPS , 2016, pp. 667–675.
+[88] O. Ronneberger, P. Fischer, and T. Brox, “U-Net: Convo-
+lutional networks for biomedical image segmentation,” in
+MICCAI , 2015.
+Yunbo Wang received the BE degree from Xi’an
+Jiaotong University in 2012, and the ME and
+PhD degrees from Tsinghua University in 2015
+and 2020. He received the CCF Outstanding
+Doctoral Dissertation Award in 2020, advised by
+Philip S. Yu and Mingsheng Long. He is now an
+assistant professor at the AI Institute and the De-
+partment of Computer Science at Shanghai Jiao
+Tong University. He does research in deep learn-
+ing, especially predictive learning, spatiotemporal
+modeling, and model-based decision making.
+Haixu Wu received the BE degree in computer
+software from Tsinghua University in 2020. He
+is working towards the ME degree in computer
+software at Tsinghua University. His research
+interests include machine learning and computer
+vision.
+Jianjin Zhang received the ME degree in com-
+puter software from Tsinghua University in 2019.
+His research interests lie on the intersection
+of machine learning, time series analysis, and
+natural language processing.
+Zhifeng Gao received the ME degree in com-
+puter software from Tsinghua University in 2019.
+His research interests include machine learning
+and big data systems.
+Jianmin Wang received the BE degree from
+Peking University, China, in 1990, and the ME
+and PhD degrees in computer software from
+Tsinghua University, China, in 1992 and 1995,
+respectively. He is a full professor with the School
+of Software, Tsinghua University. His research
+interests include big data management systems
+and large-scale data analytics. He led to develop
+a product data & lifecycle management system,
+which has been deployed in hundreds of enter-
+prises in China. He is leading to develop a big
+data platform in the National Engineering Lab for Big Data Software.
+Philip S. Yu received his BS in electrical engi-
+neering from the National Taiwan University, and
+his MS and PhD also in electrical engineering
+from Stanford University in 1978. He is a Dis-
+tinguished Professor at the University of Illinois
+at Chicago and Tsinghua University. Yu holds
+over 300 US patents, is ACM Fellow and IEEE
+Fellow, is Editor-in-Chief of ACM Transactions on
+Knowledge Discovery from Data, and has been
+awarded several awards by IBM and the IEEE.
+Yu’s research interests are in the ﬁelds of data
+mining, social network, privacy preserving data publishing, data stream,
+database systems, and Internet applications and technologies.
+Mingsheng Long received the BE degree in
+electrical engineering and the PhD degree in
+computer science from Tsinghua University in
+2008 and 2014 respectively. He was a visiting
+researcher in computer science, UC Berkeley
+from 2014 to 2015. He is an associate professor
+with the School of Software, Tsinghua University.
+He serves as Area Chairs of major machine
+learning conferences (ICML, NeurIPS, and ICLR).
+His research is persistently dedicated to theories
+and algorithms of machine learning, with special
+interests in transfer, adaptation, and data-efﬁcient learning, foundation
+deep models, learning with spatiotemporal and scientiﬁc knowledge.
+

@@ -1,0 +1,1614 @@
+==== Page 1 ====
+1
+Discrimination-aware Network Pruning
+for Deep Model Compression
+Jing Liu, Bohan Zhuang, Zhuangwei Zhuang, Y ong Guo, Junzhou Huang, Jinhui Zhu, Mingkui Tany
+Abstract —We study network pruning which aims to remove redundant channels/kernels and hence speed up the inference of deep
+networks. Existing pruning methods either train from scratch with sparsity constraints or minimize the reconstruction error between
+the feature maps of the pre-trained models and the compressed ones. Both strategies suffer from some limitations: the former kind is
+computationally expensive and difﬁcult to converge, while the latter kind optimizes the reconstruction error but ignores the discriminative
+power of channels. In this paper, we propose a simple-yet-effective method called discrimination-aware channel pruning (DCP) to choose
+the channels that actually contribute to the discriminative power. To this end, we ﬁrst introduce additional discrimination-aware losses
+into the network to increase the discriminative power of the intermediate layers. Next, we select the most discriminative channels for
+each layer by considering the discrimination-aware loss and the reconstruction error, simultaneously. We then formulate channel pruning
+as a sparsity-inducing optimization problem with a convex objective and propose a greedy algorithm to solve the resultant problem.
+Note that a channel (3D tensor) often consists of a set of kernels (each with a 2D matrix). Besides the redundancy in channels, some
+kernels in a channel may also be redundant and fail to contribute to the discriminative power of the network, resulting in kernel level
+redundancy. To solve this issue, we propose a discrimination-aware kernel pruning (DKP) method to further compress deep networks by
+removing redundant kernels. To avoid manually determining the pruning rate for each layer, we propose two adaptive stopping conditions
+to automatically determine the number of selected channels/kernels. The proposed adaptive stopping conditions tend to yield more
+efﬁcient models with better performance in practice. Extensive experiments on both image classiﬁcation and face recognition demonstrate
+the effectiveness of our methods. For example, on ILSVRC-12, the resultant ResNet-50 model with 30% reduction of channels even
+outperforms the baseline model by 0.36% in terms of Top-1 accuracy. We also deploy the pruned models on a smartphone (equipped with
+a Qualcomm Snapdragon 845 processor). The pruned MobileNetV1 and MobileNetV2 achieve 1.93 and 1.42inference acceleration
+on the mobile device, respectively, with negligible performance degradation. The source code and the pre-trained models are available at
+https://github.com/SCUT -AILab/DCP.
+Index Terms —Channel Pruning, Kernel Pruning, Network Compression, Deep Neural Networks.
+F
+1 I NTRODUCTION
+SINCE 2012, deep neural networks (DNNs) have achieved
+great success in many computer vision tasks, e.g., image
+classiﬁcation [20], [35], [68], face recognition [9], [62], [69], object
+detection [43], [59], [60], image generation [5], [12], [14] and video
+analysis [64], [77], [84]. However, the large model size and high
+computational costs remain great obstacles for many applications,
+especially on some constrained devices with limited memory
+and computational resources. To address this problem, model
+compression is an effective approach, which aims to reduce the
+model redundancy without signiﬁcant degeneration in performance.
+Recent studies on model compression mainly contain three
+categories: quantization [18], [58], [86], sparse or low-rank com-
+pression [16], [18], [85], and network pruning [45], [50], [80], [82].
+Network quantization seeks to represent weights and activations
+Jing Liu is with the School of Software Engineering, South China University
+of Technology and also with the Key Laboratory of Big Data and Intelligent
+Robot (South China University of Technology), Ministry of Education.
+E-mail: seliujing@mail.scut.edu.cn
+Zhuangwei Zhuang, Yong Guo, Jinhui Zhu, and Mingkui Tan are with the
+School of Software Engineering, South China University of Technology.
+Mingkui Tan is also with the Pazhou Laboratory, Guangzhou, China.
+E-mail:fz.zhuangwei, guo.yong g@mail.scut.edu.cn, fcsjhzhu, mingkui-
+tang@scut.edu.cn.
+Bohan Zhuang is with the Faculty of Information Technology, Monash
+University, Australia. E-mail: bohan.zhuang@monash.edu.
+Junzhou Huang is with Tencent AI Lab, Shenzhen, Guangdong, China.
+E-mail: joehhuang@tencent.com.
+Authors contributed equally.yCorresponding author.with low bitwidth ﬁxed-point integers, thus convolution opera-
+tions can be implemented by efﬁcient XNOR-popcount bitwise
+operations for substantial speedup. However, the training can be
+very difﬁcult since the non-differentiable quantizer that transforms
+the continuous weights/activations into the discrete ones would
+inevitably bring errors and hamper the model performance [58].
+Sparse connections methods can obtain a high compression rate
+in theory, but they may generate irregular convolutional kernels
+that need carefully designed sparse matrix operations. Low-rank
+compression methods seek to approximate the original ﬁlters of
+a pre-trained model with low-rank ﬁlters. Nevertheless, they are
+often inefﬁcient for the convolutions with small kernels sizes, e.g.,
+11[71]. In contrast, network pruning reduces the model size
+and speeds up the inference by removing the redundant modules
+(channels [24], [45], [91] or kernels [2], [52]). In particular, channel
+pruning can be well supported by existing deep learning libraries
+with little additional effort compared with network quantization and
+sparse or low-rank connections. More critically, most compression
+methods, such as quantization, can be easily applied on top of
+network pruning. For example, pruning redundant channels/kernels
+is able to further reduce the model size and accelerate the
+inference speed of the quantized models by reducing the number
+of parameters [18].
+In network pruning, how to identify the informative (or im-
+portant) channels/kernels (also known as channel/kernel selection)
+is an important problem. Existing methods can be divided into
+two categories, namely, training-from-scratch methods [1], [45],arXiv:2001.01050v2  [cs.CV]  29 Mar 2021
+
+==== Page 2 ====
+2
+[78] and reconstruction-based methods [24], [26], [38], [50].
+Training-from-scratch methods directly learn the importance of
+channels/kernels with sparsity regularization, but it is very difﬁcult
+to train very deep networks on large-scale datasets [1], [45]. The
+reconstruction-based methods seek to perform network pruning
+by minimizing the reconstruction error of feature maps between
+the pruned model and the pre-trained one [24], [50]. However, the
+performance is highly affected by the quality of the pre-trained
+model. If the pre-trained model is not well trained, the pruning
+performance can be limited. More importantly, these methods
+suffer from a critical limitation: the redundant channels/kernels
+may be mistakenly kept to minimize the reconstruction error of
+feature maps. Consequently, these methods may incur severe
+performance degradation on more compact and deeper models,
+such as MobileNet [25], [61] for large-scale datasets.
+In this paper, we aim to overcome the drawbacks of both
+strategies. In contrast to existing methods [24], [26], [38], [50],
+we assume and highlight that an informative channel/kernel, no
+matter where it is, should have sufﬁcient discriminative power;
+otherwise, it should be removed. Based on this intuition, we propose
+a discrimination-aware channel pruning (DCP) method to ﬁnd the
+channels that actually contribute to the discriminative power of the
+network. In DCP, relying on a pre-trained model, we ﬁrst introduce
+multiple additional discrimination-aware losses into the network
+to increase the discriminative power of the intermediate layers.
+Then, we perform channel selection to ﬁnd the most discriminative
+channels for each layer by considering both the discrimination-
+aware loss and the reconstruction error of feature maps. In this way,
+we are able to make a balance between the discriminative power of
+the channels and feature maps reconstruction. Note that a channel
+(3D tensor) consists of a set of kernels (each with a 2D matrix). In
+practice, some kernels in the selected channels may be redundant
+and fail to contribute to the discriminative power of the network,
+which leads to kernel level redundancy. To solve this issue, we
+propose a discrimination-aware kernel pruning (DKP) method to
+ﬁnd the kernels with discriminative power.
+Our main contributions are summarized as follows.
+We propose a discrimination-aware channel/kernel pruning
+(DCP/DKP) scheme to compress deep models with the
+introduction of additional discrimination-aware losses. The
+proposed methods ﬁrst ﬁne-tune the model with the additional
+losses and the ﬁnal objective. Then, we conduct channel/kernel
+selection by simultaneously considering the additional loss
+and the reconstruction error of feature maps. In this way,
+the proposed method is able to ﬁnd the channels/kernels that
+actually contribute to the discriminative power of the network.
+We formulate the channel/kernel selection problem as a
+constrained optimization problem and propose a greedy
+method by solving the resultant convex optimization problem
+to select informative channels/kernels.
+We propose a new adaptive stopping condition to prevent
+DCP/DKP from selecting too many channels/kernels when
+determining the number of selected channels/kernels. Specif-
+ically, the stopping condition incorporates an additional
+constraint which enforces the number of selected channels to
+be no more than a predeﬁned value for each layer.
+Extensive experiments demonstrate the superior performance
+of our methods on a variety of architectures. For example, on
+ILSVRC-12 [8], when pruning 30% channels from ResNet-
+50, DCP improves the original model by 0.36% in terms
+of Top-1 accuracy. To demonstrate the effectiveness of ourmethods, we also deploy the pruned models on a smartphone
+(equipped with a Qualcomm Snapdragon 845 processor) and
+show signiﬁcant acceleration on the mobile CPU.
+This paper extends our preliminary version [91] from several
+aspects. 1) We propose two training techniques to reduce the
+computational overhead of DCP while still maintaining comparable
+or even better performance. 2) We apply the improved DCP to
+more compact models (i.e., MobileNetV1 and MobileNetV2) and
+achieve promising performance on ILSVRC-12. We further deploy
+the pruned models on a smartphone with a Qualcomm Snapdragon
+845 processor to investigate the inference acceleration. 3) We apply
+the improved DCP to compress the latest face recognition models.
+4) We extend DCP for kernel pruning to further compress models at
+kernel level. 5) We propose a new adaptive stopping condition for
+the optimization. 6) We provide more ablative studies to investigate
+the effectiveness of our methods.
+2 R ELATED WORK
+Network quantization. Quantization-based methods represent the
+network weights and/or activations with very low precision, which
+yields highly compact DNNs compared to their ﬂoating-point
+counterparts. The extreme case is the binary neural networks
+(BNNs) where both weights and activations are constrained to
+f+1; 1g[4], [28], [58]. In this way, one can replace the matrix
+multiplication operations with the light-weighted bitwise XNOR-
+popcount operations. As a result, the 1-bit convolutional layer
+can achieve up to 32 memory saving and 58 speedup on
+CPUs [58], [90]. However, BNNs still suffer from signiﬁcant
+accuracy decreases. To reduce this accuracy gap, ﬁxed-point
+methods have been proposed to represent weights and activations
+with higher bitwidth. Uniform ﬁxed-point approaches [87], [89]
+designed quantizers with a constant quantization step. To improve
+the precision of the discrete uniform quantizer, [7], [32] explicitly
+parameterized and optimized the quantization intervals.
+Sparse or low-rank connections. To reduce the storage require-
+ments of neural networks, Han et al. [19] suggested that neurons
+with zero input or output connections can be safely removed
+from the network. With the help of the `1=`2regularization,
+weights are pushed to zeros during training. Subsequently, the
+compression rate of AlexNet can reach 35with the combination
+of pruning, quantization, and Huffman coding [18]. Considering
+the importance of parameters that are changed during weight
+pruning, Guo et al. [16] proposed dynamic network surgery (DNS).
+Training with sparsity constraints [67], [78] has also been studied
+to reach a higher compression rate. Deep models often contain
+many correlations among channels. To remove such redundancy,
+low-rank approximation approaches have been widely studied [10],
+[11], [30], [66]. For example, Zhang et al. [85] sped up VGGNet
+for 4with negligible performance degradation on ILSVRC-12.
+However, low-rank approximation approaches are not efﬁcient for
+the convolutions with small kernels size, e.g.,11kernel [71].
+Network pruning. Network pruning aims at removing redundant
+modules, e.g., channels or kernels, to accelerate the run-time infer-
+ence. The resultant pruned models would have fewer parameters
+and lower computational overhead. In order to measure the impor-
+tance of the network module, different metrics [23], [26], [37], [38],
+[51], [57], [81], [82] were proposed. With a sparsity regularizer
+in the objective function, training-based methods [1], [39], [41],
+[45], [78], [88] were proposed to learn the compact models in the
+training phase. Considering efﬁciency, reconstruction-methods [24],
+
+==== Page 3 ====
+3
+Conv
+ConvPruned 
+Network 𝑀
+Softmaxℒ𝑆𝑝 𝐎𝑝
+BatchNorm
+ReLU
+AvgPooling𝐅𝑝ConvConv
+ConvBaseline 
+Network 𝑀𝑏𝐎𝒃𝐗𝒃
+𝐖𝒃
+Conv Reconstruction 
+errorℒ𝑀
+𝐎𝐗
+SoftmaxAvgPoolingConv
+SoftmaxAvgPoolingConv
+Conv Convℒ𝑓Fine-tuning
+Channel Selection
+𝐖
+Fig. 1. Illustration of discrimination-aware channel pruning. Here, Lp
+Sdenotes the discrimination-aware loss ( e.g., cross-entropy loss or additive
+angular margin loss) in the Lp-th layer,LMdenotes the reconstruction loss, and Lfdenotes the ﬁnal loss. DCP ﬁrst updates the model Mand
+learns the parameters fpgP
+p=1withfLp
+SgP
+p=1andLf. Then, DCP performs channel pruning with P+ 1stages. At each stage, for example, in the
+p-th stage, DCP conducts the channel selection for each layer in fLp 1+ 1;:::;L pgwith the corresponding Lp
+SandLM.
+[26], [31], [38], [50] transformed the channel selection problem
+into the optimization of the reconstruction error. Recently, several
+methods [21], [40] have been proposed to prune the redundant
+ﬁlters in a dynamic such that the pruned ﬁlters can be recovered
+during training. Apart from these methods, the pruning rate for
+each layer can also be automatically determined by reinforcement
+learning [22], [72], greedy method [79] or evolutionary search [46].
+Compared with the proposed methods, most existing methods use
+heuristic metrics to identify informative modules. Speciﬁcally, both
+our proposed methods and reconstruction-based methods use the
+reconstruction error during channel selection. However, unlike
+these methods, our proposed DCP/DKP introduce additional losses
+to select those channels/kernels that actually contribute to the
+discriminative power of deep networks. Moreover, compared with
+those methods that use reinforcement learning [22] or evolutionary
+algorithms [79], DCP/DKP use an adaptive stopping condition to
+automatically determine the sparsity for each layer.
+3 P RELIMINARY
+Letfxi;yigN
+i=1be the training samples, where Nindicates the
+number of samples. Given an L-layer deep network M, let
+W2Rnchfzfrepresents the model parameters w.r.t. thel-th
+convolutional layer (or block). Here, hfandzfdenote the height
+and width of the ﬁlters, respectively; candndenote the number of
+input channels and output ﬁlters, respectively. The parameter W
+containsnckernels in total. Each kernel, for example, the kernel
+Wj;k2Rhfzfw.r.t. thek-th input channel and j-th ﬁlter, is a
+matrix with the dimension of hfzf. LetX2RNchinzin
+andO2RNnhoutzoutbe the input feature maps and the
+involved output feature maps, respectively. Here, hinandzin
+denote the height and width of the input feature maps, respectively;
+houtandzoutrepresent the height and width of the output feature
+maps, respectively. Moreover, let Xi;k2Rhinzinbe the input
+feature map of the k-th channel for the i-th sample. The output
+feature map w.r.t. the j-th ﬁlter of W(i.e.,Wj) for thei-th
+sample, denoted by Oi;j2Rhoutzout, is obtained by performing
+convolution on the input feature maps Xiof thei-th sample using
+the kernel Wj:
+Oi;j=cX
+k=1Xi;kWj;k; (1)wheredenotes the convolutional operation.
+Given a pre-trained model Mb,Channel Pruning aims to
+prune those redundant channels in Wto reduce the model
+size and accelerate the inference speed in Eq. (1). In order
+to choose channels, we introduce a variant of the `2;0-norm1
+jjWjj2;0=Pc
+k=1
+(Pn
+j=1jjWj;kjjF), where 
+(a) = 1 if
+a6= 0 and
+(a) = 0 ifa= 0 , andjjjj Frepresents the
+Frobenius norm. In order to induce sparsity, we impose an `2;0-
+norm constraint on W:
+jjWjj2;0=cX
+k=1
+(nX
+j=1jjWj;kjjF)l
+c; (2)
+wherel
+cdenotes the desired number of channels at layer l. Or
+equivalently, given a predeﬁned pruning rate 2(0;1), it follows
+thatl
+c=d(1 )ce. When some channels of Ware removed,
+the computation w.r.t. these channels can be effectively avoided.
+As a result, the pruned models would have fewer parameters and
+lower computational costs than the original models.
+4 P ROPOSED METHOD
+Identifying the informative channels, also known as channel
+selection, is an important problem in channel pruning. Most existing
+methods [24], [49] conduct channel pruning by minimizing the
+reconstruction error of feature maps between the pre-trained model
+and the pruned one. However, merely minimizing the reconstruction
+error may cause some redundant channels to be mistakenly selected,
+even though they are actually irrelevant to the discriminative power
+of the network. This issue will be even severer when the network
+becomes deeper.
+In this paper, we highlight that an informative channel, no
+matter where it is, should contribute to the discriminative power
+of the network; otherwise, it should be removed. Based on this
+intuition, we propose a discrimination-aware channel pruning
+(DCP) scheme to ﬁnd the channels that actually contribute to the
+discriminative power. To this end, relying on a pre-trained model,
+we ﬁrst introduce multiple discrimination-aware losses into the
+network to increase the discriminative power of the intermediate
+layers. Then, we conduct channel selection to select the most
+1.We can also use other norms to compute the number of selected channels.
+
+==== Page 4 ====
+4
+discriminative channel by considering both the discrimination-
+aware loss and the reconstruction error of the feature maps. In the
+following, we will illustrate the details of our method.
+4.1 Motivation
+We seek to perform channel pruning by keeping those channels that
+actually contribute to the discriminative power of the network. In
+practice, however, it is very difﬁcult to measure the discriminative
+power of channels due to the complex operations (such as ReLU
+activation and Batch Normalization) in CNNs. One may consider
+a channel as an important one if the ﬁnal loss Lfwould sharply
+increase without it. However, for deep models, its shallow layers
+often have little discriminative power due to the long path of
+propagation. As a result, it is not practical to evaluate the
+discriminative power when the network is very deep.
+To increase the discriminative power of the intermediate layers,
+one can introduce additional losses to the intermediate layers of
+the deep networks [13], [36], [70]. In this paper, we insert P
+discrimination-aware losses fLp
+SgP
+p=1evenly into the network, as
+shown in Figure 1. Let fL1;:::;L P;LP+1gbe the layers at which
+we put the losses, with LP+1=Lbeing the ﬁnal layer. It is worth
+mentioning that, we can add one loss to each layer of the network,
+where we have Ll=l. However, this can be very computationally
+expensive yet not necessary.
+4.2 Construction of discrimination-aware loss
+The construction of discrimination-aware loss Lp
+Sis very important
+in our method. As shown in Figure 1, Lp
+Suses the output of layer
+Lpas the input feature maps. To make the computation of the
+loss feasible, we impose an average pooling operation over the
+feature maps. Moreover, to accelerate the convergence, we apply
+batch normalization [15], [29] and ReLU [54] before performing
+the average pooling. In this way, the input feature maps for the loss
+at layerLp, denoted by Fp(W), can be computed by
+Fp(W) = AvgPooling(ReLU(BN( Op))); (3)
+where Oprepresents the output feature maps of layer Lp. LetF(p;i)
+be the feature maps w.r.t. thei-th example. The discrimination-
+aware loss w.r.t. the p-th loss is formulated as
+Lp
+S(W) = 1
+N"NX
+i=1mX
+t=1Ify(i)=tglogep
+t>F(p;i)
+Pm
+k=1ep
+k>F(p;i)#
+;
+(4)
+whereIfgis the indicator function, p2Rnpmdenotes the
+classiﬁer weights of the fully connected layer, npdenotes the
+number of input channels of the fully connected layer and mis the
+number of classes. Note that we can also use other losses as the
+additional loss, such as the additive angular margin loss [9]. (See
+results in Section 6.2).
+4.3 Optimization problem for channel pruning
+Since a pre-trained model contains very rich information about the
+learning task, similar to [50], we hope to reconstruct the feature
+maps in the pre-trained model by minimizing the reconstruction
+error of feature maps between the pre-trained model Mband the
+pruned one. Formally, the reconstruction error can be measured by
+the mean squared error (MSE) between the feature maps of the
+baseline network and the pruned one as follows:
+LM(W) =1
+2NnhoutzoutNX
+i=1nX
+j=1jjOb
+i;j Oi;jjj2
+F;(5)Algorithm 1 Discrimination-aware channel pruning
+Input: Pre-trained model Mb, training datafxi;yigN
+i=1, and hyper-
+parametersfl
+cgL
+l=1.
+Output: Pruned model M.
+1:InitializeMusingMb.
+2:Insert lossesfLp
+SgP
+p=1to layersfL1;:::;L Pg, respectively.
+3:LearnfpgP
+p=1andFine-tuneMwithfLp
+SgP
+p=1andLf.
+4:InitializeMbusingM.
+5:forp2f1;:::;P + 1gdo
+6: forl2fLp 1+ 1;:::;L pgdo
+7: DoChannel Selection for layerlusing Algorithm 2.
+8: end for
+9:end for
+where Ob
+i;j2Rhoutzoutdenotes the feature maps of Mb. By
+considering both discrimination-aware loss and reconstruction error,
+we have a joint loss function as follows:
+L(W) =LM(W) +Lp
+S(W); (6)
+wherebalances the two terms.
+Proposition 1. (Convexity of the loss function) LetWbe the
+model parameters of a considered layer. Given the discrimination-
+aware loss and the mean square loss deﬁned in Eqs. (4) and (5),
+the joint loss function L(W)is convex w.r.t. W.2
+By introducing the `2;0-norm constraint, the optimization
+problem for discrimination-aware channel pruning becomes
+min
+WL(W);s.t.jjWjj2;0l
+c; (7)
+wherel
+cis the number of channels to be selected. In our method,
+the sparsity of Wcan be either determined by a predeﬁned pruning
+rate (See Section 3) or automatically adjusted by the adaptive
+stopping conditions in Section 4.6.
+4.4 Discrimination-aware channel pruning
+By introducing PlossesfLp
+SgP
+p=1to the intermediate layers, the
+proposed discrimination-aware channel pruning (DCP) method
+is shown in Algorithm 1. Starting from a pre-trained model
+Mb, DCP ﬁrst updates the model Mand learns the parameters
+fpgP
+p=1. Then, DCP performs channel pruning with (P+ 1)
+stages. Algorithm 1 is called discrimination-aware in the sense that
+the additional losses and the ﬁnal loss are considered to ﬁne-tune
+the model. Moreover, the additional losses will be used to select
+channels, as discussed below.
+At the beginning of channel pruning, we ﬁrst construct
+additional lossesfLp
+SgP
+p=1and insert them at layer fL1;:::;L Pg
+(See Figure 1). Next, we learn the parameters fpgP
+p=1and ﬁne-
+tune the model Mat the same time with both the additional
+lossesfLp
+SgP
+p=1and the ﬁnal lossLf. During ﬁne-tuning, all
+the parameters in Mare updated. Here, with ﬁne-tuning, the
+parameters regarding the additional losses can be well learned.3
+After doing ﬁne-tuning with fLp
+SgP
+p=1andLf, the discriminative
+power of the intermediate layers can be signiﬁcantly improved.
+Then, we initialize the baseline model Mbwith the ﬁne-tuned
+modelMand perform channel pruning with ( P+ 1) stages. At
+each stage, for example, in the p-th stage, we consider the layers
+of the current stage independently, and conduct channel selection
+2. The proof can be found in Section 7 in [91].
+3. The details of the ﬁne-tuning algorithm can be found in [13].
+
+==== Page 5 ====
+5
+Algorithm 2 Greedy algorithm for channel selection
+Input: Training datafxi;yigN
+i=1, modelM, hyperparameters l
+c,.
+Output: Selected channel index set Aand model parameters WA.
+1:InitializeA0 ;,W0=0, andt= 1.
+2:while (stopping conditions are not achieved) do
+3: Compute gradients of Lw.r.t.Wt 1:Gt 1=@L=@Wt 1.
+4: Find theBlargestjjGt 1
+:;kjjFand record their indices in Jt.
+5: LetAt A t 1[Jt.
+6: Solve the following Subproblem to update Wt 1
+At:
+min
+Wt 1L(Wt 1);s.t.Wt 1
+Ac
+t=0: (8)
+7: SetWt Wt 1and lett t+ 1.
+8:end while
+for the layers infLp 1+ 1;:::;L pgwith corresponding Lp
+Sand
+LM. Following [24], [85], we perform channel selection from the
+shallower layers to the deeper layers in this paper.
+4.5 Greedy algorithm for channel selection
+Due to the non-convexity of `2;0-norm, directly optimizing Prob-
+lem (7) is very difﬁcult. To address this issue, following the general
+greedy methods in [3], [42], [73], [74], [83], we propose a greedy
+algorithm to solve Problem (7).
+We show the details of the proposed greedy algorithm in
+Algorithm 2. At the beginning of the channel selection, we remove
+all the channels by setting W0=0. In each iteration, we ﬁrst select
+those channels that actually contribute to the discriminative power
+of the network. Then, we solve Subproblem (8) with the selected
+channels only. We will give the details of selecting the channels
+with discriminative power and the subproblem optimization in the
+following subsections.
+4.5.1 Discrimination-aware channel selection
+At each iteration of Algorithm 2, we compute the gradients
+Gt 1
+:;k=@L=@Wt 1
+:;k, where Wt 1
+:;kdenotes the parameters for
+thek-th input channel at iteration t. Since we set W0=0at
+the beginning of channel selection, the initial loss value will be
+very large. Apparently, selecting any channel at the t-th iteration
+will decrease the loss function, and the channel with the largest
+gradientjjGt 1
+:;kjjFwill decrease the loss function the most. With
+the selection criteria, we choose Bchannels corresponding to the
+BlargestjjGt 1
+:;kjjFas active channels and record their indices into
+Jt. LetAtf1;:::;cgbe the index set of the selected channels
+up to iteration t,i.e.,At=[iJi;i= 1;:::;t . In general, once
+a channel is added into Jt, it is unlikely to be selected in the
+following iteration. However, if we do not solve Subproblem (8)
+accurately, some of the selected channels may have a large value
+ofjjGt 1
+:;kjjF, thus they might be chosen again. To avoid this issue,
+we propose choosing channels from f1;:::;cgnAt 1to formJt.
+In this way, there will be no overlapping channels among the Ji’s,
+wherei= 1;:::;t .
+4.5.2 Subproblem optimization
+OnceAtis determined, we optimize Wt 1w.r.t. the selected
+channels by minimizing Subproblem (8). Here, Wt 1
+Ac
+tdenotes the
+subtensor indexed by Ac
+t, andAc
+tis the complementary set of At,
+i.e.,Ac
+t=f1;:::;cgnAt. To solve the Subproblem in Eq. (8), we
+apply stochastic gradient descent (SGD) and update Wt 1
+Atby
+Wt 1
+At Wt 1
+At @L
+@Wt 1
+At; (9)where Wt 1
+Atdenotes the subtensor indexed by At, anddenotes
+the learning rate.
+Note that when optimizing Subproblem (8), Wt 1
+Atis warm-
+started from the ﬁne-tuned model M. As a result, the optimization
+can be completed very quickly. Moreover, since Subproblem (8)
+is convex with respect to Wt 1for one layer, we do not need to
+consider all the data for optimization. To make a trade-off between
+the efﬁciency and performance, we sample a subset of images
+randomly from the training data for optimization.4Last, since we
+use SGD to update Wt 1
+At, the learning rate should be carefully
+adjusted to achieve an accurate solution.
+4.6 Stopping conditions
+Given a predeﬁned hyperparameter l
+cin Problem (7), Algorithm 2
+will be stopped if jjWtjj2;0> l
+c. However,l
+cis hard to be
+determined in practice. To solve this issue, we adopt the following
+two stopping conditions to terminate Algorithm 2.
+Stopping condition 1: SinceLis convex,L(Wt)will monotoni-
+cally decrease with the iteration index tin Algorithm 2. Therefore,
+we can adopt the following stopping condition:
+jL(Wt 1) L(Wt)j
+L(W0); (10)
+whereis a tolerance value.
+Stopping condition 2: Directly using stopping condition 1 can
+automatically determine the number of selected channels. However,
+in practice, if most of the channels are relatively informative and
+each of them contributes to the loss function, then the objective
+function value w.r.t. Eq. (6) may decrease very slowly during
+the greedy selection process. In this case, stopping condition 1
+may tend to select more channels or even all channels to achieve
+sufﬁciently small loss function value w.r.t. Eq. (6). To address
+this, we propose stopping condition 2 which incorporates an
+additional constraint to force the number of selected channels to be
+no more than a predeﬁned value for each layer. Speciﬁcally, given
+a minimum pruning rate min, we use the following condition:
+jL(Wt 1) L(Wt)j
+L(W0);or
+jjWtjj2;0>d(1 min)ce:(11)
+If the above condition is achieved, the pruning process will
+be stopped earlier, and the number of selected channels will
+be automatically determined, i.e.,jjWtjj2;0. As a result, the
+pruned models tend to have lower computational costs. Note that
+stopping condition 2 is built on top of stopping condition 1 .
+In practice, stopping condition 1 alone often works well and
+stopping condition 2 is satisﬁed accordingly. The comparisons of
+different stopping conditions are shown in Section 7.6.
+4.7 Techniques for efﬁcient implementations
+For model compression methods, training cost has always been
+a key factor in real-world applications. Regarding this issue, we
+propose two methods to improve the training efﬁciency of DCP.
+Single round ﬁne-tuning . In Algorithm 1, ﬁne-tuning plays
+a crucial role in improving the discriminative power of the
+intermediate layers. However, it leads to high computational costs.
+In our conference version [91], we perform ﬁne-tuning and channel
+selection stage-wisely. In total, we ﬁne-tune the network P+ 1
+4. We explore the number of samples in Section 11 in [91].
+
+==== Page 6 ====
+6
+times, which increases the computational cost of channel pruning.
+To improve the efﬁciency of channel pruning, we ﬁne-tune the
+network only once in step 3 of Algorithm 1, which reduces the
+times of ﬁne-tuning. Moreover, the ﬁne-tuning process is the same
+for the network with the same architecture but different pruning
+rates. Therefore, we can store the model after ﬁne-tuning. In this
+way, the pruned networks with the same architecture but different
+pruning rates can skip ﬁne-tuning in step 3 of Algorithm 1, which
+greatly reduces the computational cost of channel pruning. We
+show the effect of single round ﬁne-tuning in Section 7.3.1.
+Feature reusing . In Algorithm 2, we need to compute the input
+feature maps of layer lto compute the loss function. To obtain the
+input feature maps, we have to feed Nimages into the network
+from layer 1 to layer l 1. In [91], this process is repeated for
+each iteration, which incurs high computational overhead. Since
+we do not change the input feature maps during channel selection,
+we can store and reuse the input feature maps once they have been
+computed. In this way, we avoid the repeated calculation of the
+input feature maps, which greatly reduces the computational cost
+of channel selection. An empirical study on the effect of feature
+reusing can be found in Section 7.3.2.
+5 D ISCRIMINATION -AWARE KERNEL PRUNING
+The proposed DCP can select the channels that actually contribute
+to the discriminative power of the network. However, there exists a
+limitation for DCP. Speciﬁcally, channel pruning assumes that all
+kernels in a channel are equally important, which may hamper the
+performance of the pruned model. In fact, some kernels may not
+contribute to the discriminative power of the network, resulting in
+performance degradation of the pruned model. More critically, in
+DCP, once a channel is pruned (or not selected), even if there may
+still exist some informative kernels related to it, we are no longer
+able to ﬁnd and keep those useful kernels related to the removed
+channel, which may result in suboptimal performance.
+To solve this issue, we propose a kernel pruning method called
+discrimination-aware kernel pruning (DKP) to further compress
+deep networks by removing redundant kernels. Similar to DCP, we
+introduce a variant of the `2;0-norm constraint on Wto conduct
+kernel pruning:
+jjWjjker
+2;0=Pn
+j=1Pc
+k=1
+(jjWj;kjjF)l
+ker; (12)
+wherel
+keris the desired number of kernels at layer l. When some
+kernels are removed, the corresponding computational cost w.r.t.
+the kernels can be effectively reduced.
+Starting from a pre-trained model, DKP introduces Padditional
+lossesfLp
+SgP
+p=1evenly to the intermediate layers. Then, DKP ﬁne-
+tunes the model using the addition losses fLp
+SgP
+p=1and the ﬁnal
+lossLfto improve the discriminative power of the intermediate
+layers. After that, DKP conducts kernel selection for each layer in
+a layer/stage-wise manner.
+Similar to DCP, we introduce a variant of the `2;0-norm
+constraint into the loss function in Eq. (6). Thus, the optimization
+problem for DKP can be formulated as:
+min
+WL(W);s.t.jjWjjker
+2;0l
+ker: (13)
+To solve Problem (13), we propose a greedy algorithm for kernel
+selection similar to Algorithm 2. At the beginning of the kernel
+selection, DKP removes all the kernels by setting W0=0. Instead
+of choosing the channels, we choose Bkernels with the largest
+gradientsjjGt 1
+j;kjjF=@L=@Wt 1
+j;kand put their indices into Jt.Then, we updateAtbyAt=At 1[Jt. OnceAtis determined,
+we optimize Wt 1w.r.t. the selected kernels by minimizing
+Subproblem (8), which is similar to DCP. In practice, we may
+directly apply DKP to compress models (denoted by DKP Only )
+or sequentially perform kernel selection after performing channel
+pruning (denoted by DCP+DKP ). We investigate the effectiveness
+of DKP in Section 6.3.
+Comparisons with DCP . Unlike DCP that focuses on channel
+selection, DKP seeks to select the informative kernels related to
+each channel, making it possible for model compression in a ﬁner
+way (channel level vs. kernel level). Note that in each greedy
+optimization step, we can include a relatively large number of
+kernels (namely, a large B). Moreover, similar to DCP, during the
+subproblem optimization, we do not need to solve the problem
+exactly. So the complexity of DKP is similar to DCP. In fact,
+DKP has a comparable training cost with DCP in practice. For
+example, when pruning 90% FLOPs from VGGNet on CIFAR-10,
+the training cost of DKP is 3.25 GPU hours while the cost of DCP
+is 2.92 GPU hours. More empirical comparisons between DKP and
+DCP can be found in Section 6.3.
+6 E XPERIMENTS
+To demonstrate the effectiveness of the proposed method, we
+apply DCP to various architectures, such as ResNet [20], Mo-
+bileNetV1 [25] and MobileNetV2 [61], etc. We conduct experi-
+ments on both image classiﬁcation and face recognition. In order
+to verify the effectiveness of DKP, we apply DKP to ResNet [20]
+and VGGNet [65]. All implementations are based on PyTorch [56].
+We organize the experiments as follows. First, we evaluate the
+proposed DCP on image classiﬁcation in Section 6.1. Second, we
+apply DCP to face recognition in Section 6.2. Last, we evaluate the
+proposed DKP in Section 6.3.
+6.1 Experiments on image classiﬁcation
+6.1.1 Compared methods
+To investigate the effectiveness of the proposed methods, we include
+the following methods for study: DCP: The proposed channel
+pruning method with a pre-deﬁned pruning rate .Adapt-DCP:
+DCP with adaptive stopping condition 2 introduced in Section 4.6.
+WM: We shrink the width of a network by a ﬁxed ratio and train it
+from scratch, which is known as the width multiplier [25]. WM+:
+Based on WM, we evenly insert additional losses into the network
+and train it from scratch. Random-DCP: Relying on DCP, we
+randomly choose channels instead of using the gradient-based
+strategy introduced in Algorithm 2.
+We also consider several state-of-the-art channel pruning
+methods for comparison. On CIFAR-10, we compare DCP
+with NISP [82], ThiNet [50], CP [24], AMC [22], SFP [21],
+FPGM [23], PREC [38], Network Slimming [45], NRE [31],
+and DR [88]. On ILSVRC-12, we compare DCP with SFP [21],
+GAL [41], Taylor-FO-BN [51], SPP [76], CP [24], GDP [40],
+FPGM [23], ThiNet [50], SSR-L2 [39], NetAdapt [79], AMC [22],
+and MetaPruning [46]. Following [45], [50], we measure the
+computational cost of the pruned models by the number of ﬂoating
+point operations (FLOPs).
+6.1.2 Datasets and implementation details
+We evaluate the proposed DCP on two image classiﬁcation datasets,
+including CIFAR-10 [34] and ILSVRC-12 [8]. CIFAR-10 consists
+
+==== Page 7 ====
+7
+TABLE 1
+Performance comparisons on CIFAR-10. ”-” denotes that the results are not reported. Top-1 Err. "is the Top-1 error gap between the pruned model
+and the baseline model.
+Model MethodBaseline
+Top-1 Err. (%)Pruned
+Top-1 Err. (%)Top-1
+Err."(%)#Param.#(%) #FLOPs#(%)
+ResNet-56NISP [82] - - +0.03 42.60 43.61
+ThiNet [50] 6.20 7.02 +0.82 49.67 49.78
+CP [24] 7.20 8.20 +1.00 - 50.00
+AMC [22] 7.20 8.10 +0.90 - 50.00
+SFP [21] 6.41 6.65 +0.24 - 52.60
+FPGM [23] 6.41 6.51 +0.10 - 52.60
+WM[25] 6.26 6.76 +0.50 49.67 49.78
+WM+ 6.26 6.65 +0.39 49.67 49.78
+Random-DCP 6.26 6.66 +0.40 49.67 49.78
+DCP 6.26 6.28 +0.02 49.67 49.78
+Adapt-DCP 6.26 6.23 -0.03 68.48 54.80
+VGGNetPFEC [38] 6.75 6.60 -0.15 64.00 34.18
+ThiNet [50] 6.01 6.15 +0.14 48.29 50.08
+CP [24] 6.01 6.33 +0.32 48.29 50.08
+Network Slimming [45] 6.34 6.20 -0.14 88.52 50.94
+NRE [31] 6.54 6.60 +0.06 92.70 67.60
+DR [88] 6.42 6.69 +0.27 88.30 68.63
+WM[25] 6.02 6.39 +0.37 48.29 50.08
+WM+ 6.02 6.12 +0.10 48.29 50.08
+Random-DCP 6.02 5.99 -0.03 48.29 50.08
+DCP 6.02 5.71 -0.31 48.29 50.08
+Adapt-DCP 6.02 5.45 -0.57 91.69 69.81
+MobileNetV1WM[25] 6.04 6.39 +0.35 43.41 48.63
+WM+ 6.04 6.35 +0.31 43.41 48.63
+Random-DCP 6.04 6.36 +0.32 43.41 48.63
+DCP 6.04 5.54 -0.50 43.41 48.63
+Adapt-DCP 6.04 5.43 -0.61 78.26 66.12
+MobileNetV2WM[25] 5.53 5.98 +0.45 23.59 27.07
+WM+ 5.53 5.93 +0.40 23.59 27.07
+Random-DCP 5.53 5.96 +0.42 23.59 27.07
+DCP 5.53 5.37 -0.16 23.59 27.07
+Adapt-DCP 5.53 5.28 -0.25 40.06 34.44
+The results were obtained by our implementations.
+of 50k training samples and 10k testing images with 10 classes.
+ILSVRC-12 contains 1.28 million training samples and 50k testing
+images for 1,000 classes.
+Based on the pre-trained model, we apply our method to
+select informative channels. We ﬁrst introduce additional losses
+to increase the discriminative power of the intermediate layers. In
+practice, we determine the number of additional losses according to
+the depth of the network (See Section 7.8). Speciﬁcally, we insert
+3 additional losses to ResNet-50 and ResNet-56, and 2 additional
+losses to VGGNet, ResNet-18, MobileNetV1, and MobileNetV2.
+Then, we ﬁne-tune the model with both the additional losses and
+the ﬁnal loss. On CIFAR-10, we ﬁne-tune 100 epochs using a
+mini-batch size of 128. The learning rate starts from 0.1 and is
+divided by 10 at epochs 40 and 60. On ILSVRC-12, we ﬁne-tune
+60 epochs using a mini-batch size of 256. The learning rate is
+initialized to 0.01 and divided by 10 at epochs 36, 48, and 54.
+After doing ﬁne-tuning, we conduct channel selection in a
+stage-wise manner by considering the corresponding additional
+loss and the reconstruction error of the feature maps. For ResNet-56
+and ResNet-50, we set andmin to 0.5 and 0.4, respectively. For
+VGGNet, MobileNetV1 and MobileNetV2, andmin are set to
+0.3 and 0.2, respectively. In our experiment, andBare set to 1.0
+and 2.0, respectively.
+After doing channel selection, we ﬁne-tune the whole network
+with the selected channels only. We use SGD with nesterov [55] foroptimization. The momentum and weight decay are set to 0.9 and
+110 4, respectively. On CIFAR-10, we ﬁne-tune 400 epochs
+using a mini-batch size of 128. The learning rate is initialized to
+0.1 and divided by 10 at epochs 160 and 240. For ResNet-18 and
+ResNet-50 on ILSVRC-12, we ﬁne-tune the network for 60 epochs
+with a mini-batch size of 256. The learning rate starts at 0.01 and
+is divided by 10 at epochs 36, 48 and 54. For MobileNetV1 and
+MobileNetV2 on ILSVRC-12, we ﬁne-tune for 150 epochs and
+250 epochs with a mini-batch size of 256. Following [25], [61], we
+set the weight decay to 410 5. The learning rate is initialized
+to 0.09 and decreased to 0 following the cosine function [48].
+6.1.3 Comparisons on CIFAR-10
+We apply DCP to prune ResNet-56, VGGNet, MobileNetV1, and
+MobileNetV2 and compare the performance on CIFAR-10. We
+report the results in Table 1.
+From Table 1, we have the following observations. First, the
+models pruned by DCP signiﬁcantly outperform those pruned
+by Random-DCP. For example, on VGGNet, DCP reduces the
+error by 0.28% compared with Random-DCP, which implies the
+effectiveness of the proposed channel selection strategy. Second, the
+inserted additional losses improve the performance of the networks.
+Speciﬁcally, WM+ of VGGNet achieves better performance than
+WM. Third, our proposed DCP shows much better performance
+than WM+. For example, on VGGNet, DCP outperforms WM+ by
+
+==== Page 8 ====
+8
+TABLE 2
+Performance comparisons on ILSVRC-12. ”-” denotes that the results are not reported. ”Top-1 Err. "” and ”Top-5 Err."” denote the Top-1 and Top-5
+error gap between the pruned model and the baseline model.
+Model MethodBaseline
+Top-1 Err. (%)Pruned
+Top-1 Err. (%)Top-1
+Err."(%)Baseline
+Top-5 Err. (%)Pruned
+Top-5 Err. (%)Top-5
+Err."(%)#Param.#(%) #FLOPs#(%)
+ResNet-50SFP [21] 23.85 25.39 +1.54 7.13 7.94 +0.81 - 41.80
+GAL [41] 23.85 28.05 +4.20 7.13 9.06 +1.93 16.86 43.03
+Taylor-FO-BN [51] 23.82 25.50 +1.68 - - - 44.53 44.99
+SPP [76] - - - 8.80 9.60 +0.80 - 50.00
+CP [24] - - - 7.80 9.20 +1.40 - 50.00
+GDP [40] 24.87 28.11 +3.24 7.70 9.29 +1.59 - 51.30
+FPGM [23] 23.85 25.17 +1.32 7.13 7.68 +0.55 - 53.50
+ThiNet [50] 24.70 27.97 +3.27 7.80 9.01 +1.21 51.55 55.50
+SSR-L2 [39] 24.88 28.53 +3.65 7.70 9.81 +2.11 52.94 56.41
+WM[25] 23.99 26.47 +2.48 7.07 8.52 +1.45 51.55 55.50
+WM(Scratch-B) [47] 23.99 25.44 +1.45 7.07 8.03 +0.96 51.55 55.50
+DCP 23.99 25.01 +1.02 7.07 7.80 +0.73 51.55 55.50
+Adapt-DCP 23.99 24.85 +0.86 7.07 7.70 +0.63 54.99 52.41
+MobileNetV1NetAdapt [79] 29.10 30.90 +1.80 - - - - 12.63
+AMC [22] 29.10 29.51 +0.41 10.10 10.69 +0.59 43.09 48.42
+MetaPruning [46] 29.10 29.60 +0.50 - - - - 50.62
+WM [25] 29.10 31.60 +2.50 10.10 11.80 +1.70 38.90 42.86
+DCP 29.12 29.52 +0.40 10.22 10.61 +0.39 45.47 49.67
+Adapt-DCP 29.12 29.50 +0.38 10.22 10.78 +0.56 43.27 51.25
+MobileNetV2AMC [22] 28.20 29.15 +0.95 9.00 10.09 +1.09 33.51 30.06
+MetaPruning [46] 28.20 28.80 +0.60 - - - - 27.67
+WM [61] 28.20 30.20 +2.00 9.00 10.40 +1.40 25.02 40.52
+DCP 28.12 28.79 +0.67 9.70 10.01 +0.31 34.24 32.21
+Adapt-DCP 28.12 28.61 +0.49 9.70 9.91 +0.21 35.01 30.67
+The results were obtained by our implementations.
+TABLE 3
+Inference acceleration of the pruned models on ILSVRC-12. We report
+the forward time tested on a mobile CPU (Qualcomm Snapdragon 845).
+Network  #Param. (M) #FLOPs (M)Mobile CPU
+Time (ms)Speedup
+Ratio
+MobileNetV10.00 4.23 1132.44 107.25 1.00
+0.30 2.31 569.92 55.65 1.93
+MobileNetV20.00 3.50 594.87 62.88 1.00
+0.30 2.30 403.24 44.25 1.42
+0.41% on the testing accuracy. Fourth, compared with DCP, Adapt-
+DCP further improves the performance of the pruned models with
+much fewer parameters and FLOPs. Speciﬁcally, when applying
+Adapt-DCP on VGGNet, the pruned model with 91.69% and
+69.81% reductions in parameters and FLOPs even lowers the
+testing error by 0.26% compared with DCP.
+Compared with several state-of-the-art methods, our method
+achieves the best performance. For example, ThiNet [50] prunes
+VGGNet by 48.29% of the parameters and 50.08% of the FLOPs
+with a 0.14% drop in terms of the Top-1 accuracy. In contrast, our
+proposed DCP achieves the same speedup ratio with a 0.31%
+improvement in terms of the Top-1 accuracy. Moreover, for
+VGGNet, Adapt-DCP outperforms NRE [31] and DR [88] and
+obtains a 91.69% reduction in the model size and 69.81% in
+FLOPs. These results show the superior performance of our
+proposed DCP and Adapt-DCP.
+6.1.4 Comparisons on ILSVRC-12
+To verify the effectiveness of the proposed method on the large-
+scale dataset, we evaluate our method on ILSVRC-12 and report
+the Top-1 and Top-5 errors with single view evaluation in Table 2.We ﬁrst apply DCP to compress ResNet-50. Compared with WM
+(Scratch-B) [47], which leads to 1.45% increase in terms of the
+Top-1 error, DCP only results in 1.02% degradation in terms
+of the Top-1 accuracy, which demonstrates the effectiveness of
+the pruning scheme in DCP. Compared with FPGM [23], DCP
+achieves 0.30% improvement in terms of the Top-1 accuracy with
+a 55.50% reduction in FLOPs. More critically, the model pruned
+by Adapt-DCP with the smaller model size even outperforms DCP
+by 0.16% and 0.10% on Top-1 and Top-5 accuracy, respectively.
+We also apply DCP to prune compact and efﬁcient neural
+networks, such as MobileNetV1 [25] and MobileNetV2 [61].
+Compared with AMC [22] and MetaPruning [46], our proposed
+DCP achieves better performance. For example, on MobileNetV2,
+DCP outperforms AMC [22] by 0.36% in terms of the Top-1
+accuracy. Moreover, Adapt-DCP pruned MobileNetV2 outperforms
+MetaPruning [46] by 0.11% in terms of the Top-1 accuracy. These
+results demonstrate the effectiveness of DCP and Adapt-DCP.
+6.1.5 Model deployment to mobile devices
+We further deploy the pruned models to a mobile device. We
+perform the evaluations on a Xiaomi 8 smartphone, which is
+equipped with a 2.8 GHz Qualcomm Snapdragon 845 mobile
+processor. The test-phase computation is carried out on a single
+large CPU core without GPU acceleration. We report the results in
+Table 3.
+Compared with the pre-trained model, MobileNetV1 with a
+pruning rate of 30% achieves nearly 2acceleration on the mobile
+phone. Moreover, the execution of our pruned MobileNetV2 only
+requires 44.25ms, which is much lower than the pre-trained one.
+These results show that our methods are able to compress the
+compact models to signiﬁcantly reduce the inference time.
+
+==== Page 9 ====
+9
+TABLE 4
+Performance comparisons of different methods on face recognition. “VR” refers to Veriﬁcation TAR (True Accepted Rate) and “FAR 10 6” refers to the
+False Accepted Rate at 10 6. We do not report the inference time of SphereFace and CosFace due to its large model size and computational costs.
+ModelValidation Accuracy (%) VR@FAR 10 6(%)#Param. (M) #FLOPs (G)Mobile CPU
+Times (ms)Speedup
+Ratio LFW CFP-FP AgeDB-30 MegaFace
+SphereFace [62] 99.76 93.70 97.56 97.43 65.16 24.17 - -
+CosFace [75] 99.80 94.40 97.91 98.36 65.16 24.17 - -
+LResNet34E-IR [9] 99.72 96.39 98.03 96.71 31.81 7.10 391.52 1.00
+LResNet34E-IR (prune 25% channels) 99.70 96.71 97.63 97.03 27.12 5.35 308.72 1.27
+LResNet34E-IR (prune 50% channels) 99.70 95.90 97.70 96.14 22.42 3.60 232.61 1.68
+MobileFaceNet [6] 99.50 92.23 95.63 90.38 1.00 0.44 36.90 1.00
+MobileFaceNet (prune 25% channels) 99.38 92.17 95.47 90.33 0.79 0.33 28.71 1.29
+TABLE 5
+Comparisons of DCP and DKP on CIFAR-10. The Top-1 error (%) of the
+pre-trained ResNet-56 and VGGNet are 6.26 and 6.02, respectively.
+Model MethodPruned
+Top-1 Err. (%)Top-1
+Err."(%)#Param.
+#(%)#FLOPs
+#(%)
+ResNet-56DCP 6.28 +0.02 49.67 49.78
+DCP+DKP 6.23 -0.03 51.53 50.59
+DKP Only 6.18 -0.08 49.52 50.00
+DCP 7.02 +0.76 68.29 68.44
+DCP+DKP 6.96 +0.70 68.62 68.84
+DKP Only 6.71 +0.45 67.78 68.20
+Adapt-DCP 6.23 -0.03 68.48 54.80
+Adapt-DKP 6.17 -0.08 68.72 58.42
+VGGNetDCP 6.24 +0.22 72.01 74.30
+DCP+DKP 6.17 +0.15 73.16 74.26
+DKP Only 6.15 +0.13 74.33 74.54
+DCP 7.98 +1.96 88.42 90.24
+DCP+DKP 7.74 +1.72 89.39 90.42
+DKP Only 7.52 +1.50 90.41 90.50
+Adapt-DCP 5.45 -0.57 91.69 69.81
+Adapt-DKP 5.48 -0.54 91.90 76.48
+6.2 Experiments on Face Recognition
+6.2.1 Compared methods
+We apply the proposed DCP to LResNet34E-IR [9] and Mo-
+bileFaceNet [6] on face recognition. To evaluate the proposed
+DCP method, we consider several face recognition models for
+comparison, including SphereFace [44] and CosFace [75].
+6.2.2 Datasets and implementation details
+We evaluate the proposed DCP method on four benchmark
+datasets, including LFW [27], CFP-FP [63], AgeDB-30 [53], and
+MegaFace [33]. LFW [27] contains 13,233 face images from 5,749
+identities. CFP [63] consists of 500 identities, each with 10 frontal
+and 4 proﬁle images. AgeDB-30 [53] contains 12,240 images of
+440 identities. MegaFace [33] is a very challenging benchmark
+dataset to evaluate the performance of face recognition methods at
+a scale of million distractors.
+We use the reﬁned MS-Celeb-1M [17] released by [9] for
+training. The training dataset consists of 5.8M face images from
+85k individuals. With the same settings as [9], we ﬁrst train
+LResNet34E-IR [9] and MobileFaceNet [6] from scratch. Then,
+we apply our proposed DCP to compress the pre-trained models.
+Before channel pruning, we ﬁrst insert 2 additive angular
+margin losses [9] into LResNet34E-IR and MobileFaceNet. Then,
+we ﬁne-tune 15 epochs with both the discrimination-aware losses
+and the ﬁnal loss. The learning rate is initialized to 0.01 and divided
+by 10 at epochs 4, 8, and 12.TABLE 6
+Comparisons of DCP and DKP on ILSVRC-12. The Top-1 and Top-5
+error (%) of the pre-trained ResNet-18 are 30.36 and 11.02, respectively.
+Model MethodTop-1
+Err. (%)Top-5
+Err. (%)#Param.
+#(%)#FLOPs
+#(%)
+ResNet-18DCP 32.64 12.38 47.01 46.22
+DCP+DKP 32.57 12.20 47.31 46.40
+DKP Only 32.46 12.04 47.12 46.56
+After doing ﬁne-tuning, we perform channel selection to select
+the informative channels. After doing channel selection, we ﬁne-
+tune the whole network for 28 epochs. The learning rate is
+initialized to 0.01 and divided by 10 at epochs 8, 16 and 24.
+We use SGD with a mini-batch size of 512 for optimization.
+6.2.3 Performance comparisons
+We report the results in Table 4. From the results, we observe
+that the pruned models with small pruning rates achieve nearly
+the same performance as the pre-trained model. For example,
+for LResNet34E-IR, the pruned model with a pruning rate of
+25% even outperforms the pre-trained model on CFP-FP and
+MegaFace. Moreover, for MobileFaceNet, the pruned model
+achieves comparable performance as the pre-trained model with
+only 0.79M parameters and 28.71ms for inference, which is suitable
+for resource-limited devices.
+Compared with SphereFace [62] and CosFace [75], our pruned
+LResNet34E-IR achieves comparable performance with a much
+smaller number of parameters and FLOPs. Even with a pruning
+rate of 50%, our pruned LResNet34E-IR still achieves comparable
+performance to the pre-trained model. These results demonstrate
+the effectiveness of the proposed DCP on face recognition.
+6.3 Effectiveness of DKP
+6.3.1 Compared methods
+To investigate the effectiveness of DKP, apart from DCP and Adapt-
+DCP, we include the following methods for comparisons. DKP
+Only : The proposed kernel pruning method with a ﬁxed pruning
+rate. DCP+DKP : We sequentially perform channel selection and
+kernel selection. Adapt-DKP: DKP Only with adaptive stopping
+condition 2.
+6.3.2 Datasets and implementation details
+We evaluate the performance of the pruned models on CIFAR-10
+and ILSVRC-12. For kernel selection, we use the same additional
+losses introduced in DCP. We set Bto a value that is equal to the
+
+==== Page 10 ====
+10
+/uni00000018/uni00000013 /uni00000019/uni00000013 /uni0000001a/uni00000013 /uni0000001b/uni00000013 /uni0000001c/uni00000013
+/uni00000033/uni00000044/uni00000055/uni00000044/uni00000050/uni00000048/uni00000057/uni00000048/uni00000055/uni00000003/uni00000035/uni00000048/uni00000047/uni00000058/uni00000046/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni0000000b/uni00000008/uni0000000c/uni00000015/uni00000011/uni00000013
+/uni00000014/uni00000011/uni00000018
+/uni00000014/uni00000011/uni00000013
+/uni00000013/uni00000011/uni00000018
+/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000018/uni00000024/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c/uni00000003/uni00000035/uni00000048/uni00000047/uni00000058/uni00000046/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni0000000b/uni00000008/uni0000000c
+/uni00000027/uni00000026/uni00000033
+/uni00000027/uni0000002e/uni00000033/uni00000003/uni00000032/uni00000051/uni0000004f/uni0000005c
+(a) Accuracy reduction vs. parameter reduction
+/uni00000018/uni00000013 /uni00000019/uni00000013 /uni0000001a/uni00000013 /uni0000001b/uni00000013 /uni0000001c/uni00000013
+/uni00000029/uni0000002f/uni00000032/uni00000033/uni00000056/uni00000003/uni00000035/uni00000048/uni00000047/uni00000058/uni00000046/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni0000000b/uni00000008/uni0000000c/uni00000015/uni00000011/uni00000013
+/uni00000014/uni00000011/uni00000018
+/uni00000014/uni00000011/uni00000013
+/uni00000013/uni00000011/uni00000018
+/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000018/uni00000024/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c/uni00000003/uni00000035/uni00000048/uni00000047/uni00000058/uni00000046/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni0000000b/uni00000008/uni0000000c
+/uni00000027/uni00000026/uni00000033
+/uni00000027/uni0000002e/uni00000033/uni00000003/uni00000032/uni00000051/uni0000004f/uni0000005c
+(b) Accuracy reduction vs.. FLOPs reduction
+Fig. 2. Comparisons of DCP and DKP in terms of Top-1 accuracy
+reduction vs. parameter/FLOPs reduction. We apply DCP/DKP to prune
+VGGNet on CIFAR-10 with different pruning rates.
+number of kernels in a channel. After doing kernel selection, we
+ﬁne-tune the whole network with the selected kernels only.
+6.3.3 Performance comparisons
+We apply DKP to select informative kernels from ResNet-56,
+VGGNet, and ResNet-18. From Table 5 and Table 6, directly
+adopting DKP to prune models achieve the best performance on
+both CIFAR-10 and ILSVRC-12. For example, for ResNet-18,
+DKP outperforms DCP by 0.18% in terms of the Top-1 accuracy
+with 47.12% and 46.56% reductions in the parameters and FLOPs.
+Moreover, with Adapt-DKP, the resultant models obtain comparable
+performance but lower computational costs than the ones of Adapt-
+DCP. Note that the improvement of DCP+DKP over DCP is smaller
+than that of DKP Only. In DCP+DKP, we simply perform kernel
+selection after doing channel selection. As a result, the performance
+highly depends on DCP. Speciﬁcally, once a channel is pruned
+(or not selected), even if there may still exist some informative
+kernels related to it, we are no longer able to ﬁnd and keep those
+useful kernels related to the removed channel, which may result in
+suboptimal performance and the marginal improvement over DCP.
+From Figure 2, DKP Only consistently outperforms DCP under
+different pruning rates. To be speciﬁc, VGGNet pruned by DKP
+Only with a 90.41% reduction in parameters reduces the Top-1
+error by 0.46% compared with the one pruned by DCP. These
+results demonstrate the effectiveness of DKP.
+7 A BLATION STUDIES
+In this section, we conduct ablative studies for the proposed DCP.
+1) We investigate the effect of using different pruning rates in
+Section 7.1. 2) We explore the effect of using different in
+Section 7.2. 3) We explore the effect of efﬁcient training strategies
+in Section 7.3. 4) We explore the effect of using different BTABLE 7
+Comparisons on ResNet-18 and ResNet-50 with different pruning rates.
+We report the Top-1 and Top-5 error (%) on ILSVRC-12.
+Model Top-1
+Err. (%)Top-5
+Err. (%)#Param.
+#(%)#FLOPs
+#(%)
+ResNet-180% 30.36 11.02 - -
+30% 30.77 11.03 28.05 27.49
+50% 32.64 12.38 47.01 46.22
+70% 35.89 14.22 65.70 64.25
+ResNet-500% 23.99 7.07 - -
+30% 23.63 6.96 33.40 35.72
+50% 25.01 7.80 51.55 55.50
+70% 27.28 8.83 65.90 71.09
+TABLE 8
+Pruning results of ResNet-56 and MobileNetV1 with different . We
+report the testing error (%) on CIFAR-10.
+ 0 0.1 0.5 1 1( LMonly) 5 10
+ResNet-56 5.94 5.96 5.87 5.80 5.99 5.85 5.93
+MobileNetV1 5.66 5.46 5.59 5.54 5.43 5.42 5.56
+in Section 7.4. 5) We discuss the effect of the tolerance in
+the proposed stopping conditions in Section 7.5. 6) We compare
+different stopping conditions in Section 7.6. 7) We visualize the
+feature maps w.r.t. the pruned/selected channels of ResNet-18 in
+Section 7.7. 8) We explore the inﬂuence of the number of additional
+losses in Section 7.8.
+7.1 Performance with different pruning rates
+To study the effect of using different pruning rates , we prune
+30%, 50%, and 70% channels from ResNet-18 and ResNet-50,
+and evaluate the pruned models on ILSVRC-12. The experimental
+results are shown in Table 7.
+From the results, the pruned models perform worse with the
+increase of the pruning rate. However, our pruned ResNet-50
+with a pruning rate of 30% outperforms the pre-trained model
+with 0.36% and0.11% improvement in terms of the Top-1 and
+Top-5 accuracy, respectively. It may attribute that DCP serves
+as a regularization as it effectively reduces model redundancy
+by selecting the most discriminative channels for each layer.
+Additionally, the performance degradation of ResNet-50 is smaller
+than that of ResNet-18 under the same pruning rate. For example,
+when pruning 50% of the channels, it only leads to 1.02% increase
+in terms of the Top-1 error for ResNet-50. In contrast, it results
+in 2.28% increase of the Top-1 error for ResNet-18. It can be
+attributed to that, compared with ResNet-18, ResNet-50 is more
+redundant with more parameters, thus it is easier to be pruned.
+7.2 Effect of the trade-off hyperparameter 
+We prune 30% channels of ResNet-56 and MobileNetV1 on CIFAR-
+10 with different values. We report the testing error in Table 8.
+From the table, the performance of the pruned models ﬁrst improves
+and then degrades with the increasing . Here, a larger implies
+that more emphasis is placed on the reconstruction error (See Eq.
+(6)). This demonstrates the effectiveness of the discrimination-
+aware strategy for channel selection. It is worth mentioning that
+both the reconstruction error and the cross-entropy loss contribute to
+better performance of the pruned models, which strongly supports
+the motivation to select the important channels by Lp
+SandLM.
+
+==== Page 11 ====
+11
+TABLE 9
+Effect of efﬁcient single round ﬁne-tuning. We report the testing error (%)
+and the time of channel pruning on CIFAR-10 and ILSVRC-12.
+Model MethodTop-1
+Err. (%)Top-5
+Err. (%)Time (hour)
+ResNet-56
+(CIFAR-10)DCP [91] 6.51 - 7.58
+DCP 6.26 - 2.83
+ResNet-18
+(ILSVRC-12)DCP [91] 35.88 14.32 31.78
+DCP 35.89 14.34 5.18
+TABLE 10
+Effect of feature reusing. We report the testing error (%) and the time of
+channel pruning on CIFAR-10 and ILSVRC-12.
+Model MethodTop-1
+Err. (%)Top-5
+Err. (%)Time (hour)
+ResNet-56
+(CIFAR-10)without feature reusing 6.26 - 2.83
+with feature reusing 6.28 - 1.85
+ResNet-18
+(ILSVRC-12)without feature reusing 35.89 14.34 5.18
+with feature reusing 35.90 14.34 3.02
+TABLE 11
+Pruning results of ResNet-56 with different B. We report the testing error
+(%) and the time of channel pruning on CIFAR-10.
+B Testing Err. (%) Time (hour)
+1 6.22 1.85
+2 6.28 0.90
+4 6.32 0.48
+Note that setting to 1.0 does not lead to the best performance
+considering different architectures and datasets. For simplicity, we
+setto 1.0 by default in our experiments.
+7.3 Effect of the improved training techniques
+7.3.1 Effect of the single round ﬁne-tuning
+To evaluate the effectiveness of the single round ﬁne-tuning, we
+prune 50% channels of ResNet-56 on CIFAR-10 and 70% channels
+of ResNet-18 on ILSVRC-12. We compare the proposed DCP with
+the conference version [91] and report the testing error and time
+of channel pruning in Table 9. From the table, the proposed DCP
+with single round ﬁne-tuning signiﬁcantly reduces the training
+time while maintaining comparable performance to the previous
+DCP [91]. For example, DCP pruned ResNet-18 on ILSVRC-
+12 reduces the computational cost by 6.14compared with the
+conference version. These results demonstrate the effectiveness and
+efﬁciency of the improved ﬁne-tuning strategy.
+7.3.2 Effect of the feature reusing
+To study the effect of the feature reusing, we prune 50% channels
+of ResNet-56 on CIFAR-10 and 70% channels of ResNet-18 on
+ILSVRC-12. We report the testing error and time of channel
+pruning in Table 10. As shown in the table, pruning with the feature
+reusing achieves comparable performance to the model without the
+feature reusing. However, pruning with the feature reusing greatly
+reduces the time of channel pruning. For example, DCP pruned
+ResNet-18 with the feature reusing reduces the computational cost
+by1.72. Due to the superior performance of the feature reusing,
+we use it by default in our experiments.TABLE 12
+Effect offor channel selection. We prune VGGNet with different and
+report the testing error (%) on CIFAR-10.
+Model  Top-1 Err. (%) #Param. #(%) #FLOPs#(%)
+with stopping
+condition 1510 46.29 96.16 67.87
+310 45.91 94.59 56.73
+110 45.31 90.93 30.80
+with stopping
+condition 2510 46.36 95.95 84.61
+310 45.87 94.74 79.66
+110 45.45 91.69 69.81
+TABLE 13
+Pruning results of ResNet-56 with different stopping conditions. We
+report the testing error (%) on CIFAR-10.
+ModelTesting
+Err. (%)#Param.#(%) #FLOPs#(%)
+with stopping condition 1 6.36 65.20 46.82
+with stopping condition 2 6.23 68.48 54.80
+7.4 Effect of the hyperparameter B
+To evaluate the effect of B, we prune 50% channels of ResNet-56
+on CIFAR-10 with different Band report the results in Table 11.
+Here, a larger Bindicates that we select more channels at each
+iteration in Algorithm 2. As a result, fewer iterations are required.
+From Table 11, the channel pruning time decreases with the
+increase ofBwhile the performance of DCP degrades. For example,
+DCP pruned ResNet-56 with B= 4 reduces the computational cost
+by 4.85. To make a trade-off between accuracy and complexity,
+we setBto 2 in our experiments.
+7.5 Effect of the tolerance in stopping conditions
+We test different tolerance values in Eq. (10) and Eq. (11). Here, we
+prune VGGNet on CIFAR-10 with 2f110 4;310 4;5
+10 4g. We show the experimental results in Table 12. In general,
+a smallerwill lead to a more rigorous stopping condition. Hence,
+more channels will be selected. As a result, the performance
+of the pruned models is improved with the decrease of . This
+experiment demonstrates the effectiveness of stopping conditions
+for automatically determining the pruning rate.
+7.6 Effect of different stopping conditions
+We investigate the effect of different stopping conditions mentioned
+in Section 4.6. To this end, we prune VGGNet and ResNet-
+56 using Adapt-DCP with different stopping conditions and
+report the results in Tables 12 and 13. From the results, the
+resultant models with stopping condition 2 obtain comparable
+performance but signiﬁcantly lower computational costs than the
+ones of stopping condition 1 . For example, VGGNet pruned
+with stopping condition 2 reduces 69.81% FLOPs while the one
+pruned with stopping condition 1 only reduces 30.80% FLOPs
+when= 1e 4. To further explore the effect of different stopping
+conditions, we visualize the number of FLOPs w.r.t. each layer of
+the pruned ResNet-56 and VGGNet. From Figure 3, the proposed
+stopping condition 2 is able to prevent DCP from selecting too
+many channels, and signiﬁcantly reduces the computational cost
+of the compressed models. Due to the superior performance of
+stopping condition 2 in FLOPs reduction, we use it by default.
+
+==== Page 12 ====
+12
+/uni00000014 /uni00000018 /uni00000014/uni00000013 /uni00000014/uni00000018 /uni00000015/uni00000013 /uni00000015/uni00000018
+/uni00000035/uni00000048/uni00000056/uni0000004c/uni00000047/uni00000058/uni00000044/uni0000004f/uni00000003/uni00000025/uni0000004f/uni00000052/uni00000046/uni0000004e/uni00000003/uni0000002c/uni00000051/uni00000047/uni00000048/uni0000005b/uni00000013/uni00000015/uni00000017/uni00000019/uni0000001b/uni00000029/uni0000002f/uni00000032/uni00000033/uni00000056/uni00000014/uni00000048/uni00000019
+/uni00000036/uni00000057/uni00000052/uni00000053/uni00000053/uni0000004c/uni00000051/uni0000004a/uni00000003/uni00000046/uni00000052/uni00000051/uni00000047/uni0000004c/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000014
+/uni00000036/uni00000057/uni00000052/uni00000053/uni00000053/uni0000004c/uni00000051/uni0000004a/uni00000003/uni00000046/uni00000052/uni00000051/uni00000047/uni0000004c/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000015
+(a) FLOPs w.r.t. each layer in the pruned ResNet-56.
+/uni00000014/uni00000015/uni00000016/uni00000017/uni00000018/uni00000019/uni0000001a/uni0000001b/uni0000001c/uni00000014/uni00000013/uni00000014/uni00000014/uni00000014/uni00000015/uni00000014/uni00000016/uni00000014/uni00000017/uni00000014/uni00000018/uni00000014/uni00000019
+/uni0000002f/uni00000044/uni0000005c/uni00000048/uni00000055/uni00000003/uni0000002c/uni00000051/uni00000047/uni00000048/uni0000005b/uni00000013/uni00000015/uni00000017/uni00000019/uni00000029/uni0000002f/uni00000032/uni00000033/uni00000056/uni00000014/uni00000048/uni0000001a
+/uni00000036/uni00000057/uni00000052/uni00000053/uni00000053/uni0000004c/uni00000051/uni0000004a/uni00000003/uni00000046/uni00000052/uni00000051/uni00000047/uni0000004c/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000014
+/uni00000036/uni00000057/uni00000052/uni00000053/uni00000053/uni0000004c/uni00000051/uni0000004a/uni00000003/uni00000046/uni00000052/uni00000051/uni00000047/uni0000004c/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000015 (b) FLOPs w.r.t. each layer in the pruned VGGNet.
+Fig. 3. Number of FLOPs w.r.t. each layer in the pruned ResNet-56 and VGGNet with different stopping conditions.
+1 2 3 4 5 6 7 8
+9 10 11 12 13 14 15 16
+17 18 19 20 21 22 23 24
+25 26 27 28 29 30 31 32
+33 34 35 36 37 38 39 40
+41 42 43 44 45 46 47 48
+49 50 51 52 53 54 55 56
+57 58 59 60 61 62 63 64
+Fig. 4. Visualization of the feature maps from the second layer of the ﬁrst residual block in ResNet-18 on ILSVRC-12. Feature maps with and without
+the red bounding boxes are the pruned and selected channels, respectively.
+7.7 Visualization of feature maps
+We further visualize all the feature maps w.r.t. the pruned and
+selected channels from the ﬁrst residual block in ResNet-18 in
+Figure 4. From the results, the feature maps of the pruned channels
+are less informative than those of the selected channels. Moreover,
+the proposed DCP is able to remove those highly activated channels
+that are redundant or nearly identical along with the weakly
+activated channels. For example, DCP removes the 49-th channel
+since it is similar to the 45-th channel (cosine similarity: 0.82). Even
+a channel with high activation values ( e.g., the 5-th channel), DCP
+still removes it as it does not contribute to the discriminative power
+of the network. These results prove that the proposed DCP selects
+the channels with strong discriminative power for the network.
+7.8 Effect of the number of additional losses
+We prune 50% channels from ResNet-56 and 30% channels from
+MobileNetV1 with different number of additional losses on CIFAR-
+10. From Table 14, adding more losses results in better performance.
+For example, ResNet-56 with three additional losses outperforms
+the one with one additional loss. However, adding too many losses
+may lead to a little gain in performance but signiﬁcantly increaseTABLE 14
+Effect of the number of additional losses. We prune 50% channels from
+ResNet-56 and 30% channels from MobileNetV1. We report the testing
+error on CIFAR-10. The testing error (%) of pre-trained ResNet-56 and
+MobilenNet v1 are 6.26 and 6.04, respectively.
+#Additional LossesErr. gap (%)
+ResNet-56 MobileNetV1
+1 +0.10 -0.28
+3 +0.02 -0.54
+5 +0.01 -0.65
+7 -0.08 -0.70
+the computational cost. Heuristically, we ﬁnd that adding losses
+every 5-10 blocks is sufﬁcient to make a good trade-off between
+accuracy and complexity.
+8 C ONCLUSION
+In this paper, we have proposed a discrimination-aware channel
+pruning (DCP) method for the compression of deep neural networks.
+Speciﬁcally, we ﬁrst introduce additional losses to improve the
+discriminative power of the network and then perform channel
+
+==== Page 13 ====
+13
+selection in a layer-wise manner. In order to select informative
+channels, we have formulated the channel pruning as a sparsity-
+induced optimization problem and proposed a greedy algorithm
+to solve it. Based on DCP, we have further proposed several
+techniques to accelerate the channel pruning process. Moreover, we
+have also proposed a discrimination-aware kernel pruning (DKP)
+method to perform model compression at the kernel level. Extensive
+results on both image classiﬁcation and face recognition tasks have
+demonstrated the effectiveness of the proposed methods.
+In the future, we may extend our method in two aspects. First,
+in the proposed DCP, we perform channel/kernel selection in a
+layer-wise manner. This strategy, however, may result in suboptimal
+performance as only a single layer is considered each time. To
+address this, we may consider multiple layers/blocks each time
+to improve the pruning performance. Second, we will extend
+the proposed DCP scheme for model quantization. Speciﬁcally,
+based on DCP, we can conduct the quantization for each selected
+channel/kernel, and use the reconstruction residual to choose the
+next channel/kernel. In this way, we can perform channel/kernel
+pruning and quantization simultaneously.
+ACKNOWLEDGMENTS
+This work was partially supported by Key-Area Research and
+Development Program of Guangdong Province 2018B010107001,
+National Natural Science Foundation of China (NSFC) 61836003
+(key project), National Natural Science Foundation of China
+(NSFC) 62072190, and Program for Guangdong Introducing
+Innovative and Enterpreneurial Teams 2017ZT07X183.
+REFERENCES
+[1] J. M. Alvarez and M. Salzmann. Learning the number of neurons in deep
+networks. pages 2270–2278, 2016.
+[2] S. Anwar, K. Hwang, and W. Sung. Structured pruning of deep
+convolutional neural networks. 13(3):32, 2017.
+[3] S. Bahmani, B. Raj, and P. T. Boufounos. Greedy sparsity-constrained
+optimization. J. Mach. Learn. Res. , 14:807–841, 2013.
+[4] A. Bulat and Y . Tzimiropoulos. Hierarchical binary cnns for landmark
+localization with limited resources. IEEE Trans. Pattern Anal. Mach.
+Intell. , 2018.
+[5] J. Cao, Y . Guo, Q. Wu, C. Shen, J. Huang, and M. Tan. Adversarial
+learning with local coordinate coding. In Proc. Int. Conf. Mach. Learn. ,
+volume 80, pages 707–715, 2018.
+[6] S. Chen, Y . Liu, X. Gao, and Z. Han. Mobilefacenets: Efﬁcient cnns
+for accurate real-time face veriﬁcation on mobile devices. In Chinese
+Conference on Biometric Recognition , pages 428–438, 2018.
+[7] J. Choi, Z. Wang, S. Venkataramani, P. I.-J. Chuang, V . Srinivasan, and
+K. Gopalakrishnan. Pact: Parameterized clipping activation for quantized
+neural networks. arXiv preprint arXiv:1805.06085 , 2018.
+[8] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei. Imagenet: A
+large-scale hierarchical image database. In Proc. IEEE Conf. Comp. Vis.
+Patt. Recogn. , pages 248–255, 2009.
+[9] J. Deng, J. Guo, X. Niannan, and S. Zafeiriou. Arcface: Additive angular
+margin loss for deep face recognition. In Proc. IEEE Conf. Comp. Vis.
+Patt. Recogn. , pages 4690–4699, 2019.
+[10] E. L. Denton, W. Zaremba, J. Bruna, Y . LeCun, and R. Fergus. Exploiting
+linear structure within convolutional networks for efﬁcient evaluation.
+pages 1269–1277, 2014.
+[11] Y . Gong, L. Liu, M. Yang, and L. Bourdev. Compressing deep convolu-
+tional networks using vector quantization. arXiv preprint arXiv:1412.6115 ,
+2014.
+[12] I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-Farley,
+S. Ozair, A. Courville, and Y . Bengio. Generative adversarial nets. pages
+2672–2680, 2014.
+[13] Y . Guo, J. Chen, Q. Du, A. Van Den Hengel, Q. Shi, and M. Tan. Multi-
+way backpropagation for training compact deep neural networks. Neural
+networks , 2020.
+[14] Y . Guo, Q. Chen, J. Chen, Q. Wu, Q. Shi, and M. Tan. Auto-embedding
+generative adversarial networks for high resolution image synthesis. 2019.[15] Y . Guo, Q. Wu, C. Deng, J. Chen, and M. Tan. Double forward propagation
+for memorized batch normalization. In Proc. AAAI Conf. on Arti. Intel. ,
+pages 3134–3141, 2018.
+[16] Y . Guo, A. Yao, and Y . Chen. Dynamic network surgery for efﬁcient dnns.
+pages 1379–1387, 2016.
+[17] Y . Guo, L. Zhang, Y . Hu, X. He, and J. Gao. Ms-celeb-1m: A dataset and
+benchmark for large-scale face recognition. In Proc. Eur. Conf. Comp.
+Vis., pages 87–102, 2016.
+[18] S. Han, H. Mao, and W. J. Dally. Deep compression: Compressing deep
+neural networks with pruning, trained quantization and huffman coding.
+InProc. Int. Conf. Learn. Repren. , pages 1–14, 2016.
+[19] S. Han, J. Pool, J. Tran, and W. Dally. Learning both weights and
+connections for efﬁcient neural network. pages 1135–1143, 2015.
+[20] K. He, X. Zhang, S. Ren, and J. Sun. Deep residual learning for image
+recognition. In Proc. IEEE Conf. Comp. Vis. Patt. Recogn. , pages 770–778,
+2016.
+[21] Y . He, G. Kang, X. Dong, Y . Fu, and Y . Yang. Soft ﬁlter pruning for
+accelerating deep convolutional neural networks. pages 2234–2240, 2018.
+[22] Y . He, J. Lin, Z. Liu, H. Wang, L.-J. Li, and S. Han. Amc: Automl for
+model compression and acceleration on mobile devices. In Proc. Eur.
+Conf. Comp. Vis. , pages 784–800, 2018.
+[23] Y . He, P. Liu, Z. Wang, Z. Hu, and Y . Yang. Filter pruning via geometric
+median for deep convolutional neural networks acceleration. In Proc.
+IEEE Conf. Comp. Vis. Patt. Recogn. , 2019.
+[24] Y . He, X. Zhang, and J. Sun. Channel pruning for accelerating very deep
+neural networks. In Proc. IEEE Int. Conf. Comp. Vis. , pages 1389–1397,
+2017.
+[25] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand,
+M. Andreetto, and H. Adam. Mobilenets: Efﬁcient convolutional neural
+networks for mobile vision applications. arXiv preprint arXiv:1704.04861 ,
+2017.
+[26] H. Hu, R. Peng, Y .-W. Tai, and C.-K. Tang. Network trimming: A data-
+driven neuron pruning approach towards efﬁcient deep architectures. arXiv
+preprint arXiv:1607.03250 , 2016.
+[27] G. B. Huang, M. Ramesh, T. Berg, and E. Learned-Miller. Labeled faces
+in the wild: A database for studying face recognition in unconstrained
+environments. Technical report, Technical Report 07-49, University of
+Massachusetts, Amherst, 2007.
+[28] I. Hubara, M. Courbariaux, D. Soudry, R. El-Yaniv, and Y . Bengio.
+Binarized neural networks. In Proc. Adv. Neural Inf. Process. Syst. , pages
+4107–4115, 2016.
+[29] S. Ioffe and C. Szegedy. Batch normalization: Accelerating deep network
+training by reducing internal covariate shift. In Proc. Int. Conf. Mach.
+Learn. , pages 448–456, 2015.
+[30] M. Jaderberg, A. Vedaldi, and A. Zisserman. Speeding up convolutional
+neural networks with low rank expansions. In Proc. Brit. Mach. Vis. Conf. ,
+pages 1–13, 2014.
+[31] C. Jiang, G. Li, C. Qian, and K. Tang. Efﬁcient dnn neuron pruning by
+minimizing layer-wise nonlinear reconstruction error. volume 2018, pages
+2–2, 2018.
+[32] S. Jung, C. Son, S. Lee, J. Son, J.-J. Han, Y . Kwak, S. J. Hwang, and
+C. Choi. Learning to quantize deep networks by optimizing quantization
+intervals with task loss. In Proc. IEEE Conf. Comp. Vis. Patt. Recogn. ,
+pages 4350–4359, 2019.
+[33] I. Kemelmacher-Shlizerman, S. M. Seitz, D. Miller, and E. Brossard. The
+megaface benchmark: 1 million faces for recognition at scale. In Proc.
+IEEE Conf. Comp. Vis. Patt. Recogn. , pages 4873–4882, 2016.
+[34] A. Krizhevsky and G. Hinton. Learning multiple layers of features from
+tiny images. Tech Report , 2009.
+[35] A. Krizhevsky, I. Sutskever, and G. E. Hinton. Imagenet classiﬁcation
+with deep convolutional neural networks. pages 1097–1105, 2012.
+[36] C.-Y . Lee, S. Xie, P. Gallagher, Z. Zhang, and Z. Tu. Deeply-supervised
+nets. In Proc. Int. Conf. Artif. Intell. Stat. , pages 562–570, 2015.
+[37] N. Lee, T. Ajanthan, and P. H. Torr. Snip: Single-shot network pruning
+based on connection sensitivity. In Proc. Int. Conf. Learn. Repren. , pages
+1–15, 2019.
+[38] H. Li, A. Kadav, I. Durdanovic, H. Samet, and H. P. Graf. Pruning ﬁlters
+for efﬁcient convnets. In Proc. Int. Conf. Learn. Repren. , pages 1–13,
+2017.
+[39] S. Lin, R. Ji, Y . Li, C. Deng, and X. Li. Toward compact convnets via
+structure-sparsity regularized ﬁlter pruning. pages 1–15, 2019.
+[40] S. Lin, R. Ji, Y . Li, Y . Wu, F. Huang, and B. Zhang. Accelerating
+convolutional networks via global & dynamic ﬁlter pruning. pages 2425–
+2432, 2018.
+[41] S. Lin, R. Ji, C. Yan, B. Zhang, L. Cao, Q. Ye, F. Huang, and D. Doermann.
+Towards optimal structured cnn pruning via generative adversarial learning.
+InProc. IEEE Conf. Comp. Vis. Patt. Recogn. , pages 2790–2799, 2019.
+
+==== Page 14 ====
+14
+[42] J. Liu, J. Ye, and R. Fujimaki. Forward-backward greedy algorithms for
+general convex smooth functions over a cardinality constraint. In Proc.
+Int. Conf. Mach. Learn. , pages 503–511, 2014.
+[43] W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. Reed, C.-Y . Fu, and A. C.
+Berg. Ssd: Single shot multibox detector. In Proc. Eur. Conf. Comp. Vis. ,
+pages 21–37, 2016.
+[44] W. Liu, Y . Wen, Z. Yu, M. Li, B. Raj, and L. Song. Sphereface: Deep
+hypersphere embedding for face recognition. In Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , pages 212–220, 2017.
+[45] Z. Liu, J. Li, Z. Shen, G. Huang, S. Yan, and C. Zhang. Learning efﬁcient
+convolutional networks through network slimming. In Proc. IEEE Int.
+Conf. Comp. Vis. , pages 2736–2744, 2017.
+[46] Z. Liu, H. Mu, X. Zhang, Z. Guo, X. Yang, T. K.-T. Cheng, and J. Sun.
+Metapruning: Meta learning for automatic neural network channel pruning.
+InProc. IEEE Int. Conf. Comp. Vis. , 2019.
+[47] Z. Liu, M. Sun, T. Zhou, G. Huang, and T. Darrell. Rethinking the value
+of network pruning. In Proc. Int. Conf. Learn. Repren. , pages 1–21, 2019.
+[48] I. Loshchilov and F. Hutter. SGDR: stochastic gradient descent with warm
+restarts. In Proc. Int. Conf. Learn. Repren. , pages 1–16, 2017.
+[49] J.-H. Luo, J. Wu, and W. Lin. Thinet: A ﬁlter level pruning method for
+deep neural network compression. In Proc. IEEE Int. Conf. Comp. Vis. ,
+pages 5058–5066, 2017.
+[50] J.-H. Luo, H. Zhang, H.-Y . Zhou, C.-W. Xie, J. Wu, and W. Lin. Thinet:
+pruning cnn ﬁlters for a thinner net. IEEE Trans. Pattern Anal. Mach.
+Intell. , 2018.
+[51] P. Molchanov, A. Mallya, S. Tyree, I. Frosio, and J. Kautz. Importance
+estimation for neural network pruning. In Proc. IEEE Conf. Comp. Vis.
+Patt. Recogn. , 2019.
+[52] P. Molchanov, S. Tyree, T. Karras, T. Aila, and J. Kautz. Pruning
+convolutional neural networks for resource efﬁcient inference. In Proc.
+Int. Conf. Learn. Repren. , pages 1–17, 2017.
+[53] S. Moschoglou, A. Papaioannou, C. Sagonas, J. Deng, I. Kotsia, and
+S. Zafeiriou. Agedb: the ﬁrst manually collected, in-the-wild age database.
+InProc. IEEE Conf. Comp. Vis. Patt. Recogn. Workshops , pages 51–59,
+2017.
+[54] V . Nair and G. E. Hinton. Rectiﬁed linear units improve restricted
+boltzmann machines. In Proc. Int. Conf. Mach. Learn. , pages 807–814,
+2010.
+[55] Y . E. Nesterov. A method for solving the convex programming problem
+with convergence rate o (1/kˆ 2). In Proceedings of the USSR Academy of
+Sciences , volume 269, pages 543–547, 1983.
+[56] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen,
+Z. Lin, N. Gimelshein, L. Antiga, et al. Pytorch: An imperative style,
+high-performance deep learning library. pages 8024–8035, 2019.
+[57] Y . Rao, J. Lu, J. Lin, and J. Zhou. Runtime network routing for efﬁcient
+image classiﬁcation. IEEE Trans. Pattern Anal. Mach. Intell. , 2018.
+[58] M. Rastegari, V . Ordonez, J. Redmon, and A. Farhadi. Xnor-net: Imagenet
+classiﬁcation using binary convolutional neural networks. In Proc. Eur.
+Conf. Comp. Vis. , pages 525–542, 2016.
+[59] J. Redmon, S. Divvala, R. Girshick, and A. Farhadi. You only look once:
+Uniﬁed, real-time object detection. In Proc. IEEE Conf. Comp. Vis. Patt.
+Recogn. , pages 779–788, 2016.
+[60] S. Ren, K. He, R. Girshick, and J. Sun. Faster r-cnn: Towards real-time
+object detection with region proposal networks. IEEE Trans. Pattern Anal.
+Mach. Intell. , 39(6):1137–1149, June 2017.
+[61] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen.
+Mobilenetv2: Inverted residuals and linear bottlenecks. In Proc. IEEE
+Conf. Comp. Vis. Patt. Recogn. , pages 4510–4520, 2018.
+[62] F. Schroff, D. Kalenichenko, and J. Philbin. Facenet: A uniﬁed embedding
+for face recognition and clustering. In Proc. IEEE Conf. Comp. Vis. Patt.
+Recogn. , pages 815–823, 2015.
+[63] S. Sengupta, J.-C. Chen, C. Castillo, V . M. Patel, R. Chellappa, and D. W.
+Jacobs. Frontal to proﬁle face veriﬁcation in the wild. pages 1–9. IEEE,
+2016.
+[64] K. Simonyan and A. Zisserman. Two-stream convolutional networks for
+action recognition in videos. pages 568–576, 2014.
+[65] K. Simonyan and A. Zisserman. Very deep convolutional networks for
+large-scale image recognition. In Proc. Int. Conf. Learn. Repren. , pages
+1–14, 2015.
+[66] V . Sindhwani, T. Sainath, and S. Kumar. Structured transforms for small-
+footprint deep learning. pages 3088–3096, 2015.
+[67] S. Srinivas, A. Subramanya, and R. V . Babu. Training sparse neural
+networks. In Proc. IEEE Conf. Comp. Vis. Patt. Recogn. Workshops ,
+pages 455–462, 2017.
+[68] R. K. Srivastava, K. Greff, and J. Schmidhuber. Training very deep
+networks. pages 2377–2385, 2015.[69] Y . Sun, D. Liang, X. Wang, and X. Tang. Deepid3: Face recognition with
+very deep neural networks. arXiv preprint arXiv:1502.00873 , 2015.
+[70] C. Szegedy, W. Liu, Y . Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan,
+V . Vanhoucke, and A. Rabinovich. Going deeper with convolutions. In
+Proc. IEEE Conf. Comp. Vis. Patt. Recogn. , pages 1–9, 2015.
+[71] C. Tai, T. Xiao, X. Wang, and W. E. Convolutional neural networks with
+low-rank regularization. In Proc. Int. Conf. Learn. Repren. , pages 1–11,
+2016.
+[72] M. Tan and Q. Le. Efﬁcientnet: Rethinking model scaling for convolutional
+neural networks. In International Conference on Machine Learning , pages
+6105–6114, 2019.
+[73] M. Tan, I. W. Tsang, and L. Wang. Towards ultrahigh dimensional feature
+selection for big data. J. Mach. Learn. Res. , 15(1):1371–1429, 2014.
+[74] M. Tan, I. W. Tsang, and L. Wang. Matching pursuit lasso part i: Sparse
+recovery over big dictionary. 63(3):727–741, 2015.
+[75] H. Wang, Y . Wang, Z. Zhou, X. Ji, D. Gong, J. Zhou, Z. Li, and W. Liu.
+Cosface: Large margin cosine loss for deep face recognition. In Proc.
+IEEE Conf. Comp. Vis. Patt. Recogn. , pages 5265–5274, 2018.
+[76] H. Wang, Q. Zhang, Y . Wang, and H. Hu. Structured probabilistic pruning
+for convolutional neural network acceleration. In Proc. Brit. Mach. Vis.
+Conf. , pages 1–13, 2018.
+[77] L. Wang, Y . Xiong, Z. Wang, Y . Qiao, D. Lin, X. Tang, and L. Van Gool.
+Temporal segment networks: Towards good practices for deep action
+recognition. In Proc. Eur. Conf. Comp. Vis. , pages 20–36, 2016.
+[78] W. Wen, C. Wu, Y . Wang, Y . Chen, and H. Li. Learning structured sparsity
+in deep neural networks. pages 2074–2082, 2016.
+[79] T.-J. Yang, A. Howard, B. Chen, X. Zhang, A. Go, M. Sandler, V . Sze,
+and H. Adam. Netadapt: Platform-aware neural network adaptation for
+mobile applications. In Proc. Eur. Conf. Comp. Vis. , pages 285–300, 2018.
+[80] J. Ye, X. Lu, Z. Lin, and J. Z. Wang. Rethinking the smaller-norm-less-
+informative assumption in channel pruning of convolution layers. In Proc.
+Int. Conf. Learn. Repren. , pages 1–11, 2018.
+[81] Z. You, K. Yan, J. Ye, M. Ma, and P. Wang. Gate decorator: Global
+ﬁlter pruning method for accelerating deep convolutional neural networks.
+pages 2130–2141, 2019.
+[82] R. Yu, A. Li, C.-F. Chen, J.-H. Lai, V . I. Morariu, X. Han, M. Gao, C.-Y .
+Lin, and L. S. Davis. Nisp: Pruning networks using neuron importance
+score propagation. In Proc. IEEE Conf. Comp. Vis. Patt. Recogn. , pages
+9194–9203, 2018.
+[83] X. Yuan, P. Li, and T. Zhang. Gradient hard thresholding pursuit for
+sparsity-constrained optimization. In Proc. Int. Conf. Mach. Learn. , pages
+127–135, 2014.
+[84] R. Zeng, C. Gan, P. Chen, W. Huang, Q. Wu, and M. Tan. Breaking
+winner-takes-all: Iterative-winners-out networks for weakly supervised
+temporal action localization. 28(12):5797–5808, 2019.
+[85] X. Zhang, J. Zou, K. He, and J. Sun. Accelerating very deep convolutional
+networks for classiﬁcation and detection. IEEE Trans. Pattern Anal. Mach.
+Intell. , 38(10):1943–1955, 2016.
+[86] A. Zhou, A. Yao, Y . Guo, L. Xu, and Y . Chen. Incremental network
+quantization: Towards lossless cnns with low-precision weights. In Proc.
+Int. Conf. Learn. Repren. , pages 1–14, 2017.
+[87] S. Zhou, Y . Wu, Z. Ni, X. Zhou, H. Wen, and Y . Zou. Dorefa-net: Training
+low bitwidth convolutional neural networks with low bitwidth gradients.
+arXiv preprint arXiv:1606.06160 , 2016.
+[88] X. Zhu, W. Zhou, and H. Li. Improving deep neural network sparsity
+through decorrelation regularization. pages 3264–3270, 2018.
+[89] B. Zhuang, C. Shen, M. Tan, L. Liu, and I. Reid. Towards effective
+low-bitwidth convolutional neural networks. In Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , pages 7920–7928, 2018.
+[90] B. Zhuang, C. Shen, M. Tan, L. Liu, and I. Reid. Structured binary neural
+networks for accurate image classiﬁcation and semantic segmentation. In
+Proc. IEEE Conf. Comp. Vis. Patt. Recogn. , pages 413–422, 2019.
+[91] Z. Zhuang, M. Tan, B. Zhuang, J. Liu, Y . Guo, Q. Wu, J. Huang, and
+J. Zhu. Discrimination-aware channel pruning for deep neural networks.
+pages 881–892. 2018.
+

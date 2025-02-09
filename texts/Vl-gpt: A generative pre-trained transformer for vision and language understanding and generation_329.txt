@@ -1,0 +1,1108 @@
+==== Page 1 ====
+VL-GPT: A Generative Pre-trained Transformer
+for Vision and Language Understanding and Generation
+Jinguo Zhu1*Xiaohan Ding2*Yixiao Ge2,3Yuying Ge2
+Sijie Zhao2Hengshuang Zhao4Xiaohua Wang1Ying Shan2,3B
+1Xi’an Jiaotong University2Tencent AI Lab
+3ARC Lab, Tencent PCG4The University of Hong Kong
+Abstract
+In this work, we introduce Vision-Language Generative
+Pre-trained Transformer (VL-GPT), a transformer model
+proficient at concurrently perceiving and generating visual
+and linguistic data. VL-GPT achieves a unified pre-training
+approach for both image and text modalities by employing a
+straightforward auto-regressive objective, thereby enabling
+the model to process image and text as seamlessly as a lan-
+guage model processes text. To accomplish this, we initially
+propose a novel image tokenizer-detokenizer framework for
+visual data, specifically designed to transform raw images
+into a sequence of continuous embeddings and reconstruct
+them accordingly. In combination with the existing text tok-
+enizer and detokenizer, this framework allows for the en-
+coding of interleaved image-text data into a multimodal
+sequence, which can subsequently be fed into the trans-
+former model. Consequently, VL-GPT can perform large-
+scale pre-training on multimodal corpora utilizing a uni-
+fied auto-regressive objective ( i.e., next-token prediction).
+Upon completion of pre-training, VL-GPT exhibits remark-
+able zero-shot and few-shot performance across a diverse
+range of vision and language understanding and genera-
+tion tasks, including image captioning, visual question an-
+swering, text-to-image generation, and more. Additionally,
+the pre-trained model retrains in-context learning capabil-
+ities when provided with multimodal prompts. We further
+conduct instruction tuning on our VL-GPT, highlighting its
+exceptional potential for multimodal assistance.
+1. Introduction
+Driven by the remarkable success of large language mod-
+els (LLMs) in the field of natural language processing
+*Equal contribution. This work is done when Jinguo Zhu is an intern
+at Tencent AI Lab. The source code and model weights shall be released
+athttps://github.com/AILab-CVC/VL-GPT .BCorresponding
+author.(NLP) [40, 41, 54], there has been a surge of interest within
+multimodal community to develop large vision-language
+(VL) models. One of the promising approaches, exempli-
+fied by Flamingo [1], BLIP2 [24], LLA V A [25], have ex-
+plored how to build large VL models based on powerful
+pre-trained LLMs. These studies typically adopted a similar
+architecture: a pre-trained image encoder and an LLM are
+connected via a trainable connection module, which aligns
+the image feature and text embeddings, thereby enabling
+language models to accept images and text as inputs and
+generate a text sequence.
+To expand the capabilities of generating image in a mul-
+timodal context, certain efforts, e.g., Visual ChatGPT [47],
+attempt to connect LLMs with image generation tools in a
+cascaded pipeline by transferring text messages, which in-
+evitably introduce instability and noise. Alternatively, an-
+other line of research achieves it by optimizing models in
+an end-to-end manner [9, 18, 23, 30, 48]. By aligning the
+output space with the image diffusion models, VL models
+can not only perceive but also generate images and text.
+A crucial characteristic of large language models is auto-
+regressive modeling [31], i.e., predicting next token, which
+facilitates language understanding and generation in a uni-
+fied manner. However, in the aforementioned studies, the
+inconsistency of image embeddings between LLM’s input
+and output sides compels the model to treat input images
+and generated images differently, resulting in separate mod-
+eling for image understanding and generation. Meanwhile,
+this discrepancy also obstructs the implementation of auto-
+regressive training loss on image embeddings.
+In this study, we introduce VL-GPT, a large vision-
+language generative pre-trained transformer that enables the
+unified training of both visual and linguistic data using an
+auto-regressive objective, as depicted in Fig. 1. To achieve
+this, we propose an image tokenizer-detokenizer framework
+for the conversion between raw image pixels and contin-
+uous visual embeddings, analogous to the role of the text
+tokenization [19, 43] in language models. The framework
+1arXiv:2312.09251v1  [cs.CV]  14 Dec 2023
+
+==== Page 2 ====
+Image TokenizerImage DetokenizerImage TokenizerText TokenizerLarge Vision-Language TransformerModelImage DetokenizerText DetokenizerVL-GPTInterleavedImage-text InputInterleavedImage-text GenerationMultimodal  Sequence Multimodal  Sequence Visual  Embeddings
+Causal TransformerTransformerDecoder
+Diffusion Decoder
+Visual EncoderFigure 1. Overview of our proposed approach. The upper part delineates the image tokenizer-detokenizer framework, designed for encoding
+images into continuous visual embeddings and reconstructing them in the pixel space. The lower part demonstrates the implementation
+of our VL-GPT, where interleaved image-text data are encoded into multimodal sequence using image and text tokenizers, subsequently
+processed by a transformer model auto-regressively. The image and text detokenizers are employed for generating respective outputs.
+comprises an image tokenizer and an image detokenizer,
+where the tokenizer encodes raw images into a sequence of
+continuous visual embeddings, and the detokenizer decodes
+the continuous embeddings into pixel space. To obtain vi-
+sual continuous embeddings that are rich in both image de-
+tails and semantic information, we employ the image em-
+beddings and their corresponding caption embeddings ex-
+tracted by pre-trained encoders ( i.e., CLIP [32]) as the su-
+pervision for training of the framework. Furthermore, the
+efficiency of the framework training is enhanced through
+weight initialization from pre-trained image encoders and
+high-quality image diffusion models.
+By employing the image tokenizer-detokenizer frame-
+work, visual embeddings can achieve consistency on both
+the input and output sides of the transformer model. Con-
+sequently, interleaved image-text data can be trained in
+a unified auto-regressive manner. Specifically, the image
+tokenizer and the existing text tokenizer ( i.e., BPE tok-
+enizer [43]) first convert the image and text into a multi-
+modal sequence consisting of interleaved continuous visual
+embeddings and discrete text tokens. The transformer can
+then be trained to predict the next embedding or token in
+this multimodal sequence, employing mean squared error
+(MSE) loss for continuous visual embeddings and cross-
+entropy loss for discrete text tokens. Contrary to previous
+works [9, 18, 30, 48], all embeddings in the multimodal
+sequence can receive supervision from the auto-regressive
+loss. During the generation stage, visual embeddings andtext tokens can be generated auto-regressively without dis-
+tinction, and subsequently decoded into raw images and text
+by the image detokenizer and text detokenizer, respectively.
+Owing to the unified modeling, the pre-training of the
+VL model can be conducted on large-scale image-text pairs
+and interleaved image-text data. Upon completion of pre-
+training, the model is capable of perceiving arbitrary multi-
+modal input and generating responses varying in modalities
+(e.g., text, images or their interleaved contents), allowing
+it to generalize to a wide range of vision and language un-
+derstanding and generation tasks in a zero-shot or few-shot
+manner. Moreover, the pre-trained model exhibits appeal-
+ing emergent properties for multimodal in-context learning,
+as it can effectively tackle new unseen tasks when provided
+with multimodal prompts. The VL generative pre-trained
+transformer model, referred to as VL-GPT, holds the poten-
+tial to serve as a powerful foundation model for the multi-
+modal community, similar to the role of GPT family [4, 29]
+in NLP. Our contributions are summarized as follows:
+• We propose an image tokenizer-detokenizer framework to
+convert images into continuous embeddings and recon-
+struct them, while exploring effective training methods
+for this framework.
+Through efficient training that requires an affordable
+computational cost, the image tokenizer and detokenizer
+can effectively retain both semantic information and pixel
+details of the original image.
+• We introduce VL-GPT, a generative pre-trained trans-
+2
+
+==== Page 3 ====
+former model for vision and language (VL) understand-
+ing and generation tasks. The model can be pre-trained
+on large-scale multimodal corpora in a unified auto-
+regressive manner, i.e., predicting the next token in a mul-
+timodal sequence containing continuous visual embed-
+dings and discrete text tokens without any discrimination.
+• VL-GPT exhibits competitive performance on various VL
+understanding and generation benchmarks under zero-
+shot and few-shot settings, including image captioning,
+visual question answering, and text-to-image generation.
+It also demonstrates an appealing multimodal in-context
+learning ability when provided with multimodal prompts.
+Furthermore, it shows promising potential to serve as a
+general multimodal assistant through instruction tuning.
+2. Related Work
+Multimodal Pre-training in the Pre-LLM Era. Prior re-
+search efforts primarily concentrated on model architec-
+ture to facilitate the fusion and interaction of cross-model
+data [6, 50, 52]. The success of transformers in language
+models [42] and ViT [10] inspired the development of uni-
+fied multi-modal modeling [27, 44]. Although images and
+language can be processed by a unified model with shared
+parameters, they often have distinct training objectives. It
+is worth mentioning that the BEiT series [2, 45] success-
+fully adapted the masked language modeling objective from
+BERT [8] to vision and multimodal pre-training.
+Multimodal Pre-training in the LLM Era. Building upon
+pre-trained large language models (LLMs) [33, 40, 41, 54],
+recent studies have effectively developed multimodal lan-
+guage models capable of processing image and text inputs
+to generate text outputs [1, 22, 24, 25, 56]. Another chal-
+lenge for large multimodal models is generating multimodal
+content beyond language. Several efforts, such as Visual
+ChatGPT [47] and HuggingGPT [38], have achieved this
+by connecting LLMs with other generation tools within an
+LLM integration framework, e.g., LangChain. However,
+these systems exhibit instability and limited room for fur-
+ther optimization. To enable LLMs to generate images with
+optimization, M-V ADER [46] aligns the semantic consis-
+tence between an LLM and a diffusion decoder by train-
+ing them on image-text pair data. GILL [18] achieves more
+complex interleaved image-text generation by mapping the
+embedding spaces of the LLM to text-to-image generation
+models. NExT-GPT [48] extends this concept to additional
+modalities, such as audio and video. DreamLLM [9] fa-
+cilitates passing the differential gradient from image diffu-
+sion models to language models, enabling the generation of
+free-form interleaved content. Following similar methods,
+Kosmos-G [30] enhances the fidelity of generated images in
+context through a compositional instruction tuning task.
+In contrast to our VL-GPT, these studies mainly focus on
+Image EncoderText Encodera brown dog is sleeping on a bed
+Rec LossRec LossInput imageImage caption
+Visual continuous embedding xvImage embedding evText embedding	et
+Estimated image embedding zvEstimated text embedding ztImage Tokenizer
+Reconstruction Image !xUnused DuringTrainingImage Detokenizer
+Causal TransformerTransformerDecoder
+Visual Encoder
+Diffusion DecoderFigure 2. The training scheme of our image tokenizer-detokenizer
+framework, which is supervised by the frozen image and text en-
+coders of our adopted pre-trained image diffusion model. Only
+the causal transformer in tokenizer and the transformer decoder
+in detokenizer necessitate training, while the diffusion decoder in
+detokenizer remains unused during training.
+leveraging existing LLMs and exploring the integration of
+current image encoders and image generation models into
+LLMs. However, these methods do not achieve unified
+modeling for images and language, nor unified modeling
+for image understanding and generation. For instance, spe-
+cial queries are typically needed to encapsulate the context
+information for image generation, but they are deemed un-
+necessary when images serve as input for LLMs. Moreover,
+applying an auto-regressive training objective on visual em-
+beddings is challenging due to the inconsistency of image
+embedding space. Consequently, these approaches are lim-
+ited in expanding the scalable pre-training paradigm for
+the GPT family, i.e., next-token prediction, to large vision-
+language models on web-scale multimodal corpora.
+Recently, Emu [39] proposes a multimodal pre-trained
+model that enables the auto-regressive training for both vi-
+sual and text embeddings. However, it requires an costly
+second-stage fine-tuning of the Stable Diffusion [35] to con-
+vert the visual embeddings into pixel space. In contrast, our
+method utilizes a novel image tokenizer-detokenizer frame-
+work that can fully leverage a pre-trained image diffusion
+model (see Fig. 2). This approach not only simplifies the
+process but also enhances training efficiency. Similar to our
+approach, SEED [11] initially trains an image tokenizer, fol-
+lowed by a multi-modal training. Nevertheless, its tokenizer
+encodes images into discrete tokens via quantization opera-
+tions, potentially losing partial image information. In con-
+trast, our tokenizer converts images into continuous visual
+embeddings, preserving both semantic information and ap-
+pearance details, resulting in improved performance across
+3
+
+==== Page 4 ====
+diverse benchmarks.
+3. Method
+As illustrated in Fig. 1, the implementation of our VL-GPT
+can be separated into two consecutive stages. In the first
+stage, we learn an image tokenizer-detokenizer framework,
+capable of encoding images into continuous visual embed-
+dings and decoding them back. The second stage is the pre-
+training and instruction tuning of our VL-GPT, which facil-
+itates a unified modeling approach for vision and language
+understanding and generation. In the following sections, we
+will provide a detailed description of these two stages.
+3.1. Image Tokenizer-Detokenizer Framework
+To implement an auto-regressive training objective on vi-
+sual embeddings and text tokens concurrently, we de-
+velop an image tokenizer-detokenizer framework for vision-
+language models. The framework, inspired by text tok-
+enizers utilized in language models [43], can realize bi-
+directional conversion between original images and contin-
+uous visual embeddings, thereby enabling the transformer
+model to process vision data akin to processing text data.
+Architecture The overall architecture of our image
+tokenizer-detokenizer framework is depicted in Fig. 1. It
+comprises two primary components: a tokenizer Erespon-
+sible for encoding the image into continuous visual embed-
+dings, and a detokenizer Ddedicated to decoding the visual
+embeddings back to raw images.
+Formally, the image tokenizer Eemploys an image en-
+coder ( e.g., ViT [10]) to extract spatial patched features xp
+from the given image x. Subsequently, a standard decoder-
+only causal transformer is utilized to convert the patched
+features xpto 1D (one-dimensional) visual embeddings
+xv∈RN×d, where Nrepresents the number of visual em-
+beddings, and ddenotes the embedding dimension. The
+1D continuous visual embeddings xvserve as input embed-
+dings to our vision-language model, analogous to word to-
+kens in language models.
+Inspired by current image diffusion models with excel-
+lent performance and accessibility [34, 35, 49], our image
+detokenizer Dlearns a latent diffusion model to decode
+visual embeddings xvinto images. Specifically, a trans-
+former decoder is employed to estimate condition embed-
+dingzfromxv. Then a diffusion decoder, initialized from
+a pre-trained image diffusion models, can generate images
+ˆxbased on estimated condition embedding z.
+Training Despite the initialization with pre-trained models,
+conducting a full-scale end-to-end optimization of the im-
+age tokenizer and detokenizer demands large-scale data and
+considerable training costs. To pursue efficient training, we
+opt to train the transformer decoder in image detokenizer
+to estimate the condition embedding utilized for the diffu-sion decoders, as illustrated in Fig. 2. Notably, the diffusion
+decoder, including its U-Net and V AE modules, is not em-
+ployed during framework training, substantially enhancing
+the efficiency of training procedure.
+As Fig. 2 shows, the training objective of our framework
+aims to concurrently reconstruct the image condition em-
+bedding evand text condition embedding et. This design
+distinguishes our framework from previous works [11, 18,
+48], which only align their intermediate outputs with text
+embedding produced by the text encoder of the diffusion
+model. Specifically, we optimize the framework by mini-
+mizing the following loss function (with weight λ1andλ2):
+L(z) =λ1∗MSE( zv, ev) +λ2∗MSE( zt, et) (1)
+where MSE (·)denotes the mean squared error loss, and
+zvandztrepresent the estimated image condition em-
+bedding and estimated text condition embedding, respec-
+tively. During inference, both types of condition embed-
+ding contribute collectively to generate images. Our image
+tokenizer-detokenizer framework can also work when re-
+constructing only image condition embedding (if λ2=0) or
+only text condition embedding (if λ1=0). Moreover, the
+training for estimating image embedding only requires vi-
+sual data, which is more training-friendly than estimating
+text embedding. However, our experiments in Sec. 4.5 re-
+veal that these two types of embedding complement each
+other: text embedding contain rich semantic information
+while image embedding effectively persevere image details.
+3.2. VL-GPT
+VL-GPT aims to process the vision and language under-
+standing and generation within a single transformer model
+in a unified way, similar to GPT handles language tasks.
+It is capable of perceiving the interleaved multi-modal data
+and generating content across various modalities. By em-
+ploying unified modeling, our VL-GPT can conduct auto-
+regressive pre-training on web-scale multimodal corpora,
+thereby holding the potential to serve as a powerful foun-
+dation model in the multimodal research community.
+Architecture As depicted at the bottom of Fig. 1, our VL-
+GPT comprises five components: a large vision-language
+transformer model M, an image tokenizer Ev, a text tok-
+enizerEt, an image detokenizer Dvand a text detokenizer
+Dt. In comparison to a language model, VL-GPT incor-
+porates additional image tokenizer and image detokenizer
+elements.
+Given any interleaved image-text data, the image tok-
+enizer and the text tokenizer initially encode them into a
+multimodal sequence. More specifically, the image tok-
+enizerEvconverts each image into Ncontinuous visual em-
+beddings xv. Additionally, two special tokens [IMG]and
+[/IMG]are appended at the beginning and end of the vi-
+sual embeddings, respectively. The visual embeddings are
+4
+
+==== Page 5 ====
+then combined with the discrete text tokens encoded by the
+text tokenizer Etto form a interleaved multimodal sequence
+v= (v1, v2, . . . , v n), where vican be either a discrete text
+token or a continuous visual embedding. The multimodal
+sequence vis then fed into the large VL model Mfor uni-
+fied auto-regressive modeling.
+The output embedding M(vi)can be flexibly trans-
+formed into a text embedding through a language model-
+ing head for the predefined vocabulary or into a visual em-
+bedding with a separate regression head. During training,
+the selection of the transformed head depends on whether
+the target for the current embedding is a text token or a vi-
+sual embedding. During inference, if [IMG]is predicted, the
+visual regression head will be utilized to transform output
+embeddings in the subsequent Nprediction; otherwise, the
+language modeling head will be used. The prediction em-
+beddings are subsequently decoded to raw images or text
+via the image detokenizer Dvor the text detokenizer Dt.
+Multimodal Pre-training. Benefiting from the unified
+modeling of both visual and text embeddings, we can apply
+the unsupervised pre-training paradigm of GPT [31] to our
+VL-GPT on a large corpus of multimodal data with minimal
+modifications.
+Given an interleaved multimodal sequence v=
+(v1, v2, . . . , v n)in a large-scale corpora, we employ the
+standard auto-regressive modeling objective in language
+models to maximize the following likelihood:
+L(v) =nX
+ilogP(vi|v1, v2, . . . , v i−1; Θ) (2)
+where Θrepresents the parameters of our VL-GPT. We ap-
+ply cross-entropy loss with a language modeling head on the
+discrete text tokens and utilize MSE loss with a regression
+head for continuous visual embeddings.
+Instruction Tuning To enhance the ability of the pre-
+trained VL-GPT to follow human instructions faithfully and
+generate multimodal contents creatively, we perform fur-
+ther instruction tuning of VL-GPT using publicly available
+instruction-tuning datasets. Briefly, the data from these
+datasets will be restructured into a conversational format,
+i.e., pairs of multimodal human instructions and their re-
+sponses for single or multiple rounds, and subsequently em-
+ployed for model tuning in a manner similar to the pre-
+training corpora. A minor deviation from pre-training pro-
+cess is that the training objective will be applied exclusively
+to the embeddings tokenized from answer responses.
+4. Experiments
+The training of our VL-GPT consists of three phases: train-
+ing for the tokenizer-detokenizer framework, unified mul-
+timodal pre-training for the vision-language transformer
+model, and instruction tuning for the pre-trained VL-GPT.
+Input ImagesReconstruction (zv+zt)Reconstruction (zv)Reconstruction (zt)
+Figure 3. Reconstruction images of our image tokenizer-
+detokenizer framework by utilizing image condition embedding
+(zv), or text condition embedding ( zt), or both types of condition
+embedding ( zv+zt). More examples are included in the appendix.
+Model COCO Flickr30k
+GILL [18] 67.45 65.16
+SD v1.5 [35] 68.43 65.40
+SEED [11] 68.23 65.22
+unCLIP [34] 79.30 79.55
+Our tokenizer-detokenizer 80.22 79.14
+Table 1. Evaluation of image reconstruction with CLIP similarity.
+4.1. Datasets
+Publicly available datasets are utilized for different phrase
+of the VL-GPT training. The image tokenizer-detokenizer
+framework is trained on image-text pairs from CC3M [37],
+LAION-Aestheics [20], and LAION-COCO [36]. Dur-
+ing the unified multimodal pre-training of VL-GPT, a
+combination of paired and interleaved image-text data is
+employed. The image-text pairs remain consistent with
+the preview phase, while the interleaved image-text se-
+quences are acquired from Multimodal-C4 (MMC4) [57]
+and OBELICS [21]. We adopt similar preprocessing tech-
+niques for interleaved data implemented in Flamingo [1].
+For each document, a maximum of 5 images and their as-
+sociated captions are randomly sampled to construct a sub-
+sequence with a token length of up to 512. Additionally,
+for paired and interleaved image-text data, each image is
+randomly placed before or after its corresponding caption.
+For the instruction tuning of VL-GPT, a compositional in-
+struction tuning dataset is constructed from various sources,
+encompassing conversational data from LLA V A [25] and
+SVIT [55], image-text pair data from COCO Caption [5],
+and image editing data from InstructPix2Pix [3] and Mag-
+icbrush [53]. These datasets are restructured into a conver-
+5
+
+==== Page 6 ====
+ModelsImage-Text understanding Text-to-image generations
+COCO VQAv2 GQA OKVQA VizWiz VisDial COCO FID ( ↓)
+▶VL Understanding or generation Models
+MetaLM [14] 82.2 41.1 - 11.4 - - -
+Kosmos-1 [16] 84.7 51.0 - - 29.2 - -
+Flamingo-9B¶[1] 79.4 51.8 - 44.7 28.8 48.0 -
+SD v1.5 [35] - - - - - - 9.22
+▶Unified VL understanding and generation Pre-trained Models
+GILL [18] - - - - - - 12.2
+Kosmos-G-1.9B [30] - - - - - - 10.99
+SEED-OPT 2.7B[11] 119.0 42.8 28.8 - - - -
+Emu [39] 112.4 52.0 - 38.2 34.2 47.4 11.66
+Emu†[39] - 52.9 - 42.8 34.4 47.8 -
+VL-GPT 116.4 51.7 34.6 35.8 34.7 49.9 12.25
+VL-GPT†119.2 55.3 38.1 41.5 35.2 49.6 -
+▶Unified VL understanding and generation Models with Instruction-tuning or Fine-tuning
+CM3Leon-7B [51] 61.6 47.6 - 23.8 37.6 22.6 10.82
+Emu-I [39] - 57.5 - 46.2 38.1 50.1 -
+NExT-GPT§[48] 156.7 - - - - - 11.28
+DreamLLM-7B [9] 115.4 56.6 - 44.3 38.1 - 8.46
+VL-GPT-I 133.7 67.2 51.5 50.3 38.9 51.8 11.53
+Table 2. Evaluation comparison between our VL-GPT and other models.†denotes that the zero-shot prompt is built by sampling two
+task-specific examples with their associated images removed.§represents that the dataset employed for instruction tuning is private.
+sational format using the template provided in the appendix.
+For further details regarding preprocessing and construction
+of our training dataset, please refer to the appendix as well.
+4.2. Training setup
+To efficiently train the image tokenizer-detokenizer frame-
+work, the visual encoder in the image tokenizer and the dif-
+fusion decoder in the image detokenizer are initialized with
+CLIP-L image encoder [32] and IP-Adapter [49], respec-
+tively. Moreover, these two modules remain frozen through-
+out the entire training, and only the causal transformer and
+the transformer decoder necessitate optimization. Unless
+specified otherwise, the weight coefficients λ1andλ2in
+Eq. 1 are assigned a value of 1.0 during both training and
+evaluation. The AdamW optimizer [26] is employed for
+training, with a learning rate of 2e-4 and a cosine schedule.
+The framework is trained using a total batch size of 1024 on
+8 NVIDIA 40G-A100 GPUs for 10,000 iterations.
+For the multimodal pre-training of our VL-GPT, the pre-
+trained LLaMA 7B [40], its text tokenizer, and its text deto-
+kenizer are integrated with our trained image tokenizer and
+detokenizer to establish the VL-GPT model with a total of
+7.5 billion parameters. LoRA [15] module is incorporated
+into the LLaMA model, resulting in relatively low demand
+for computational resources. AdamW optimizer is also uti-
+lized with a learning rate of 2e-4. The multimodal pre-
+training is conducted with a batch size of 4096 on 32 GPUs
+for 20,000 iterations. Instruction tuning is performed on the
+pre-trained VL-GPT, adopting similar training settings used
+during pre-training. LoRA is also employed, and the learn-
+ing rate is reduced to 5e-5. The model is trained for 10,000iterations with batch size of 512 on 4 GPUs. Additional
+training settings are included in the appendix.
+4.3. Image Tokenizer and Detokenizer Performance
+The image tokenizer-detokenizer framework is designed to
+convert images between pixel space and continuous visual
+embeddings. To assess its effectiveness, we employ the
+method of calculating the CLIP similarity as the evaluation
+metric for our framework, as implemented in SEED [11].
+As demonstrated in Tab. 1, our framework achieves notably
+superior semantic consistency compared to SEED, which
+utilized quantized visual tokens.
+Furthermore, we present visualizations of the recon-
+structed images generated by our framework in Fig. 3. By
+estimating both image condition embedding and text condi-
+tion embedding and utilizing them to guide the generation
+process of diffusion decoder, our image detokenizer is ca-
+pable of generating images with high consistency in terms
+of spatial appearance and semantic information.
+4.4. Evaluation of our VL-GPT
+Benchmark Performance We first evaluate the zero-shot
+performance of VL-GPT on a variety of vision-language
+tasks, including image captioning on MSCOCO [5], vi-
+sual question answering on VQAv2 [12], GQA [17],
+OKVQA [28], and VizWiz [13], visual dialog on Vis-
+Dial [7], and text-to-image generation on MSCOCO. Com-
+prehensive details regarding these benchmarks and their
+metrics can be found in the appendix. As results in Tab. 2
+indicate, VL-GPT achieves competitive performance on
+6
+
+==== Page 7 ====
+Agroup of white daisies with yellow centers and green leaves in the background.
+It  also wears a red scarf.Please generate an image of a Labradordog wearing glasses.
+The office staff is not here, he may be taking a rest at the moment.
+A photo of three giraffe. A photo of one swan. 
+A photo of two dogs. Dscribe the image in detail in one sentence. 
+Astream flowing through a forest.
+Awedding cake with pink roses and greenery.A yellow and black football.
+A dog is standing in the snow mountain.A modern architectural building with large glass windows, situated on a cliff overlooking a serene ocean at sunset.
+Awoman is eating pizza in the park.
+Afire is burning in the middle of a blue sea.
+An antique botanical illustration drawn with fine lines and a touch of watercolourwhimsy, depicting a strange lily crossed with a Venus flytrap, its petals poised as if ready to snap shut on any unsuspecting insects.
+An image shows that a cat is sleeping on these plants.
+Yes, there is a banana on the table.What does this picture shows as a whole?
+Are there any items on the table that are not for office use?
+Are the people at the office here?
+Change the scarf to blue.Question: what is she playing with?Short answer:
+(2) (3) (4) (5) (6) (7) (8) (9) (10) 
+(11) (12) 
+The image depicts a spacious, well-lit office with a wooden desk as its centerpiece. The desk is adorned with a variety of items, including a computer monitor, a keyboard, a mouse, and a phone. There is achairs in the office, positioned near the desk. (1) Figure 4. Illustrative samples of our VL-GPT across various vision and language understanding and generation tasks. These tasks en-
+compass: (1)-(2) image captioning, (3) visual question answering (VQA), (4)-(8) text-to-image generation, (9)-(10) multimodal in-context
+generation, and (11)-(12) multimodal dialogue. Examples (1)-(10) are generated by our pre-trained VL-GPT, while (11)-(12) are produced
+by our instruction-tuned VL-GPT. Blue boxes represent multimodal inputs and yellow boxes indicate VL-GPT outputs.
+7
+
+==== Page 8 ====
+Models VQAv2 VizWiz
+k 2 4 8 2 4 8
+Kosmos-1 [16] 51.4 51.8 51.4 31.4 35.3 39.0
+Flamingo-9B [1] - 56.3 58.0 - 34.9 39.4
+Emu [39] 56.4 58.4 59.0 37.8 41.3 43.9
+VL-GPT 57.2 58.6 58.9 38.9 41.8 44.2
+Table 3. Few-shot performance on visual question answering.
+Estimation target Reconstruction VL-GPT
+CLIP
+Similarity ( ↑)Captioning
+CIDEr ( ↑)Generation
+FID (↓)
+et 73.59 131.1 12.79
+ev 80.05 123.6 13.61
+et+ev 80.22 133.7 12.25
+Table 4. Ablation of condition embedding types. Text embedding
+(et), image embedding ( ev), or their combination ( et+ev) are
+employed to guide the training of the tokenizer-detokenizer frame-
+work. We evaluate the effectiveness of reconstructing images and
+the performance of VL-GPT when adopting different image tok-
+enizer and detokenizer.
+both image-text understanding and text-to-image generation
+tasks, thereby validating the effectiveness of unified multi-
+modal pre-training. Notably, VL-GPT attains an impres-
+sive CIDEr score of 116.4 or 119.2 on MSCOCO caption-
+ing without or with text-only prompts, surpassing other uni-
+fied VL pre-trained models. With further instruction tuning,
+VL-GPT-I, the instruction-tuned VL-GPT, significantly en-
+hances model performance, achieving the best or near-best
+results in all tasks.
+Multimodal In-context Learning Similar to the behav-
+ior of LLMs, our VL-GPT can be prompted to address
+new vision-language tasks when provided with a few mul-
+timodal examples from training data composed in the mul-
+timodal prompt. To quantitatively evaluate its multimodal
+in-context learning capability, we examine the few-shot per-
+formance of VL-GPT when varying the number of exam-
+ples in the given prompt, as shown in Tab. 3. Our VL-GPT
+outperforms other works under almost all few-shot setting
+(k=2,4,8) on two datasets for the visual question answer-
+ing task. Moreover, a positive correlation is observed be-
+tween the number of the examples in the given prompt and
+the performance on these two datasets.
+Qualitative Results Fig. 4 showcases a series of gener-
+ated visualizations using our VL-GPT model, encompass-
+ing various tasks such as image captioning, visual ques-
+tion answering, text-to-image generation, multimodal gen-
+eration with in-context learning, and multimodal multi-turn
+dialogue. Intriguingly, VL-GPT demonstrates remarkable
+capabilities that are not readily assessed through existing
+academic benchmarks. For instance, in Fig. 4 (7-8), VL-GPT generates highly realistic images in response to long-
+text prompts containing complex concepts. In Fig. 4 (10),
+VL-GPT exhibits the ability to generate images and texts in
+a flexible manner, conditioned on the provided multimodal
+context. Fig. 4 (11-12) illustrates the multi-turn dialogue
+capabilities of the instruction-tuned VL-GPT, wherein the
+model generates multimodal contents consistent with the
+existing context based on user instructions. This suggests
+the promising potential of the VL-GPT as a versatile and
+effective multimodal general assistant.
+4.5. Ablation Studies
+Previous studies typically generate images by converting
+their output into text condition embedding for image dif-
+fusion models. In contrast, our detokenizer estimates both
+text condition embedding and image condition embedding
+from visual continuous embeddings, as depicted in Sec. 3.1.
+The advantage of this design will be discussed next.
+Fig. 3 displays the images reconstructed by our
+tokenizer-detokenizer using different estimated condition
+embedding, i.e., only using image condition embedding,
+only using text condition embedding, or using both. These
+examples reveal that these two type of embedding comple-
+ment each other: image embedding effectively preserve im-
+age appearance details while text embedding assists in im-
+age reconstruction, e.g., determining the number of people.
+As evidenced in Tab. 4, although it is feasible to train im-
+age tokenizer-detokenizer framework by estimating solely
+one type of condition embedding (when λ1=0orλ2=0in
+Eq. 1), the simultaneous estimation of both types of con-
+dition embedding leads to optimal performance for both
+the tokenizer-detokenizer framework and VL-GPT. We hy-
+pothesize that estimating image condition embedding en-
+ables our tokenizer to retain more pixel information from
+the input image, which is beneficial for image reconstruc-
+tion. Meanwhile, estimating text condition embedding al-
+lows the visual embeddings to contain more high-level se-
+mantics, leading to improved performance in subsequent vi-
+sion and language tasks.
+5. Conclusion
+We propose VL-GPT, a generative pre-trained transformer
+model for vision and language understanding and gen-
+eration. The model incorporates an innovative image
+tokenizer-detokenizer framework, enabling it to be pre-
+trained on large-scale multimodal corpora with a unified
+auto-regressive objective. Upon completion of the pre-
+training, VL-GPT exhibits competitive performance across
+various academic benchmarks and manifests several appeal-
+ing emergent capabilities. As for limitations, the effective-
+ness of our method has not been verified through the scaling
+up of model parameters. We hope that our work will stimu-
+late further exploration in the pursuit of general intelligence
+within the multimodal research community.
+8
+
+==== Page 9 ====
+References
+[1] Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine
+Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Mensch,
+Katherine Millican, Malcolm Reynolds, et al. Flamingo: a
+visual language model for few-shot learning. Advances in
+Neural Information Processing Systems , 35:23716–23736,
+2022.
+[2] Hangbo Bao, Li Dong, Songhao Piao, and Furu Wei. Beit:
+Bert pre-training of image transformers. arXiv preprint
+arXiv:2106.08254 , 2021.
+[3] Tim Brooks, Aleksander Holynski, and Alexei A Efros. In-
+structpix2pix: Learning to follow image editing instructions.
+InProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , pages 18392–18402, 2023.
+[4] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Sub-
+biah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakan-
+tan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Lan-
+guage models are few-shot learners. Advances in neural in-
+formation processing systems , 33:1877–1901, 2020.
+[5] Xinlei Chen, Hao Fang, Tsung-Yi Lin, Ramakrishna Vedan-
+tam, Saurabh Gupta, Piotr Doll ´ar, and C Lawrence Zitnick.
+Microsoft coco captions: Data collection and evaluation
+server. arXiv preprint arXiv:1504.00325 , 2015.
+[6] Yen-Chun Chen, Linjie Li, Licheng Yu, Ahmed El Kholy,
+Faisal Ahmed, Zhe Gan, Yu Cheng, and Jingjing Liu. Uniter:
+Universal image-text representation learning, 2020.
+[7] Abhishek Das, Satwik Kottur, Khushi Gupta, Avi Singh,
+Deshraj Yadav, Jos ´e MF Moura, Devi Parikh, and Dhruv Ba-
+tra. Visual dialog. In Proceedings of the IEEE conference
+on computer vision and pattern recognition , pages 326–335,
+2017.
+[8] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina
+Toutanova. Bert: Pre-training of deep bidirectional
+transformers for language understanding. arXiv preprint
+arXiv:1810.04805 , 2018.
+[9] Runpei Dong, Chunrui Han, Yuang Peng, Zekun Qi, Zheng
+Ge, Jinrong Yang, Liang Zhao, Jianjian Sun, Hongyu Zhou,
+Haoran Wei, et al. Dreamllm: Synergistic multimodal com-
+prehension and creation. arXiv preprint arXiv:2309.11499 ,
+2023.
+[10] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, et al. An image is worth 16x16 words: Trans-
+formers for image recognition at scale. arXiv preprint
+arXiv:2010.11929 , 2020.
+[11] Yuying Ge, Yixiao Ge, Ziyun Zeng, Xintao Wang, and Ying
+Shan. Planting a seed of vision in large language model.
+arXiv preprint arXiv:2307.08041 , 2023.
+[12] Yash Goyal, Tejas Khot, Douglas Summers-Stay, Dhruv Ba-
+tra, and Devi Parikh. Making the v in vqa matter: Elevating
+the role of image understanding in visual question answer-
+ing. In Proceedings of the IEEE conference on computer
+vision and pattern recognition , pages 6904–6913, 2017.
+[13] Danna Gurari, Qing Li, Abigale J Stangl, Anhong Guo, Chi
+Lin, Kristen Grauman, Jiebo Luo, and Jeffrey P Bigham.
+Vizwiz grand challenge: Answering visual questions fromblind people. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pages 3608–3617,
+2018.
+[14] Yaru Hao, Haoyu Song, Li Dong, Shaohan Huang, Zewen
+Chi, Wenhui Wang, Shuming Ma, and Furu Wei. Lan-
+guage models are general-purpose interfaces. arXiv preprint
+arXiv:2206.06336 , 2022.
+[15] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-
+Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen.
+Lora: Low-rank adaptation of large language models. arXiv
+preprint arXiv:2106.09685 , 2021.
+[16] Shaohan Huang, Li Dong, Wenhui Wang, Yaru Hao,
+Saksham Singhal, Shuming Ma, Tengchao Lv, Lei Cui,
+Owais Khan Mohammed, Qiang Liu, et al. Language is
+not all you need: Aligning perception with language mod-
+els.arXiv preprint arXiv:2302.14045 , 2023.
+[17] Drew A Hudson and Christopher D Manning. Gqa: A new
+dataset for real-world visual reasoning and compositional
+question answering. In Proceedings of the IEEE/CVF con-
+ference on computer vision and pattern recognition , pages
+6700–6709, 2019.
+[18] Jing Yu Koh, Daniel Fried, and Ruslan Salakhutdinov. Gen-
+erating images with multimodal language models. arXiv
+preprint arXiv:2305.17216 , 2023.
+[19] Taku Kudo and John Richardson. Sentencepiece: A
+simple and language independent subword tokenizer and
+detokenizer for neural text processing. arXiv preprint
+arXiv:1808.06226 , 2018.
+[20] LAION. Laion-aesthetics. https://laion.ai/blog/
+laion-coco/ .
+[21] Hugo Laurenc ¸on, Lucile Saulnier, L ´eo Tronchon, Stas Bek-
+man, Amanpreet Singh, Anton Lozhkov, Thomas Wang,
+Siddharth Karamcheti, Alexander M. Rush, Douwe Kiela,
+Matthieu Cord, and Victor Sanh. Obelics: An open web-
+scale filtered dataset of interleaved image-text documents,
+2023.
+[22] Bo Li, Yuanhan Zhang, Liangyu Chen, Jinghao Wang,
+Jingkang Yang, and Ziwei Liu. Otter: A multi-modal
+model with in-context instruction tuning. arXiv preprint
+arXiv:2305.03726 , 2023.
+[23] Dongxu Li, Junnan Li, and Steven CH Hoi. Blip-
+diffusion: Pre-trained subject representation for control-
+lable text-to-image generation and editing. arXiv preprint
+arXiv:2305.14720 , 2023.
+[24] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi.
+Blip-2: Bootstrapping language-image pre-training with
+frozen image encoders and large language models. arXiv
+preprint arXiv:2301.12597 , 2023.
+[25] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee.
+Visual instruction tuning. arXiv preprint arXiv:2304.08485 ,
+2023.
+[26] Ilya Loshchilov and Frank Hutter. Decoupled weight decay
+regularization. arXiv preprint arXiv:1711.05101 , 2017.
+[27] Jiasen Lu, Christopher Clark, Rowan Zellers, Roozbeh Mot-
+taghi, and Aniruddha Kembhavi. Unified-io: A unified
+model for vision, language, and multi-modal tasks. arXiv
+preprint arXiv:2206.08916 , 2022.
+9
+
+==== Page 10 ====
+[28] Kenneth Marino, Mohammad Rastegari, Ali Farhadi, and
+Roozbeh Mottaghi. Ok-vqa: A visual question answering
+benchmark requiring external knowledge. In Proceedings
+of the IEEE/cvf conference on computer vision and pattern
+recognition , pages 3195–3204, 2019.
+[29] OpenAI. Gpt-4 technical report, 2023.
+[30] Xichen Pan, Li Dong, Shaohan Huang, Zhiliang Peng,
+Wenhu Chen, and Furu Wei. Kosmos-g: Generating images
+in context with multimodal large language models. arXiv
+preprint arXiv:2310.02992 , 2023.
+[31] Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya
+Sutskever, et al. Improving language understanding by gen-
+erative pre-training. 2018.
+[32] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning
+transferable visual models from natural language supervi-
+sion. In International conference on machine learning , pages
+8748–8763. PMLR, 2021.
+[33] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee,
+Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and
+Peter J Liu. Exploring the limits of transfer learning with
+a unified text-to-text transformer. The Journal of Machine
+Learning Research , 21(1):5485–5551, 2020.
+[34] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu,
+and Mark Chen. Hierarchical text-conditional image gener-
+ation with clip latents. arXiv preprint arXiv:2204.06125 , 1
+(2):3, 2022.
+[35] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Bj ¨orn Ommer. High-resolution image
+synthesis with latent diffusion models. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern
+recognition , pages 10684–10695, 2022.
+[36] Christoph Schuhmann, K ¨opf, Andreas, Theo Coombes,
+Richard Vencu, Benjamin Trom, and Romain Beaumont.
+Laion coco: 600m synthetic captions from laion2b-en.
+https://laion.ai/blog/laion-coco/ .
+[37] Piyush Sharma, Nan Ding, Sebastian Goodman, and Radu
+Soricut. Conceptual captions: A cleaned, hypernymed, im-
+age alt-text dataset for automatic image captioning. In Pro-
+ceedings of the 56th Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers) , pages
+2556–2565, 2018.
+[38] Yongliang Shen, Kaitao Song, Xu Tan, Dongsheng Li,
+Weiming Lu, and Yueting Zhuang. Hugginggpt: Solving
+ai tasks with chatgpt and its friends in huggingface. arXiv
+preprint arXiv:2303.17580 , 2023.
+[39] Quan Sun, Qiying Yu, Yufeng Cui, Fan Zhang, Xiaosong
+Zhang, Yueze Wang, Hongcheng Gao, Jingjing Liu, Tiejun
+Huang, and Xinlong Wang. Generative pretraining in multi-
+modality. arXiv preprint arXiv:2307.05222 , 2023.
+[40] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier
+Martinet, Marie-Anne Lachaux, Timoth ´ee Lacroix, Baptiste
+Rozi `ere, Naman Goyal, Eric Hambro, Faisal Azhar, et al.
+Llama: Open and efficient foundation language models.
+arXiv preprint arXiv:2302.13971 , 2023.
+[41] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert,
+Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov,Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al.
+Llama 2: Open foundation and fine-tuned chat models. arXiv
+preprint arXiv:2307.09288 , 2023.
+[42] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. Advances in neural
+information processing systems , 30, 2017.
+[43] Changhan Wang, Kyunghyun Cho, and Jiatao Gu. Neural
+machine translation with byte-level subwords. In Proceed-
+ings of the AAAI conference on artificial intelligence , pages
+9154–9160, 2020.
+[44] Peng Wang, An Yang, Rui Men, Junyang Lin, Shuai Bai,
+Zhikang Li, Jianxin Ma, Chang Zhou, Jingren Zhou, and
+Hongxia Yang. Ofa: Unifying architectures, tasks, and
+modalities through a simple sequence-to-sequence learning
+framework. In International Conference on Machine Learn-
+ing, pages 23318–23340. PMLR, 2022.
+[45] Wenhui Wang, Hangbo Bao, Li Dong, Johan Bjorck, Zhil-
+iang Peng, Qiang Liu, Kriti Aggarwal, Owais Khan Mo-
+hammed, Saksham Singhal, Subhojit Som, et al. Image as a
+foreign language: Beit pretraining for all vision and vision-
+language tasks. arXiv preprint arXiv:2208.10442 , 2022.
+[46] Samuel Weinbach, Marco Bellagente, Constantin Eichen-
+berg, Andrew Dai, Robert Baldock, Souradeep Nanda, Bj ¨orn
+Deiseroth, Koen Oostermeijer, Hannah Teufel, and An-
+dres Felipe Cruz-Salinas. M-vader: A model for diffusion
+with multimodal context. arXiv preprint arXiv:2212.02936 ,
+2022.
+[47] Chenfei Wu, Shengming Yin, Weizhen Qi, Xiaodong Wang,
+Zecheng Tang, and Nan Duan. Visual chatgpt: Talking,
+drawing and editing with visual foundation models. arXiv
+preprint arXiv:2303.04671 , 2023.
+[48] Shengqiong Wu, Hao Fei, Leigang Qu, Wei Ji, and Tat-Seng
+Chua. Next-gpt: Any-to-any multimodal llm. arXiv preprint
+arXiv:2309.05519 , 2023.
+[49] Hu Ye, Jun Zhang, Sibo Liu, Xiao Han, and Wei Yang. Ip-
+adapter: Text compatible image prompt adapter for text-to-
+image diffusion models. arXiv preprint arXiv:2308.06721 ,
+2023.
+[50] Jiahui Yu, Zirui Wang, Vijay Vasudevan, Legg Yeung, Mo-
+jtaba Seyedhosseini, and Yonghui Wu. Coca: Contrastive
+captioners are image-text foundation models, 2022.
+[51] Lili Yu, Bowen Shi, Ramakanth Pasunuru, Benjamin Muller,
+Olga Golovneva, Tianlu Wang, Arun Babu, Binh Tang, Brian
+Karrer, Shelly Sheynin, et al. Scaling autoregressive multi-
+modal models: Pretraining and instruction tuning. arXiv
+preprint arXiv:2309.02591 , 2023.
+[52] Lu Yuan, Dongdong Chen, Yi-Ling Chen, Noel Codella,
+Xiyang Dai, Jianfeng Gao, Houdong Hu, Xuedong Huang,
+Boxin Li, Chunyuan Li, Ce Liu, Mengchen Liu, Zicheng Liu,
+Yumao Lu, Yu Shi, Lijuan Wang, Jianfeng Wang, Bin Xiao,
+Zhen Xiao, Jianwei Yang, Michael Zeng, Luowei Zhou, and
+Pengchuan Zhang. Florence: A new foundation model for
+computer vision, 2021.
+[53] Kai Zhang, Lingbo Mo, Wenhu Chen, Huan Sun, and Yu Su.
+Magicbrush: A manually annotated dataset for instruction-
+guided image editing. arXiv preprint arXiv:2306.10012 ,
+2023.
+10
+
+==== Page 11 ====
+[54] Susan Zhang, Stephen Roller, Naman Goyal, Mikel Artetxe,
+Moya Chen, Shuohui Chen, Christopher Dewan, Mona Diab,
+Xian Li, Xi Victoria Lin, et al. Opt: Open pre-trained trans-
+former language models. arXiv preprint arXiv:2205.01068 ,
+2022.
+[55] Bo Zhao, Boya Wu, and Tiejun Huang. Svit: Scaling up
+visual instruction tuning. arXiv preprint arXiv:2307.04087 ,
+2023.
+[56] Deyao Zhu, Jun Chen, Xiaoqian Shen, Xiang Li, and Mo-
+hamed Elhoseiny. Minigpt-4: Enhancing vision-language
+understanding with advanced large language models. arXiv
+preprint arXiv:2304.10592 , 2023.
+[57] Wanrong Zhu, Jack Hessel, Anas Awadalla, Samir Yitzhak
+Gadre, Jesse Dodge, Alex Fang, Youngjae Yu, Ludwig
+Schmidt, William Yang Wang, and Yejin Choi. Multimodal
+c4: An open, billion-scale corpus of images interleaved with
+text. arXiv preprint arXiv:2304.06939 , 2023.
+11
+
+==== Page 12 ====
+Dataset Task Split Metric
+COCOCap Scene Description test CIDEr (↑)
+VQAv2 Scene Understanding QA test-dev VQA acc. (↑)
+GQA Scene Understanding QA test-dev VQA acc. (↑)
+OKVQA External Knowledge QA val VQA acc. (↑)
+VizWiz Scene Understanding QA test-dev VQA acc. (↑)
+VisDial Image Dialogue val NDCG (↑)
+COCO Text-to-Image Generation val test FID (↓)
+Table 5. Summary of the evaluation benchmarks.
+6. Training Details
+6.1. Training of image tokenizer and detokenizer
+Datasets. The image-text pairs from CC3M, Laion-
+Aestheics, and LAION-COCO are utilized for the train-
+ing of our image tokenizer-detokenizer framework. Specif-
+ically, CC3M dataset comprises 3.3 million image-text
+pairs crawled from the Web. Both Laion-Aesthetics and
+LAION-COCO are subsets of the larger LAION-5B dataset.
+LAION-Aesthetics is characterized by its high aesthetic
+quality, while LAION-COCO is composed of images sam-
+pled from LAION-5B and their corresponding captions
+generated by existing vision-language models, e.g., BLIP.
+Due to the efficient design of the framework, a relatively
+small subset of 10 million samples from these two datasets
+was found to be sufficient for model convergence in our ex-
+periments. Further exploration of experiments with larger
+datasets remains a prospect for future research. During
+the training process, data were randomly sampled from the
+mixture of these three datasets in a ratio proportional to their
+respective sizes.
+Optimization. The visual encoder in the image tokenizer is
+initialized with CLIP-L, while the diffusion decoder in the
+image detokenizer incorporates the U-Net and V AE mod-
+ules from IP-adapter Plus. These components remain frozen
+during the training process. The causal transformer in the
+image tokenizer and the transformer decoder in the image
+decoder are constructed using the standard transformer de-
+coder, which consisting of 12 transformer blocks with ran-
+dom initialization. Each block comprises a causal self-
+attention layer, a cross attention layer, and a multilayer per-
+ception (MLP) layer. The causal attention layer plays a vi-
+tal role in capturing causal dependencies among 1D visual
+continual embeddings, which is proved to be effective for
+further modeling in large vision-language models like Emu
+and SEED. In all experiments, the number of visual embed-
+dingNis set to 32 in our all experiments, and its dimension
+dis set to 4096. Image augmentation techniques employed
+in CLIP models are applied, which involve resizing the in-
+put image with its shorter side to 224 pixels and cropping
+the image to a fixed size of 224 ×224 pixels.6.2. Pre-training of VL-GPT
+Datasets. In addition to the datasets utilized for training the
+image tokenizer-detokenizer framework, publicly available
+interleaved image-text data, i.e., MMC4 and OBELICS,
+are employed for the pre-training of our vision-language
+transformer. During pre-training, multimodal sequences
+with interleaved image-text data are obtained from these
+two datasets. For MMC4, the core split is used, and low-
+quality samples with a CLIP similarity between the image
+and its caption below 0.24 are filtered out. For OBELICS,
+a sequence comprising 512 tokens is randomly sampled
+based on the arrangement of image and text data within the
+original document. To augment the probability of procur-
+ing sequences containing multiple images, single-image se-
+quences are discarded with a likelihood of 0.8. Throughout
+the training process, these two datasets maintain equivalent
+sampling probabilities, as do the sampling probabilities for
+datasets comprising image-text pairs and datasets contain-
+ing interleaved image and text data.
+Optimization. The large vision-language model, VL-GPT,
+is constructed by integrating the pre-trained language model
+LLaMA 7B with our image tokenizer-detokenizer frame-
+work. LoRA modules are attached to all linear layers in the
+vision-language transformer, with a LoRA rank of 32. An
+additional linear head is employed as a separate regression
+head to predict the subsequent visual continuous embedding
+for the current embedding. During multimodal pre-training,
+only the parameters in LoRA modules and the regression
+head are tuned, while all parameters of pre-trained LLaMA,
+image tokenizer, and image detokenizer remain frozen to re-
+duce training costs. The data augmentation techniques used
+in the previous stage are also utilized in this phase.
+6.3. Instruction tuning of VL-GPT
+Datasets. To align the VL-GPT model with human instruc-
+tions, multimodal instruction tuning is applied to the model
+using a combination of publicly available datasets, such
+as LLA V A, SVIT, MSCOCO Caption, InstructPix2Pix, and
+Magicbrush. All dataset are restructured into a conversa-
+tional formulation, consisting of a system message followed
+by a single-turn or multi-turn conversation dialogue be-
+tween a user and an assistant. The system message and con-
+versational template employed in our method are presented
+in Tab. 6. Furthermore, the MSCOCO caption dataset is
+employed for both image captioning task and image gen-
+eration task by altering the order of the image and its cor-
+responding caption. The InstructPix2Pix and Magicbrush
+datasets are utilized for prompt-based image editing task.
+During instruction tuning, data in these datasets are sam-
+pled to construct a batch of data for model optimization in
+a ratio proportional to the dataset size.
+Optimization. Instruction tuning is carried out on the pre-
+12
+
+==== Page 13 ====
+InputImagesReconstruction(zv+zt)Reconstruction(zv)Reconstruction(zt)
+InputImagesReconstruction(zv+zt)Reconstruction(zv)Reconstruction(zt)
+Figure 5. Reconstruction examples of our image tokenizer and detokenizer by employing different condition embedding.
+A small cactus wearing a straw hat and neon sunglasses in the Sahara desert.
+A silhouette of a grand piano overlooking a dusky cityscape viewed from a top-floor penthouse, rendered in the bold and vivid style of a vintage travel poster.A paper craft art depicting a girl giving her cat a gentle hug. Both sit amidst potted plants, with the cat purring contentedly while the girl smiles. The scene is adorned with handcrafted paper flowers and leaves.
+A cat wearing sunglasses
+A woman in a red dress is dancing in the park
+Yellow flowers in a vaseon the deskA bird is standing in the snow A fire is burning in the middle of a blue sea
+A large house newthelake under the sunlightA group of boys are playing football on the green grassA  cat is sitting in a blue car in the street
+A girl is playing the piano on the stageA cat with a scarf is sitting in the snowA brown dog and a white cat are lying on the couch
+Figure 6. Examples of text-to-image generation. Blue boxes denotes the text prompt, and yellow boxes represents the generated image.
+13
+
+==== Page 14 ====
+System MessageYou are a helpful, respectful and honest assistant. Always
+answer as helpfully as possible, while being safe. Your answers
+should not include any harmful, unethical, racist, sexist, toxic,
+dangerous, or illegal content. Please ensure that your responses
+are socially unbiased and positive in nature.
+Conversation TemplateImage captioningUSER: Provide a brief description of the given image <image>
+ASSISTANT: <caption>.
+Image generationUSER: Create an image that visually represents the description:
+<caption>. ASSISTANT: Here’s the image: <image>
+Image editingUSER:<image> <editing prompt>. ASSISTANT: Here is the edited
+image: <image>
+Table 6. Summary of prompt templates employed in instruction tuning. The notation “ <image> ” will be replaced with the image data.
+“<caption> ” and “ <editing prompt> ” will be substituted with the corresponding caption and editing instruction, respectively.
+Model Task Template
+VL-GPTImage captioning <image> Please describe this image in detail in one sentence. It shows
+Image generation An image of <caption>. [IMG]
+Image QA <image> Based on the image, <question>? Short answer:
+Image dialog<image> an image of <caption>. Based on the image, <question 1>? Short
+answer: <answer 1>. · · ·Based on the image, <question n>? Short answer:
+VL-GPT-IImage captioning USER: Provide a brief description of the given image.<image> ASSISTANT:
+Image generationUSER: Create an image that visually represents the description:
+<caption>. ASSISTANT:
+Image QAUSER: answer the question with the shortest answer <question>?
+ASSISTANT:
+Image dialogUSER: <image> ASSISTANT: an image of <caption>. USER: <question 1>?
+ASSISTANT: <answer 1>. · · ·USER: <question n>? ASSISTANT:
+Table 7. Summary of the prompting template utilized during model evaluation.The terms “ <image> ” and “ <caption> ” shall be substituted
+with the corresponding image and its caption. Additionally, the notations “ <question i>and “ <answer i>” will be replaced with the i-th
+question and answer pair in the dialogue. [IMG] denotes the special token indicating the start of visual continuous embeddings.
+trained VL-GPT, with the training hyper-parameters primar-
+ily following those used in the pre-training phase. As the
+training data for instruction tuning is significantly smaller
+than that employed for pre-training, the batch size is set
+to a smaller number, i.e. 512, and only four GPUs are uti-
+lized. To prevent catastrophic forgetting of the pre-trained
+model, the model is optimized with a reduced learning rate.
+Furthermore, LoRA modules are applied in the transformer
+model, while all other parameters remain frozen.
+7. Evaluation Details
+7.1. Benchmarks
+To evaluate the vision and language understanding and gen-
+eration ability of VL-GPT, we evaluate it on a variety of
+benchmarks, whose details and metrics are summarized in
+Tab. 5. Specifically, the test sample from any benchmark is
+first packaged with a task-specific prompt template and then
+tokenized into an incomplete multimodal sequence. Thenthe VL-GPT model and its instruction tuned version, VL-
+GPT-I, are required to complete the multimodal sequence
+in an auto-regressive and open-ended manner. Evaluation
+results can be obtained by either using the official evalua-
+tion code or submitting our prediction on the official server.
+It should be noted that not all results reported in Tab. 2
+are zero-shot evaluation; for instance, VL-GPT-I has been
+trained on COCO Caption.
+7.2. Prompt Templates
+To thoroughly capitalize on the knowledge acquired dur-
+ing pre-training while generating outputs that adhere to the
+style of the benchmark under evaluation, we design task-
+specific prompt templates for the VL-GPT and VL-GPT-I.
+These templates are comprehensively outlined in Tab. 7.
+14
+
+==== Page 15 ====
+A pair of horses with red and white decorations on their heads.Aphotoofa woman holding a tennis racketA group of men sitting at desks with computers.
+A photo of three men playing computers.Question: what is he doing? Answer: playing computers A woman standing next to a table holding a sheet cake.A photo of a woman is cooking.Question: what is she doing? Answer: cooking A woman holding a tennis racket and standing next to a table.
+Question: what is she doing? Answer: playingtennis.
+An image of three elephants
+Question: how many? answer: three An image of one dogAn adorable dot resting on a beach near the ocean. Question: how many? answer: one An image of two horses.
+Question: how many? answer: two. A group of elephants with one elephant raising it's trunk and dust and dirt coming up behind it.
+Thisisananimal. This is a flower.
+This animalissurrounded with thisflower.Figure 7. Three groups of Multimodal In-context learning. In each group, partial content in the multimodal prompts is changed, and our
+VL-GPT can generate desired outputs. Blue boxes represent multimodal prompts and yellow boxes indicate VL-GPT outputs.
+8. Qualitative Cases
+Additional reconstruction examples of our image tokenizer-
+detokenizer framework are illustrated in Fig. 5. Further-
+more, the qualitative examples presented in Fig. 6, Fig. 7,
+and Fig. 8 demonstrate the superior performance of VL-
+GPT in various tasks, including text-to-image generation,
+multimodal in-context learning, and multimodal dialogue.
+15
+
+==== Page 16 ====
+Describe this image in one sentence.
+Sure, here's a poem about the image: A wooden dock extends into the lake, A place to sit and watch the world go by. The water is calm and clear, reflecting the trees, A serene place to sit and watch the world go by.When visiting this lake, you should be cautious about the weather conditions.The image shows a cloudy sky, which could indicate that it might rain or become windy. It's important to dress appropriately and bring an umbrella or a raincoat if necessary.Please describe this image in detail.What are the things I should be cautious about when I visit here?Two white puppies sit together on the grassThe image features a serene lake scene with a wooden dock extending into the water. The dock is made of wood and is quite long, stretching across the entire width of the image. The dock is surrounded by calm, clear water, which reflects the surrounding trees and sky.
+Can you write a poem about the image?
+GenerateimagethattheywithpinkhairThisisthegeneratedimage
+ChangetoyellowglassesHereistheeditedimage
+Figure 8. Qualitative examples of multimodal dialogue by our instruction tuned VL-GPT. Blue boxes denotes the user instructions, and
+yellow boxes represents the assistant responses.
+16
+

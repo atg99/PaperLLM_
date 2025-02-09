@@ -1,0 +1,1474 @@
+==== Page 1 ====
+GraphACT: A ccelerating GC N Training on CPU-FPGA
+Heterogeneous Platforms
+Hanqing Zeng
+University of Southern California
+Los Angeles, California
+zengh@usc.eduViktor Prasanna
+University of Southern California
+Los Angeles, California
+prasanna@usc.edu
+ABSTRACT
+Graph Convolutional Networks (GCNs) have emerged as the state-
+of-the-art deep learning model for representation learning on graphs.
+It is challenging to accelerate training of GCNs, due to (1) substantial
+and irregular data communication to propagate information within
+the graph, and (2) intensive computation to propagate information
+along the neural network layers. To address these challenges, we
+design a novel accelerator for training GCNs on CPU-FPGA hetero-
+geneous systems, by incorporating multiple algorithm-architecture
+co-optimizations. We first analyze the computation and commu-
+nication characteristics of various GCN training algorithms, and
+select a subgraph-based algorithm that is well suited for hardware
+execution. To optimize the feature propagation within subgraphs,
+we propose a light-weight pre-processing step based on a graph
+theoretic approach. Such pre-processing performed on the CPU
+significantly reduces the memory access requirements and the com-
+putation to be performed on the FPGA. To accelerate the weight
+update in GCN layers, we propose a systolic array based design for
+efficient parallelization. We integrate the above optimizations into
+a complete hardware pipeline, and analyze its load-balance and
+resource utilization by accurate performance modeling. We evalu-
+ate our design on a Xilinx Alveo U200 board hosted by a 40-core
+Xeon server. On three large graphs, we achieve an order of mag-
+nitude training speedup with negligible accuracy loss, compared
+with state-of-the-art implementation on a multi-core platform.
+ACM Reference Format:
+Hanqing Zeng and Viktor Prasanna. 2020. GraphACT :Accelerating G CN
+Training on CPU-FPGA Heterogeneous Platforms. In Proceedings of the 2020
+ACM/SIGDA International Symposium on Field-Programmable Gate Arrays
+(FPGA ’20), February 23–25, 2020, Seaside, CA, USA. ACM, New York, NY,
+USA, 11 pages. https://doi.org/10.1145/3373087.3375312
+1 INTRODUCTION
+Recently, representation learning on graphs has attracted much
+attention. By extracting structured, low dimensional features from
+the unstructured, high dimensional graph, many downstream tasks
+such as node classification [ 14,18], link prediction [ 38], graph clas-
+sification [ 32] and clustering [ 29] can be performed easily and
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+©2020 Association for Computing Machinery.
+ACM ISBN 978-1-4503-7099-8/20/02. . . $15.00
+https://doi.org/10.1145/3373087.3375312effectively. Among the numerous representation learning methods,
+Graph Convolutional Networks (GCNs) [ 18] are capable of learn-
+ing significantly better features than traditional methods [ 12,24].
+GCNs have been used to facilitate user recommendation for social
+networks [ 31], to identify protein functionality from interaction
+graphs [14] and to help circuit testability analysis for EDA [20].
+Despite the popularity of GCNs, training is still expensive in
+terms of time and computation resources. To scale GCNs to larger
+graphs and to enable fast re-training on dynamic graphs, it is critical
+to develop accelerators. Existing works [ 14,34] parallelize training
+on GPU and multi-core platform. How to accelerate training by
+exploiting the FPGA hardware is currently not well studied.
+Similar to Convolutional Neural Network (CNNs), GCNs are built
+by iteratively stacking multiple layers. Operations of a graph convo-
+lutional layer are decomposed into two major steps, to (1) propagate
+information within the graph and (2) propagate information along
+the neural network layers. Correspondingly, FPGA accelerators
+need to address the below challenges to improve performance:
+Memory access. The feature propagation (step 1) in a large and
+sparse graph incurs high volume of irregular memory accesses, both
+on-chip and off-chip. The memory challenge is unique to the GCN
+training problem. While CNN accelerators [ 19,25,30,33,35,37,39]
+achieve high data reuse and regular accesses by tiling and sliding
+windows on input tensors, such tensor operations do not generalize
+to sparse graphs. In addition, while graph processing accelerators
+[7,8,16,36,41] optimize data flow and layout for propagation of
+node labels, such optimizations hardly lead to performance gain
+when the labels are replaced with long feature vectors.
+Computation. The propagation along GCN layers (step 2) in-
+volves computationally intensive dense tensor operations on the
+model weights and graph node features. Fast computation of this
+step require high consumption of hardware resources.
+Load-balance. Degree-imbalance of graph nodes can significantly
+degrade the performance of feature propagation. Consequently, the
+overall layer computation (steps 1 and 2) can be load-imbalanced. It
+is challenging to design on-chip computation modules and the cor-
+responding scheduler to ensure load-balance for arbitrary graphs.
+We propose GraphACT , a framework to accelerate G CNtraining
+by addressing the three challenges. The main contributions are:
+•We propose GraphACT with the following optimizations:
+– Algorithm selection : By analyzing various GCN train-
+ing algorithms, we select a subgraph-based minibatch algo-
+rithm to significantly reduce CPU-FPGA communication.
+– Redundancy reduction : For each subgraph as a mini-
+batch, we identify and eliminate the recurring aggregation
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+255
+
+
+==== Page 2 ====
+operations between common node neighbors. Such online
+pre-processing on CPU significantly reduces the number
+of on-chip operations and BRAM accesses on FPGA.
+– Parallelization : We parallelize the key training steps
+with optimized on-chip computation modules. Integrat-
+ing the modules into the processing pipeline, we achieve
+load-balance on a wide range of target FPGA devices.
+•We develop an accurate performance model for GraphACT .
+The model identifies architectural parameters of the FPGA
+design, and algorithmic parameters of the minibatch sampler.
+•We evaluate GraphACT on a Xilinx Alveo U200 board hosted
+by a 40-core Xeon server. We achieve an order of magni-
+tude training time speedup with negligible accuracy loss,
+compared with state-of-the-art multi-core implementation.
+2 BACKGROUND AND RELATED WORK
+We use bold capital letters (e.g., X) to denote matrices (zero indexed).
+We use Xu,X:,vandXu,vto denote a row, a column and an element
+ofX, respectively. We use X[a:b,:]to retrieve a sub-matrix by
+extracting rows of X(from the athto the(b−1)throw). Similarly, we
+useX[:,a:b]to retrieve a sub-matrix by extracting the columns.
+We use superscript Tto denote matrix transpose. Superscript
+within brackets(·)denote index of a GCN layer.
+2.1 Graph Convolutional Networks
+Graph Convolutional Networks (GCNs) are built by extending the
+convolution operation defined on grid matrices to unstructured
+graphs [ 18]. The input to a GCN is an un-directed, node attributed
+graphG(V,E,X), whereVandEdenote the set of all nodes
+and edges. Each node is attributed by a length- ffeature vector,
+soX∈R|V|×fdenotes the feature matrix of V. A GCN embeds
+each graph node into a f′-dimensional vector. So the output of a
+GCN is simply an embedding matrix X′∈R|V|×f′, generated by
+information from both the node feature and the node connections.
+A GCN consists of multiple graph convolutional layers. Figure
+1 visualizes layer(ℓ+1), where 0≤ℓ≤L−1. The layer has|V|
+input nodes, each attributed by a length- f(ℓ)vector
+X(ℓ)
+uT
+. Note,
+for the first layer (i.e., ℓ=0),X(0)=X, and f(0)=f. For the last
+layer, X(L)=X′andf(L)=f′. The layer performs the following
+operations to obtain the length- f(ℓ+1)output vectors
+X(ℓ+1)
+uT
+:
+Feature aggregation. As shown in Figure 1, each node usends its
+feature
+X(ℓ)
+uT
+via two types of connection: the self-connection
+(blue) and the neighbor-connection (green). Neighbor connection
+is defined by the edges E. The features propagated to the same
+destination via neighbor-connection are aggregated by vector mean.
+Use node 0as an example. Its input is
+X(ℓ)
+0T
+=[2,0,6]T, and it
+has neighbors 1,2,3. This step produces two vectors for node 0:
+the blue one
+X(ℓ)
+0T
+, and the green one1
+3
+X(ℓ)
+1+X(ℓ)
+2+X(ℓ)
+3T
+.
+Weight transformation. Each node independently transforms its
+two vectors output from the feature aggregation step. In Figure
+1, we denote the transform function as h(·), parameterized by the
+GCN weights. Transformation function for uandvare identical.Equation 1 defines the forward path of layer ℓ+1.Dis the
+(diagonal) degree matrix, where Du,uequals degree of node u, and
+Du,vequals zero for u,v.Ais the adjacency matrix of G, where
+Au,vis1if(u,v)∈E, and 0otherwise. Each layer has two weight
+matrices: the self-weight W(ℓ+1)
+◦ and the neighbor-weight W(ℓ+1)
+⋆.
+The “|” operation concatenates two matrices column-wise. The
+feature aggregation operation corresponds to D−1·A·X(ℓ), and
+the transformation function h(·)applies weights W(ℓ+1)
+◦ ,W(ℓ+1)
+⋆,
+concatenates the intermediate results, and applies ReLU activation.
+X(ℓ+1)=ReLU
+X(ℓ)·W(ℓ+1)
+◦D−1·A·X(ℓ)·W(ℓ+1)
+⋆
+(1)
+The output embedding X′(orX(L)) of a GCN is often used in
+downstream applications such as node classification [ 5,6,14]. To
+classify nodes, we feed X′to a Multi-Layer Perceptron (MLP). A
+softmax layer [11] converts the MLP outputs to node labels.
+Such node classification procedure enables supervised learning
+ofW(ℓ)
+◦,W(ℓ)
+⋆. Suppose each training node v∈V is provided with
+a ground truth label. During training, we calculate cross-entropy
+lossLto measure difference between the ground truth and the
+generated labels. We minimize the loss by updating W(ℓ)
+◦,W(ℓ)
+⋆
+using gradient descent. Gradients with respect to layer ℓparameters
+can be calculated from gradients of layer ℓ+1by chain rule:
+∂L
+∂W(ℓ)
+◦=
+X(ℓ−1)T
+·mask∂L
+∂X(ℓ)
+:,0 :1
+2f(ℓ)
+(2a)
+∂L
+∂W(ℓ)
+⋆=
+D−1AX(ℓ−1)T
+·mask∂L
+∂X(ℓ)
+:,1
+2f(ℓ):f(ℓ)
+(2b)
+∂L
+∂X(ℓ−1)=mask∂L
+∂X(ℓ)
+:,0 :1
+2f(ℓ)
+·
+W(ℓ)
+◦T
+(2c)
++AD−1·mask∂L
+∂X(ℓ)
+:,1
+2f(ℓ):f(ℓ)
+·
+W(ℓ)
+⋆T
+where function mask(·)corresponds to gradient of ReLU(·). Both
+mask andReLU are light-weight elementwise functions on matrices.
+For the node classifier, forward pass of a MLP layer is simply
+Xout
+MLP=ReLU
+WMLP·Xin
+MLP
+, where Xin
+MLPandXout
+MLPare the in-
+put and output features for all V, and WMLPis the layer weight.
+Backward pass of a MLP layer performs computation similar to
+Equations 2a and 2c. For the softmax layer, its forward pass involves
+computation of exponential function, and its backward pass under
+cross-entropy loss only involves matrix subtraction [1].
+To train GCNs on large graphs, minibatches need to be con-
+structed. Unlike the case of CNN training where images are inde-
+pendent and identically distributed, training samples of GCNs (i.e.,
+graph nodes) depends on each other due to edges. Thus, formulat-
+ing GCN minibatches is challenging. There have been various tech-
+niques to sample minibatches [ 4–6,14,15,34]. Section 3.1 analyzes
+the feasibility of hardware implementation for these techniques.
+2.2 Deep Learning Training Accelerators
+Various FPGA-based accelerators [ 10,13,23,28,40] have been pro-
+posed to train CNNs. The work in [ 40] proposes a modular design
+based on the types of layer operations, and improves performance
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+256
+
+==== Page 3 ====
+0
+1
+234
+5
+0 1 2 3 4 5
+
+X(ℓ)
+0T
+2
+0
+6
+X(ℓ)
+1T
+6
+2
+2
+X(ℓ)
+2T
+2
+6
+6
+X(ℓ)
+3T
+4
+4
+4
+X(ℓ)
+4T
+4
+0
+2
+X(ℓ)
+5T
+0
+2
+22
+0
+64
+4
+46
+2
+22
+3
+62
+6
+64
+2
+44
+4
+42
+2
+44
+0
+22
+3
+30
+2
+24
+2
+3h(·) h(·) h(·) h(·) h(·) h(·)
+X(ℓ+1)
+0T
+X(ℓ+1)
+1T
+X(ℓ+1)
+2T
+X(ℓ+1)
+3T
+X(ℓ+1)
+4T
+X(ℓ+1)
+5TT
+raining graphG(V,E,X)
+One
+GCN layer based on G
+Figur
+e 1: Overview of the GCN model
+via reconfiguration. The work in [ 10] proposes a scalable framework
+to training CNNs on multi-FPGA clusters. Its partitioning and map-
+ping strategy ensures load-balance. The works in [ 13,23] accelerate
+training by model compression. The reduced model size alleviates
+the burden on BRAM and thus improves resource utilization.
+To accelerate GCN training, the work in [ 34] proposes paral-
+lelization techniques for multi-core platform. It partitions features
+to increase cache-hit of each core. Although GCNs are an extension
+of CNNs to graphs, challenges to accelerate GCNs are significantly
+different. GCNs require both sparse and dense matrix operations.
+Apart from intensive computation, GCN accelerators need to ad-
+dress issues such as irregular memory access and load-balance.
+2.3 Graph Analytics Accelerators
+Many accelerator designs [ 7,8,16,36,41] have been proposed for
+traditional graph analytic problems, such as PageRank (PR), single
+source shortest path (SSSP) and breadth first search (BFS). The
+works in [ 7,41] process input graphs in a two-phased gather-scatter
+manner, and utilize graph partitioning to improve access locality.
+The work in [ 8] extends the above memory optimization to multi-
+FPGA platforms, and the works in [ 16,36] propose optimization
+specific to HBM and HMC to further boost FPGA performance.
+The memory optimizations proposed in the above works do not
+directly apply to GCN accelerators. First of all, traditional graph
+analytics often propagate scalars along the graph edges, while
+GCNs propagate long feature vectors. Thus, although in both cases
+memory accesses are irregular, the access patterns are very different.
+Secondly, traditional graph analytics often propagate informationwithin the full graph, while GCNs propagate within minibatches.
+Thus, techniques such as graph partitioning may not be effective
+since minibatch size is much smaller than the full graph size.
+3 TRAINING ALGORITHM
+We observe from the forward pass (Equation 1) and the backward
+pass (Equation 2), that GCN training involves three types of matrix
+product P·Q: (1)Pbeing dense and Qbeing dense, (2) Pbeing binary
+sparse and Qbeing dense, and (3) Pbeing diagonal and Qbeing
+dense. From acceleration perspective, type (1) operation is computa-
+tionally intensive and thus requires massive parallelization of DSPs
+(Section 4.3); type (2) operation incurs large number of irregular
+BRAM accesses and motivates the graph topology based optimiza-
+tions (Section 3.2); type (3) operation is equivalent to scaling each
+row of Qby the diagonal elements of P, and thus its contribution
+to the total training cost is negligible. Other operations (e.g., mask ,
+ReLU , concatenation, sub-matrix extraction) are light-weight and
+straightforward to implement, and we do not discuss them in detail.
+3.1 Algorithm Selection
+For efficient training on large graphs, the first step is to reduce
+external memory communication via minibatches. Ideally, a mini-
+batch should be sampled such that all data required for gradient
+calculation (e.g., X(ℓ)of the minibatch nodes) fits in BRAM. Among
+the numerous algorithms [ 5,6,14,15,34], some return minibatches
+not suitable for hardware execution. We categorize these algorithms
+and analyze the hardware cost on external memory accesses.
+Minibatch by sampling GCN layers [ 5,6,14,15].Sampling algo-
+rithms in this category traverse GCN layers backward from layer- L
+outputs to layer-1 inputs to select minibatch nodes. Assume bnodes
+of layer ℓ+1are selected. The sampler then take α·bnodes of
+layer ℓbased on the inter-layer connections and/or the features of
+thed·bneighbors in layer- ℓ(where dis the average node degree).
+Specifically, the sampling of [ 14] does not depend on neighbor fea-
+tures and 10≤α≤50in general. [ 6] uses the neighbor features as
+“historical activation” and α=2. [15] computes the node probability
+by the neighbor features and α=1on average. [ 5] does not require
+neighbor features and α=1. In summary, suppose we sample b0
+output nodes of layer L. Then the sampler reads the neighbor fea-
+tures of each layer (if required) to eventually return αL·b0input
+nodes in layer 1. During training, we read features of the αL·b0
+input nodes of layer 1, and then perform forward propagation to
+compute output features of the layer- ℓsampled nodes (1≤ℓ≤L).
+Minibatch by sampling training graph [ 34].The algorithm sam-
+ples fromGinstead of the GCN layers. Given a graph sampling
+algorithm (e.g., multi-dimensional random walk [ 26]), [34] returns a
+subgraphGs(Vs,Es)induced fromG(V,E)(where|Vs|≪|V|).
+The minibatch contains the same set of nodes Vsfor all the GCN
+layers. In other words, for each minibatch, [ 34] constructs a com-
+plete L-layer GCN fromGs, with the layer nodes defined by Vsand
+the layer connections defined by Es. Note that unlike [ 6,15], the
+graph sampler of [ 34] requires no information from node features.
+Suppose we were to implement the above minibatch training al-
+gorithms on FPGA. Since the full X(ℓ)is too large to fit on-chip, we
+need to read from external memory the following data: (1) layer-1
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+257
+
+==== Page 4 ====
+input features of the minibatch nodes, and (2) layer- ℓinput features
+of the minibatch neighbor nodes (if required). For ease of analysis,
+assume the feature sizes of each layer are the same, and let the cost
+of transferring one feature vector be 1. Also, let the cost of aggre-
+gation and computing h(·)for one node (see Figure 1) be 1. Ignore
+the computation cost of feature aggregation. Table 1 summarizes
+the ratio between on-chip computation cost and off-chip commu-
+nication cost, where for the “Value” row, we set L=2,d=15and
+αas25,1,2,1for [ 14], [5], [6], [15] respectively. Algorithms of
+low computation-communication ratio (i.e., [ 6,14,15]) impede the
+development of efficient hardware accelerators. For the remaining
+two algorithms, the complexity of the sampler of [ 34] is much lower
+than that of [ 5], and the training accuracy of [ 34] is higher. Thus,
+we select [34] as the target training algorithm for acceleration.
+Table 1: Computation-communication ratio of various train-
+ing algorithms. Let B=ÍL−1
+ℓ=0αℓb0, and B′=L·b0.
+[14] [5] [6] [15] [34]
+ExpressionB
+αLb0B
+αLb0B
+αLb0+dBB
+αLb0+dBB′
+b0
+Value 0.04 2 0 .06 0 .06 2
+Remark on notation. Since we select the algorithm of [ 34], in the
+following sections, we mainly focus on GCN built on a subgraph Gs.
+A symbol with an “ s” subscript means it is related with a subgraph.
+Thus, forward and backward pass of the GCN can be updated by
+simply replacing A,D,X(·)withAs,Ds,X(·)
+sin Equations 1 and 2.
+3.2 Redundancy Reduction
+Before designing the hardware architecture, we first optimize the
+redundancy in minibatch training from an algorithm perspective.
+Take Figure 2a as an example. Suppose the graph sampler returns a
+subgraphGs(ofGin Figure 1) as the minibatch. In each GCN layer,
+nodes 1,2,3and4aggregate neighbor features, with node 0calcu-
+lating1
+3
+XT
+1+XT
+2+XT
+3
+, node 1calculating1
+2
+XT
+0+XT
+2
+, node 2
+calculating1
+3
+XT
+0+XT
+1+XT
+3
+and node 3calculating1
+2
+XT
+0+XT
+2
+(omitting superscript (ℓ)for simplicity). This corresponds to 6 vec-
+tor additions and 10 vector reads in total. Observe that the vector
+pair
+XT
+0,XT
+2
+appears in the aggregation of both nodes 1and3.
+Similarly, the pair
+XT
+1,XT
+3
+is aggregated by both nodes 0and2.
+Thus, we can perform pre-processing to compute the partial sum
+XT
+0+XT
+2andXT
+1+XT
+3. The aggregation of the four nodes after pre-
+processing requires only 2 additions and 4 reads. In general, even
+considering the pre-processing cost, we can still significantly re-
+duce both computation and communication of feature aggregation.
+The redundancy reduction helps us achieve perfect load-balance of
+thecomplete pipeline for a wide range of FPGAs (Section 5.3).
+The key to reduce redundancy is to identify sets of nodes ap-
+pearing frequently in the neighbor lists of v∈Vs. To simplify the
+problem, we aim at finding such sets of size 2 — we identify common
+pairs of neighbors. We first construct an un-directed aggregation
+graphGafromGsby Algorithm 1. Each edge (u,v)inGarepresents
+potential vector sum operations between uandv. The attribute0
+1
+23
+(a)Gs0
+1
+23
+(b)GaandMau
+1
+03
+2v
+(c)G′s
+Figure 2: Example on reducing redundancy in feature prop-
+agation, using a graph theoretical approach.
+of(u,w)consists of a set of nodes {v1, . . . ,vn}, meaning that the
+neighbor list of vi(1≤i≤n) contains both uandw. The weight
+of an edge is simply the size of its attribute set (we remove edges
+of weight 1). In Algorithm 1, WaandDacan be implemented as
+a hash table. And Wa[(u,w)](orDa[(u,w)]) returns the value
+corresponding to the key (u,w). Figure 2b shows the aggregation
+graphGafor our above example, where edges have weight 2.
+Algorithm 1 Construction of aggregation graph Ga
+Input: SubgraphGs(Vs,Es)
+Output: Aggregator graphGa
+1:Va←V s
+2:Wa←∅ ▷Key-value pairs mapping edges to edge weights
+3:Da←∅ ▷Key-value pairs mapping edges to edge attributes
+4:forv∈Vado
+5: foru∈neigh(v)do
+6: forw∈neigh(v)\udo
+7: ifKey(u,w)not inWathen
+8: Add key-value pair ((u,w),1)toWa
+9: else
+10:Wa[(u,w)]←W a[(u,w)]+1
+11: ifKey(u,w)not inDathen
+12: Add key-value pair ((u,w),{v})toDa
+13: else
+14:Da[(u,w)]←D a[(u,w)]∪{v}
+15:Remove key-value pairs of weight-1 edges in WaandDa
+16:Ga←Un-directed graph based on WaandDa
+Intuitively, the next step upon getting Gais to extract the edges
+with largest weights, so that pre-computation of the correspond-
+ing vector sums reduces the most redundancy. However, there
+is one subtlety to notice. Suppose two edges of Ga, ui,ujand uj,uk, have large weights, and {v1, . . . ,vm}, the intersection of
+their attributes, is non-empty. Consider the aggregation of nodes
+{v1, . . . ,vm}after pre-computing x′=XT
+i+XT
+jandx′′=XT
+j+XT
+k.
+By replacing the pair
+XT
+i,XT
+j
+with x′, the other pair
+XT
+j,XT
+k
+disappears in aggregation. So x′′does not help reduce redundancy.
+To avoid such useless pre-computation on x′′, a good solution is to
+find a maximum weight matching ofGa, so that the selected pairs
+imply high redundancy, and share no common nodes.
+Theorem 3.1. For feature aggregation of each layer, number of vec-
+tor reads and additions can decrease by at leastÍ
+e∈M∗a(Wa[e]−2)
+andÍ
+e∈M∗a(Wa[e]−1).M∗ais maximum weight matching of Ga.
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+258
+
+==== Page 5 ====
+Proof. We first consider the reduction in number of reads. Since
+edges in a matching are disjoint, for each (u,v)∈M∗a, accessing
+XTu+XTvinstead of XTuandXTvsaves(2−1)·Wa[(u,v)]number
+of reads. The pre-computation of XTu+XTvconsumes 2 reads. In
+sum, the total reduction isÍ(Wa[e]−2). The proof for reduction
+in number of additions can be similarly derived. □
+Note that Theorem 3.1 considers the total cost including any pre-
+computation cost. Also, although polynomial complexity algorithm
+[22] exists for computing the maximum weight matching, it is still
+too expensive in practice. Thus, we propose a greedy approach
+(Algorithm 2) to quickly compute a good matching Ma.
+Algorithm 2 Greedy approach to find a good matching Ma
+Input: Aggregation graph Ga; threshold θ
+Output: MatchingMa
+1:Ma←∅
+2:H←Max-heap of edges Ea, ordered by edge weights
+3:S← Length|Va|vector of values True
+4:while maxWeight(H)>θdo
+5:(u,v)←extractMaxEdge(H)
+6: if¬(Su∧Sv)then ▷(u,v)violates edge disjointness
+7: continue
+8:Su←False;Sv←False
+9:Ma←M a∪{(u,v)}
+The next step after obtaining Mais to update the original Gs
+toG′s(following Algorithm 3), so that the pre-computed sums
+can propagate inG′s. The idea is to merge each pair of nodes in
+Mainto a new node, whose feature vector is returned by pre-
+computation. Compared with Gs, the updatedG′shas more nodes
+(V′s=|Vs|+|Ma|), but less edges. Note that G′sis directed, even
+whenGsis un-directed. The example G′sis shown in Figure 2c.
+Algorithm 3 Construction of the update subgraph G′s
+Input: Original subgraph Gs; MatchingMa; Edge attributeDa
+Output: Updated (directed) subgraph G′s V′s,E′s
+1:V′s←V s;E′s←E s
+2:for(u,v)∈M ado
+3: Assign a new node v′corresponding to the edge (u,v)
+4:V′s←V′s∪{v′}
+5: forw∈D a[(u,v)]do
+6: Remove(u,w)fromE′s
+7: Replace(v,w)with(v′,w)inE′s
+Complexity analysis. Complexity of Algorithms 1, 2 and 3 are low
+compared with the feature aggregation. Complexity of Algorithm
+1 isO(|Ea|)=O Í
+v∈Vsd2v, where dvisv’s degree. Although
+in the worst case, O(|Ea|)=O |Vs|·d2max, for the graphs in
+practice, we may assume O(|Ea|)=O
+|Vs|·d2
+=O
+|Es|·d
+,
+where dmaxanddare the max and average degree of Gs. Complex-
+ity of Algorithm 2 is O(|Ea|+Nlog|Ea|), where the first term
+counts for line 2, and the second term is for the loop from line 4 to 9.
+Number of times max-edge is extracted from heap, N, depends onthe threshold θ. Typically, N≪|Ea|,|Vs|<5000, d<20. Overall
+complexity of Algorithms 1 and 2 is much less than the complexity
+of single layer feature aggregation (i.e., O(|Es|·f), where the fea-
+ture length fis to the order of 102to103). For Algorithm 3, lines
+6 and 7 each takes at most dwoperations if we simply scan the
+neighbor list of w. In return, we save one vector sum operation
+foruandv. Considering d≪f, overhead of Algorithm 3 is thus
+negligible compared with the benefit in redundancy reduction.
+It is worth noticing that (1) one time transformation from Gsto
+G′sbenefits 3Lnumber of feature aggregation in a L-layer GCN, and
+(2) such transformation, which only involves integer operations,
+reduces floating point arithmetics during feature aggregation. These
+two observations further justify the cost of Algorithms 1, 2 and 3.
+Iterative redundancy reduction. After obtainingG′s, redundancy
+still exists when aggregating features of G′s. ViewingG′sas the
+newGs, we can again apply Algorithms 1, 2 and 3 to obtain a G′′s.
+This process can continue until few edges can be reduced (i.e., the
+matching is small). Note that although the training graph (and thus
+Gs) is often un-directed, Algorithms 1, 2 and 3 still apply when Gs
+is directed. Therefore, iterative redundancy reduction is feasible.
+For sake of notation, define one round of redundancy reduction as
+one invocation of Algorithms 1, 2 and 3. Define the subgraph output
+by the last round as G#s, and its adjacency matrix as A#s. Define the
+set of matchings in all rounds as Ma={Ma,M′a,M′′a, . . .}. Define
+γaddBnumAdd(G#
+s)+Í
+M∈Ma|M|
+numAdd(Gs)as the redundancy reduction rate
+for additions, where numAdd(G)=Í
+v∈V;dv≥1(dv−1)denotes
+the number of additions to aggregate by traversing G’s neighbor
+lists. Define γreadBnumRead(G#
+s)+Í
+M∈Ma2|M|
+numRead(Gs)as the redundancy
+reduction rate for BRAM reads, where numRead(G)=Í
+v∈Vdv=
+d|V|denotes number of reads to aggregate features.
+4 ACCELERATOR DESIGN
+4.1 Overview
+We first partition the workload between FPGA and CPU. We let
+FPGA execute the computation intensive operations, and leave the
+communication intensive parts to CPU. A natural partition is: CPU
+performs graph sampling, and then converts GstoG#s; FPGA per-
+forms the forward and backward pass defined by Equations 1 and 2,
+where feature propagation of each layer is based on G#s. Notice that
+under supervised learning, the last graph convolutional layer is fol-
+lowed by a node classifier (see Section 2.1). The softmax layer at the
+end of the classifier and the cross-entropy loss require computation
+of exponential and logarithmic functions. Since softmax and loss
+contribute to a negligible portion of the total workload and their ac-
+curate calculation requires complicated hardware [ 9,21], we assign
+their computation to CPU. Section 4.4 describes the scheduling.
+To improve overall training throughput, we need to (1) reduce
+the overhead in external memory access, and (2) increase the uti-
+lization of the on-chip resources. The first goal can be achieved
+by setting the minibatch parameters so that the size of Gsis ap-
+propriate for the BRAM capacity. Ideally, once receiving the initial
+node features (i.e., X(0)
+sofVs) and the connection information (i.e.,
+Ds,A#s,Ma), the FPGA should propagate forward from the first
+graph convolutional layer to the last classifier MLP layer without
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+259
+
+==== Page 6 ====
+accessing external memory. Similarly, once receiving the gradient
+with respect to softmax, FPGA should propagate backward without
+accessing external memory. Thus, CPU needs to communicate:
+•To FPGA: X(0)
+s,Ds,A#s,Maand∂L
+∂Xout
+MLP
+•From FPGA: Xout
+MLP
+And on-chip BRAM needs to store:
+•Node features:Ð
+0≤ℓ≤Ln
+X(ℓ)
+so
+•Subgraph topological data: Ds,A#sandMa
+•Pre-computed vector sum for pairs in Ma
+•Intermediate feature aggregation results
+•Model weights:Ð
+1≤ℓ≤Ln
+W(ℓ)
+◦,W(ℓ)
+⋆o
+andWMLP
+•Gradient information:∂L
+∂X(ℓ)
+sand∂L
+∂X(ℓ−1)
+s, for any 2≤ℓ≤L
+•Optimizer specific auxiliary data
+•Other data (i.e., tile buffer in Section 4.3)
+Note that we only need to store gradients with respect to acti-
+vations of consecutive layers. When calculating∂L
+∂W(ℓ)
+◦and∂L
+∂W(ℓ)
+⋆,
+the data∂L
+∂X(ℓ)
+sand∂L
+∂X(ℓ+1)
+sare stored on chip. When calculating
+∂L
+∂X(ℓ−1)
+s, we overwrite∂L
+∂X(ℓ+1)
+swith the newly generated∂L
+∂X(ℓ−1)
+s.
+Also note that the optimizer specific auxiliary data depends on the
+optimizer used. For vanilla gradient descent, no auxiliary data is
+needed. For gradient descent with momentum [ 27], we need to
+store the gradient with respect to model weights for the previous
+minibatch. For Adam optimizer [ 17], we need to store more gradient
+related data (e.g., first moment estimate, second moment estimate,
+etc. ). No matter what optimizer is used, the size of the auxiliary
+data is comparable to the size of model weights.
+Regarding the processing pipeline on-chip, there are two main
+computation modules to perform feature aggregation and weight
+transformation. In Figure 3, the Feature Aggregation module con-
+sists of a 1D accumulator array to sum the node vectors. The Weight
+Transformation module consists of a 2D systolic array to compute
+the dense matrix product between XandW. The two modules are
+reused for the computation of the Lgraph convolutional layers, and
+the Weight Transformation module is also reused for the MLP layer.
+The various BRAM buffers stores the data listed above. During for-
+ward pass, when computing layer ℓ, the Feature Aggregation and
+Weight Transformation modules read from the buffer of X(ℓ−1)
+s , and
+write into X(ℓ)
+s. In backward pass, for layer ℓ, the two computation
+modules read the buffer of X(ℓ−1)
+s , and read / write into the two
+gradient buffers in a ping-pong fashion.
+TheX(ℓ)
+sand∂L
+∂X(ℓ)
+sbuffers use feature major data layout. So
+each cycle, a buffer can provide the full feature vector of one node.
+For a BRAM block (36 bits×1K) of the Xilinx Alveo board we use,
+we store feature values (32-bit floating point) of 1K different nodes.
+4.2 Feature Aggregation Module
+This module performs feature aggregation in three steps. The first
+pre-computation step calculates the vector sum of node pairs in Ma,
+and stores the results in the buffer for XM. The second step com-
+putes A#s·X(ℓ)
+sby reading XMandX(ℓ)
+s. The final step applies the
+scaling coefficient based on Ds. The aggregated features are writteninto a temporary buffer to be consumed by the Weight Transforma-
+tion module. For the below discussion, we ignore step 3 since its
+complexity is low (i.e., O(|Vs|)) compared with the other steps (i.e.,
+O(|Es|)). Regarding steps 1 and 2, since the feature length is large,
+we explore parallelism along the feature dimension. In this case,
+a simple 1D accumulator array of size Pagg=max 0≤ℓ≤L−1f(ℓ)is
+sufficient. During pre-computation, pairs of node indices are read
+sequentially from Ma. Vector sum of each pair consumes two cycles.
+Similarly, during propagation of A#s, indices in the neighbor lists
+are read sequentially. Note that even though Macontains pairs
+of multiple rounds (see last paragraph of Section 3.2), as long as
+the pre-computation on the earlier rounds finishes before that of
+later rounds, the memory controller for the accumulator array is
+straightforward. For example, assume the original subgraph nodes
+are indexed continuously from 1to|Vs|and the new nodes gener-
+ated in the first round are indexed from |Vs|+1to|Vs|+|Ma|. The
+matching in the second round, M′a, can only contain indices from
+1to|Vs|+|Ma|. If the second round starts after the first round has
+finished, all features required by M′aare ready. So the accumulator
+array can directly read X(ℓ)
+sandXM, and continue filling XMwith
+new features indexed from |Vs|+|Ma|+1to|Vs|+|Ma|+M′a.
+Remark. To further increase parallelism, we can aggregate vec-
+tors of multiple neighbors in the same cycle. Then the accumulator
+array would be replaced by an accumulator tree, and the buffer
+would be further partitioned to reduce bank conflicts in BRAM.
+In this case, challenges such as load-balance would emerge. Fortu-
+nately, for most target FPGA devices, parallelism of just max f(ℓ)
+is sufficient. We discuss this in detail in Section 5.3 and 5.4. Also,
+we evaluate the storage overhead due to XMin Section 6.2.
+4.3 Weight Transformation Module
+This module performs weight transformation of either a GCN layer
+(i.e.,h(·)function in Figure 1) or a MLP layer. The main operation
+is multiplication of dense matrices. We use a 2D systolic array
+to execute the blocked matrix multiplication algorithm. Let the
+dimension of the systolic array be Psys(where Psys≪f(ℓ)). So the
+computation parallelism of this module is P2sys, and each cycle 2Psys
+data are streamed in the array. Next we specify the data access
+pattern. Suppose we compute X·W, where X∈R|Vs|×fand
+W∈Rf×f′. Then the Xbuffer is depth-wise partitioned to tiles
+of layout Psys×f, and the Wbuffer is width-wise partitioned to
+tiles of layout f×Psys. There are|Vs|
+Psys×f′
+Psyspairs of tiles. For
+each pair, the systolic array reads a diagonal (or anti-diagonal if
+matrix is transposed) of the two tiles per cycle. Thus, computing a
+pair of tiles consumes f+Psys−1cycles, and computing the full
+dot product takes|Vs|
+Psys·f′
+Psys· f+Psys−1≈1
+P2sys·|Vs|·f·f′
+cycles. To perform ReLU in the forward pass, we only need to add
+a comparator in each PE of the systolic array. When the results for
+a pair of tiles are ready, the PEs clip negative values to zero and
+append a status bit to indicate whether or not the clipping occurs.
+Themask function in the backward pass can thus be implemented
+in a simple way based on the True orFalse of the status bit.
+Interaction with Feature Aggregation module. When operating on
+the neighbor weight W⋆, Weight Transformation module reads the
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+260
+
+==== Page 7 ====
+A#s,Ds
+Ma
+XM⊕
+⊕
+⊕Featur
+e Aggregation
+W◦ W⋆
+Tile
+BufferW
+eight Transformation
+⊗/⊕
+⊗/⊕
+⊗/⊕
+⊗/⊕⊗/⊕
+⊗/⊕
+⊗/⊕
+⊗/⊕⊗/⊕
+⊗/⊕
+⊗/⊕
+⊗/⊕⊗/⊕
+⊗/⊕
+⊗/⊕
+⊗/⊕1:n
+1:nn:1
+n:1
+Mem.
+Controller1:n
+1:nn:1
+n:1Mem.
+Controller
+X(0)
+sXout
+MLP X(1)
+s X(2)
+s∂L
+∂X(ℓ)
+s∂L
+∂X(ℓ−1)
+sOptimizer
+data
+Figure 3: Overview of the processing pipeline on FPGA ( L=2)
+feature from the buffer filled by the Feature Aggregation module.
+When operating on the self weight W◦, conflicts may occur since
+both modules read from the Xbuffer. We add a small tile buffer in
+the Weight Transformation module to completely avoid read conflicts.
+The tile buffer of size Psys×fstores a tile of X, and is filled in f
+cycles. Data in the tile buffer stay for f+Psys−1·f′
+Psyscycles to
+enumerate all tiles of W. Read conflicts can only happen during the
+filling of the tile buffer. And we simply stall the Feature Aggregation
+module in this short period of time. Since f′≫Psys, the pipeline
+stall has negligible impact on performance. The above analysis is
+based on the forward pass operation. In the backward pass, we
+swap the dimensions of |Vs|andf, and the same conclusion holds.
+4.4 Scheduling
+Scheduling between CPU and FPGA. CPU samples the subgraph
+Gs, transforms it toG#s, and calculates softmax, loss and the corre-
+sponding gradients. These are shown in light blue blocks of Figure
+4. FPGA handles majority of the computation workload in the for-
+ward and backward pass, as shown in light green. Communication
+between CPU and FPGA, as specified in Section 4.1, is in dark blue.
+Notice that the subgraphs are independently sampled for each mini-
+batch. Thus, CPU can prepare GsandG#sfor the next minibatch,
+while simultaneously FPGA is training the current one. This ex-
+plains the overlap between step 7 and 2. Parallelism can be explored
+by multiple cores of the CPU. The Ccores can process subgraphs
+for the next Cminibatches in parallel without any dependency.
+Scheduling of FPGA modules. In Figure 4, we only show the sched-
+uling of the GCN forward pass. Scheduling of MLP and the back-
+ward pass can be analogously designed. Computation on neighbor
+weights depends on the aggregated feature and computation on self
+weights has no dependency. Thus, we overlap the operations of a
+and b. The avoidance of read conflicts between a and b is discussed1 7 345
+2 6CPU
+FPGA
+Time
+a c
+ba c
+ba c
+ba c
+bMo
+dules
+T
+ransfer initial data
+Sample;
+pre-process
+(fornext batch )
+Pr
+opagate forward
+T
+ransfer inputs to softmax
+Calculate
+softmax and loss
+T
+ransfer softmax gradient
+Pr
+opagate backward
+A
+ggregate featuresT
+ransform w.r.t. self-weightT
+ransform w.r.t. neighbor-weight
+Figur
+e 4: Per-minibatch scheduling between CPU and FPGA
+(up), and between FPGA computation modules (down).
+in Section 4.3. During operation c, Feature Aggregation module is
+idle. We analyze its impact on DSP utilization in Section 5.4.
+5 PERFORMANCE ANALYSIS
+To simplify notation, we assume f(ℓ)=f,∀0≤ℓ≤L. So the
+weight matrices W(ℓ)
+◦∈Rf×1
+2fandW(ℓ)
+⋆∈Rf×1
+2f, where the
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+261
+
+==== Page 8 ====
+1
+2factor is due to the concatenation in the forward pass. For the
+classifier, we assume a single layer MLP, with WMLP∈Rf×f.
+Regarding FPGA resources, we assume accumulators and multi-
+pliers are implemented by DSPs and have the same hardware cost.
+We assume the target FPGA can implement RDSPnumber of accu-
+mulators / multipliers, store RBRAM words, and communicate RBW
+words with external memory per cycle. Here a word represents an
+element of the feature vectors or the weight matrices.
+Training performance depends on the parameters related to:
+•Minibatch and GCN: |Vs|,dandf
+•Redundancy reduction: γadd,γreadandÍ
+M∈Ma|M|
+•FPGA architecture: Pagg,Psys
+We also use the fact that d≪f≪|Vs|to simplify analysis.
+5.1 Computation
+Each graph convolutional layer performs feature aggregation 3
+times and product on weights 6 times. Two of the feature aggrega-
+tion operate on length- fvectors, and the other one on length-1
+2f
+vectors. Since feature aggregation is parallelized along feature di-
+mension only, it takes exactly γread·|Vs|·d·f/Paggcycles to
+aggregate length- ffeatures. All six products on weights have the
+same complexity, and each takes1
+2·|Vs|·f2/P2syscycles. By the
+schedule in Figure 4, to hide the feature aggregation time, we have:
+γread·|Vs|·d·f·1
+Pagg=
+1−2Psys
+f
+·1
+2·|Vs|·f2·1
+P2sys(3a)
+Pagg+2P2
+sys=RDSP (3b)
+Pagg≤f (3c)
+where factor 1−2Psys
+fis due to the pipeline stall analyzed in Section
+4.3. Solving Equations 3a and 3b under the constraint of 3c gives the
+architectural parameters P∗agg,P∗sys. Under reasonable values of f,
+|Vs|,d,γreadandRDSP, the solutions P∗arrandP∗sysalways exist (see
+also Section 5.3). Total FPGA cycles∗to complete one minibatch is:
+Tbatch =(3L+3)·|Vs|·f2·1
+
+P∗sys2(4)
+5.2 Communication
+On-chip storage. All data listed in Section 4.1 have to fit on-chip.
+Index data A#sandMaand coefficient Dare negligible compared
+with feature data (since d≪f). Size of the buffer for XMisf·Í
+M∈Ma|M|. Size of the buffer between Feature Aggregation and
+Weight Transformation modules is f·|Vs|. Size of the tile buffer in
+Weight Transformation module is Psys·|Vs|. Weights for each layer
+takes f2. Under gradient descent with momentum, the optimizer
+requires additional f2storage per layer for the auxiliary data. Thus,
+(L+5)f|Vs|+fÕ
+M∈Ma|M|+Psys|Vs|+2(L+1)f2≤RBRAM
+(5)
+∗We ignore the number of cycles to apply gradients to weights (elementwise
+operation), since it is negligible compared to the number of cycles to calculate gradients.By adjusting θand number of rounds (see Algorithm 2 and Section
+3.2), we controlÍ|M|to meet a pre-defined budget (say |Vs|).
+Then, we tune the graph sampler so that |Vs|satisfies inequality 5.
+Off-chip accesses. Ignoring Ds,A#sandMa, CPU-FPGA data
+transfer include the initial features and the MLP output features
+and gradients. Thus, β, the ratio between on-chip computation and
+off-chip communication, is lower bounded†byf, indicating high
+reuse of on-chip data, and low overhead in external memory access.
+5.3 Load-Balance
+If feature aggregation is parallelized along feature dimension only,
+the full FPGA pipeline is perfectly load-balanced, regardless of the
+graph connection. However, if we would have to aggregate features
+of multiple nodes in parallel, BRAM access conflicts would cause
+load-imbalance of the module and degrade training performance.
+Load-imbalance is more likely to happen on FPGAs with more
+DSP resources. The threshold ˆRDSPfor a design to become load-
+imbalanced can be derived by plugging Pagg=finto Equations 3a
+and 3b. After simplifying the expression, we have:
+ˆRDSP> 
+f
+dγread!2
+·
+1+dγread−q
+1+2γreadd
+(6)
+Feature dimension is often set to 256, 512or1024 in the literature.
+Subgraph degree is often less than 20, so we set d=15. The ratio
+γreaddepends onGs, and we set it to 0.7. With such parameter
+values, ˆRDSP>4048, meaning that there have to be at least 4048
+multipliers / accumulators on chip for our FPGA pipeline to be-
+come load-imbalanced. Even the largest FPGAs in the market (e.g.,
+Xilinx UltraScale+, Intel Stratix-10) does not have such high DSP
+capacity (considering that data in single precision floating point
+are necessary to achieve high training accuracy). Note that γread
+helps keep the threshold ˆRDSPhigh. Ifγread=1,ˆRDSPis only 3038.
+5.4 DSP Utilization
+Since load-balance is achieved and BRAM conflicts are eliminated,
+we can analytically derive the DSP utilization for any Gs. From
+the timeline of Figure 4, the systolic array is idle when CPU is
+communicating with FPGA (ignoring the CPU computation time
+on softmax and loss). The accumulator array of Feature Aggregation
+module is idle during the stall and during computation on neighbor
+weights. Using the fact that computation-communication ratio β>
+f(see Section 5.2), we derive the overall DSP utilization µas:
+µ>µ′·1
+1+µ′·RDSP
+f·RBW(7)
+whereµ′=1
+RDSP·
+2
+P∗sys2
++5
+12P∗arr
+1−2P∗
+sys
+f
+, and P∗arr,P∗sys
+satisfiy Equations 3a and 3b. The5
+12factor is due to the aggregation
+of length-1
+2ffeatures in the backward pass. If we can reduce the
+redundancy up to γread>1−2P∗
+sys
+f>1−√2RDSP
+f, we can then lower-
+boundµ′by1
+1+d/f. With the typical parameter values specified in
+†To simplify expression, we only consider the computation of the systolic array
+on graph convolutional layers. Therefore, fis just a lower bound on the ratio.
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+262
+
+==== Page 9 ====
+Section 5.3, µ′>95%. For most FPGA platforms,RDSP
+f·RBW≪1, so
+overall DSP utilization µis close to 1. For example, on Xilinx Alveo
+U200 board connected to CPU via PCIe 3.0 x16, we have µ>93%.
+6 EXPERIMENTS
+We evaluate on a Xilinx Alveo U200 board hosted by a 40-core
+Xeon server (E5-2698 v4 @2.2GHz, hyper-threaded). CPU-FPGA
+communication is via PCIe 3.0 x16 (peak bandwidth: 15.8GB/s). The
+UltraScale+ XCU200 FPGA on Alveo has 5867 DSP slices, 1766 36Kb
+block RAMs and 800 288Kb Ultra RAMs‡. For Float32, on-chip RAM
+can store 8166K words, and DSPs can implement 1173 accumulators
+or 1955 multipliers. We use Vivado 2018.3 for synthesis.
+Table 2: Dataset statistics
+Dataset
+Nodes Edges Attribute Classes Train/Val/Test
+PPI
+14,755 225,270 50 121 0.66/0.12/0.22
+Reddit 232,965 11,606,919 602 41 0.66/0.10/0.24
+Yelp 716,847 6,977,410 300 100 0.75/0.15/0.10
+We use three standard, large benchmark graphs [ 5,6,14,15,34]
+to evaluate the training speed and accuracy. In Table 2, “Attribute”
+specifies the initial feature length (i.e., f(0)=X(0)
+v). “Classes”
+specifies total number of node classes. “Train/Val/Test” splitting
+follows [ 34]. For all the datasets, following [ 5,6,14,15,34], the
+GCN has two graph convolutional layers ( L=2) and one MLP layer
+in the classifier. The hidden dimension is f(ℓ)=256, where ℓ=1,2.
+We compare with the baseline [ 34] since GraphACT uses the
+same minibatch algorithm as [ 34]. For [ 34], we run the public im-
+plementation§by Python (version 3.6.7) and Tensorflow (version
+1.12). We run [ 34] on both the CPU and GPU platforms. Table 4
+shows the hardware specification of the hardware. Parallelization
+of [34] on CPU is via the Intel MKL library. Thus, we add the --mkl
+flag to run [ 34] on CPU. Parallelization of [ 34] on GPU is directly via
+Tensorflow. The implementation of GraphACT is open-sourced⁄pilcrow.
+6.1 Training Accuracy
+Under the same hyper-parameters, the accuracy and convergence
+ofGraphACT are identical [ 34]. However, since we set the subgraph
+size under the BRAM constraint (Equation 5), it is necessary to
+evaluate accuracy under our settings. Table 3 summarizes the com-
+parison, where except the subgraph size, all hyper-parameters of
+Para-GCN and GraphACT are the same. The popular GraphSAGE
+does not sample subgraphs, and we use its default minibatch size of
+512. Comparing with [ 14], we achieve much higher accuracy on PPI,
+and comparable accuracy on Reddit and Yelp after similar number
+of epochs. Comparing with [ 34], reducing the subgraph size |Vs|
+has negligible impact on the overall accuracy and convergence rate.
+6.2 Redundancy Reduction
+After transforming GstoG#s, redundancy in computation and com-
+munication are reduced at the cost of extra on-chip buffer to store
+‡In this paper, we refer to block RAM and Ultra RAM by a general term “BRAM”.
+§Baseline code: https://github.com/ZimpleX/gcn-ipdps19, commit a6f531.
+⁄pilcrowGraphACT code: https://github.com/GraphSAINT/GraphACTthe vector sums of Ma. Figure 5 shows such tradeoff, as well as
+the effectiveness of redundancy reduction. Each “ ×” marker cor-
+responds to one round of redundancy reduction, and we run for 5
+rounds (θ=2, Algorithm 2). We observe (1) number of reads and
+additions can be reduced to as low as 60%, at the cost of a buffer less
+than 2|Vs|, (2) theγreadvalue used in Section 5.3 and 5.4 (to ana-
+lyze load-balance and DSP utilization) is realistic, and (3) amount of
+redundancy depends on the graph topology — while our algorithm
+is effective on many graphs (e.g., PPI, Yelp), exceptions exist (e.g.,
+Reddit). By Figure 5, in our implementation, we set a budget Bsuch
+thatÍ
+M∈Ma|M|<B·|Vs|. For PPI, Reddit, Yelp, B=2,0.5,0.5.
+0.25 0.50.75 1.01.25 1.5000.20.40.60.81
+Normalize
+d storage overhead: Í
+M∈Ma|M|/|Vs|Re
+duction ratioγadd
+0.25 0.50.75 1.01.25 1.50γr
+ead
+PPI
+Re
+ddit
+Y
+elp
+Figur
+e 5: Reduced redundancy vs.Storage overhead
+6.3 Comparison with State-of-the-Art
+Table 4 shows the training speed comparison with the state-of-the-
+art [34]. All implementations use single precision floating point for
+weights and features. In our design, the DSP and BRAM resources
+are heavily utilized. We set Psys=24andParr=128for all datasets.
+For the multi-core implementation, “L3” shows the aggregated L3-
+cache size and “Off-chip bandwidth” shows the peak CPU-main
+memory data transfer speed. For the GPU implementation, “Off-
+chip bandwidth” is the same as the proposed implementation since
+the GPU is connected via PCIe 3.0 x16. “Total convergence time”
+includes the time for graph sampling, pre-processing (for redun-
+dancy reduction), GCN forward/backward propagation and data
+transfer from/to main memory. It excludes the time for initial data
+loading from the disk and Tensorflow initialization (for allocating
+device resources and building computation graphs).
+Comparing with the CPU baseline, we achieve 12×to15×speedup.
+Apart from the overhead of the Python language, inefficiency of the
+CPU baseline is mainly due subgraph feature aggregation operation.
+We observe that although feature aggregation requires less than
+10% of the multiplication/addition of weight transformation, the
+CPU spends about equal amount of time on the two operations
+(see also Figure 3.D of [ 34]). Comparing with the GPU baseline,
+our design convergences slightly faster (1 .1×to1.5×). The theoret-
+ical peak performance of the GPU (9.3 TFLOPS for Float32 [ 2]) is
+much higher than that of the FPGA (1.8 TFLOPS for Float32 [ 3]∥).
+Inefficiency of the GPU baseline is mainly due to the sub-optimal
+Tensorflow implementation of sparse matrix multiplication. Note
+that the CPU in our proposed design only executes light weight op-
+erations (Section 3.2 and 4.4). Thus, the training time improvement
+mainly comes from the highly optimized FPGA architecture.
+∥Each Float32 multiplier consumes 3 DSPs. The max DSP frequency is 775MHz.
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+263
+
+==== Page 10 ====
+Table 3: Comparison of convergence and test set accuracy (F1-micro score)
+MethodPPI Reddit Yelp
+Accuracy Epochs Subgraph size Accuracy Epochs Subgraph size Accuracy Epochs Subgraph size
+GraphSAGE [14] 0.603 71 – 0.953 6 – 0.593 10 –
+Para-GCN [34] 0.685 120 5500 0.957 5 8000 0.606 8 4000
+GraphACT 0.678 104 4000 0.952 5 2750 0.598 7 2750
+Table 4: Comparison of resources and training time with state-of-the-art implementations
+Xilinx
+Alveo U200 Xeon E5-2698 v4 server NVIDIA Tesla P100
+PPI
+Reddit Yelp PPI Reddit Yelp PPI Reddit Yelp
+Data
+type Float32 Float32 Float32 Float32 Float32 Float32 Float32 Float 32 Float32
+Frequency (GHz) 0.2 0.2 0.2 2.2 2.2 2.2 1.2 1.2 1.2
+DSP slices / CPU cores / CUDA cores 5632 (96%) 5632 (96%) 5632 (96%) 40 40 40 3584 3584 3584
+BRAM / L3 / HBM2 (MB) 34.6 (96%) 32.8 (91%) 27.3 (75%) 102 102 102 16280 16280 16280
+Off-chip bandwidth (GB/sec) 15.8 15.8 15.8 136.6 136.6 136.6 15.8 15.8 15.8
+T
+otal convergence time (sec) 9.6 7.6 23.4 151.4 95.5 359.4 10.6 11.4 30.4
+Although the baseline training time may be further improved by
+re-implementation using C++/CUDA, inefficiency in CPU and GPU
+due to sparse feature aggregation may not be easily eliminated.
+7 DISCUSSION
+This work proposed several hardware-software optimizations for
+GCN training on CPU-FPGA heterogeneous platforms. We discuss
+these optimizations and their applicability to various platforms.
+Design challenges. The key to accelerating GCN training is to
+address the challenges of memory access and load-balance. The
+solutions for these differ on various platforms. Regarding memory
+access, the solution on FPGA must optimize both on-chip and off-
+chip accesses. For data in BRAMs, we need to increase their reuse so
+as to reduce off-chip communication. We also need to reduce bank
+access conflicts to reduce pipeline stalls. In GraphACT , we reduce
+off-chip communication by setting the subgraph size based on the
+BRAM capacity (Section 5.2). We eliminate on-chip access conflicts
+by appropriately parallelizing the feature aggregation operation
+(Section 4.2) and buffering data tiles between computation modules
+(Section 4.3). On the other hand, for CPU and GPU, the critical
+issue is to enhance data access locality since the memory hierarchy
+is not explicitly exposed to the programmer. Considering that the
+full graph fits in the CPU main memory or GPU global memory
+(sizes of which range from 101to103GB), the memory access
+challenge on CPU and GPU may be addressed by software node-
+reordering or by hyper-threading. Regarding load-balance, CPU and
+GPU can decouple the operations of feature propagation and weight
+transformation, and then adopt separate strategies to balance them.
+However, on FPGA, since the two operations are processed by
+a single pipeline, an integrated strategy needs to simultaneously
+balance the very different operations (one on dense tensors and the
+other on sparse tensors). While memory access and load-balance
+are challenging to optimize, a carefully designed FPGA pipeline canachieve much higher efficiency than the CPU or GPU solutions. This
+is due to the ability of FPGA to customize computation modules and
+to control memory accesses in an explicit and fine-grained manner.
+Remark on redundancy reduction. Although redundancy reduc-
+tion is an algorithm-level optimization independent of the platform,
+it may not be directly applicable to CPU to improve performance.
+Recall that redundancy reduction (Section 3.2) constructs a sub-
+graphG#swith less edges yet more nodes thanGs. Thus, feature
+aggregation onG#smay have worse data locality than Gs. On a CPU,
+even though the L3-cache can hold the node features of G#s, the
+overall feature aggregation performance may not benefit from the
+reduced computation load due to the potential increase in L1- or L2-
+cache misses. On the other hand, data access locality of GraphACT
+does not affect FPGA performance, as long as data of one minibatch
+completely fits in BRAM. Under the proposed architecture and data
+layout (Section 4), BRAM will always provide the requested node
+feature ofG#sto the Feature Aggregation module within one cycle.
+8 CONCLUSION
+We accelerated GCN training on CPU-FPGA heterogeneous plat-
+forms. By multiple software-hardware co-optimizations, we achieved
+conflict free BRAM access, load-balance and high DSP utilization.
+We plan to extend GraphACT to accelerate inference, where the
+GCN operates on large, un-sampled graphs. The redundancy reduc-
+tion and the computation modules of GraphACT can be applied to
+achieve high DSP utilization. In addition, since the inference graph
+is much larger than the training subgraphs, we need to optimize
+off-chip communication by partitioning and scheduling algorithms.
+ACKNOWLEDGMENTS
+This work was supported by US NSF under grant No. CNS-1643351,
+Intel Strategic Research Alliance and the Defense Advanced Re-
+search Projects Agency under contract No. FA8750-17-C-0086.
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+264
+
+==== Page 11 ====
+REFERENCES
+[1][n. d.]. Gradient of softmax. https://deepnotes.io/softmax-crossentropy. ([n. d.]).
+Accessed: 2019-09-08.
+[2][n. d.]. NVIDIA Tesla P100 peak performance.
+https://images.nvidia.com/content/tesla/pdf/nvidia-tesla-p100-PCIe-
+datasheet.pdf. ([n. d.]). Accessed: 2019-11-30.
+[3][n. d.]. Xilinx Alveo U200 peak perfor-
+mance. https://www.xilinx.com/products/boards-and-
+kits/alveo/u200.html#specifications. ([n. d.]). Accessed: 2019-11-30.
+[4]Anonymous. 2020. GraphSAINT: Graph Sampling Based Inductive Learning
+Method. In Submitted to International Conference on Learning Representations.
+https://openreview.net/forum?id=BJe8pkHFwS under review.
+[5]Jie Chen, Tengfei Ma, and Cao Xiao. 2018. FastGCN: Fast Learning with Graph
+Convolutional Networks via Importance Sampling. In International Conference
+on Learning Representations (ICLR).
+[6]Jianfei Chen, Jun Zhu, and Le Song. 2018. Stochastic Training of Graph Convolu-
+tional Networks with Variance Reduction.. In ICML. 941–949.
+[7]Guohao Dai, Yuze Chi, Yu Wang, and Huazhong Yang. 2016. Fpgp: Graph pro-
+cessing framework on fpga a case study of breadth-first search. In Proceedings
+of the 2016 ACM/SIGDA International Symposium on Field-Programmable Gate
+Arrays. ACM, 105–110.
+[8]Guohao Dai, Tianhao Huang, Yuze Chi, Ningyi Xu, Yu Wang, and Huazhong
+Yang. 2017. Foregraph: Exploring large-scale graph processing on multi-fpga
+architecture. In Proceedings of the 2017 ACM/SIGDA International Symposium on
+Field-Programmable Gate Arrays. ACM, 217–226.
+[9]Florent De Dinechin, Pedro Echeverria, Marisa López-Vallejo, and Bogdan Pasca.
+2013. Floating-point exponentiation units for reconfigurable computing. ACM
+Transactions on Reconfigurable Technology and Systems (TRETS) 6, 1 (2013), 4.
+[10] Tong Geng, Tianqi Wang, Ahmed Sanaullah, Chen Yang, Rui Xu, Rushi Patel,
+and Martin Herbordt. 2018. FPDeep: Acceleration and load balancing of CNN
+training on FPGA clusters. In 2018 IEEE 26th Annual International Symposium on
+Field-Programmable Custom Computing Machines (FCCM). IEEE, 81–84.
+[11] Ian Goodfellow, Yoshua Bengio, and Aaron Courville. 2016. Deep Learning. MIT
+Press. http://www.deeplearningbook.org.
+[12] Aditya Grover and Jure Leskovec. 2016. node2vec: Scalable feature learning for
+networks. In Proceedings of the 22nd ACM SIGKDD international conference on
+Knowledge discovery and data mining. ACM, 855–864.
+[13] Kaiyuan Guo, Shuang Liang, Jincheng Yu, Xuefei Ning, Wenshuo Li, Yu Wang,
+and Huazhong Yang. 2019. Compressed CNN Training with FPGA-based Ac-
+celerator. In Proceedings of the 2019 ACM/SIGDA International Symposium on
+Field-Programmable Gate Arrays (FPGA ’19). ACM, New York, NY, USA, 189–189.
+https://doi.org/10.1145/3289602.3293977
+[14] Will Hamilton, Zhitao Ying, and Jure Leskovec. 2017. Inductive Representation
+Learning on Large Graphs. In Advances in Neural Information Processing Systems
+30. 1024–1034.
+[15] Wenbing Huang, Tong Zhang, Yu Rong, and Junzhou Huang. 2018. Adaptive
+sampling towards fast graph representation learning. In Advances in Neural
+Information Processing Systems. 4558–4567.
+[16] Soroosh Khoram, Jialiang Zhang, Maxwell Strange, and Jing Li. 2018. Accelerat-
+ing Graph Analytics by Co-Optimizing Storage and Access on an FPGA-HMC
+Platform. In Proceedings of the 2018 ACM/SIGDA International Symposium on
+Field-Programmable Gate Arrays (FPGA ’18). ACM, New York, NY, USA, 239–248.
+https://doi.org/10.1145/3174243.3174260
+[17] Diederik P Kingma and Jimmy Ba. 2014. Adam: A method for stochastic opti-
+mization. arXiv preprint arXiv:1412.6980 (2014).
+[18] Thomas N. Kipf and Max Welling. 2016. Semi-Supervised Classification with
+Graph Convolutional Networks. CoRR abs/1609.02907 (2016). arXiv:1609.02907
+http://arxiv.org/abs/1609.02907
+[19] Yufei Ma and et al. 2017. Optimizing Loop Operation and Dataflow in FPGA
+Acceleration of Deep Convolutional Neural Networks. In Proceedings of the 2017
+ACM/SIGDA Intl. Symposium on Field-Programmable Gate Arrays (FPGA ’17).
+[20] Yuzhe Ma, Haoxing Ren, Brucek Khailany, Harbinder Sikka, Lijuan Luo,
+Karthikeyan Natarajan, and Bei Yu. 2019. High Performance Graph Convo-
+lutional Networks with Applications in Testability Analysis. In Proceedings of the
+56th Annual Design Automation Conference 2019 (DAC ’19). ACM, New York, NY,
+USA, Article 18, 6 pages. https://doi.org/10.1145/3316781.3317838
+[21] AM Mansour, AM El-Sawy, MS Aziz, and AT Sayed. 2015. A new hardware
+implementation of base 2 logarithm for FPGA. (2015).
+[22] S. Micali and V. V. Vazirani. 1980. An O(v|v| c |E|) algoithm for finding maxi-
+mum matching in general graphs. In 21st Annual Symposium on Foundations of
+Computer Science (sfcs 1980). 17–27. https://doi.org/10.1109/SFCS.1980.12
+[23] Hiroki Nakahara, Akira Jinguji, Masayuki Shimoda, and Shimpei Sato. 2019. An
+FPGA-based Fine Tuning Accelerator for a Sparse CNN. In Proceedings of the
+2019 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays.
+ACM, 186–186.
+[24] Bryan Perozzi, Rami Al-Rfou, and Steven Skiena. 2014. Deepwalk: Online learning
+of social representations. In Proceedings of the 20th ACM SIGKDD internationalconference on Knowledge discovery and data mining. ACM, 701–710.
+[25] R. Rajat, H. Zeng, and V. Prasanna. 2019. A Flexible Design Automation Tool
+for Accelerating Quantized Spectral CNNs. In 2019 29th International Conference
+on Field Programmable Logic and Applications (FPL). 144–150. https://doi.org/10.
+1109/FPL.2019.00031
+[26] Bruno Ribeiro and Don Towsley. 2010. Estimating and sampling graphs with
+multidimensional random walks. In Proceedings of the 10th ACM SIGCOMM
+conference on Internet measurement. ACM, 390–403.
+[27] David E Rumelhart, Geoffrey E Hinton, Ronald J Williams, et al .[n. d.]. Learning
+representations by back-propagating errors. Cognitive modeling 5, 3 ([n. d.]), 1.
+[28] Shreyas Kolala Venkataramanaiah, Yufei Ma, Shihui Yin, Eriko Nurvithadhi,
+Aravind Dasu, Yu Cao, and Jae-sun Seo. 2019. Automatic Compiler Based FPGA
+Accelerator for CNN Training. arXiv preprint arXiv:1908.06724 (2019).
+[29] Chun Wang, Shirui Pan, Guodong Long, Xingquan Zhu, and Jing Jiang. 2017.
+Mgae: Marginalized graph autoencoder for graph clustering. In Proceedings of
+the 2017 ACM on Conference on Information and Knowledge Management. ACM,
+889–898.
+[30] Xuechao Wei, Cody Hao Yu, Peng Zhang, Youxiang Chen, Yuxin Wang, Han
+Hu, Yun Liang, and Jason Cong. 2017. Automated Systolic Array Architecture
+Synthesis for High Throughput CNN Inference on FPGAs. In Proceedings of the
+54th Annual Design Automation Conference 2017 (DAC ’17). ACM, New York, NY,
+USA, Article 29, 6 pages. https://doi.org/10.1145/3061639.3062207
+[31] Rex Ying, Ruining He, Kaifeng Chen, Pong Eksombatchai, William L. Hamilton,
+and Jure Leskovec. 2018. Graph Convolutional Neural Networks for Web-Scale
+Recommender Systems. In Proceedings of the 24th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining (KDD ’18). 10.
+[32] Rex Ying, Jiaxuan You, Christopher Morris, Xiang Ren, William L. Hamilton,
+and Jure Leskovec. 2018. Hierarchical Graph Representation Learning with
+Differentiable Pooling. In Proceedings of the 32Nd International Conference on
+Neural Information Processing Systems (NIPS’18). Curran Associates Inc., USA,
+4805–4815. http://dl.acm.org/citation.cfm?id=3327345.3327389
+[33] Hanqing Zeng, Ren Chen, Chi Zhang, and Viktor Prasanna. 2018. A Framework
+for Generating High Throughput CNN Implementations on FPGAs. In Proceedings
+of the 2018 ACM/SIGDA International Symposium on Field-Programmable Gate
+Arrays (FPGA ’18). ACM, New York, NY, USA, 10.
+[34] H. Zeng, H. Zhou, A. Srivastava, R. Kannan, and V. Prasanna. 2019. Accurate, Effi-
+cient and Scalable Graph Embedding. In 2019 IEEE International Parallel and Dis-
+tributed Processing Symposium (IPDPS). 462–471. https://doi.org/10.1109/IPDPS.
+2019.00056
+[35] Chen Zhang, Guangyu Sun, Zhenman Fang, Peipei Zhou, Peichen Pan, and Jason
+Cong. 2018. Caffeine: Towards uniformed representation and acceleration for
+deep convolutional neural networks. IEEE Transactions on Computer-Aided Design
+of Integrated Circuits and Systems (2018).
+[36] Jialiang Zhang, Soroosh Khoram, and Jing Li. 2017. Boosting the Performance of
+FPGA-based Graph Processor Using Hybrid Memory Cube: A Case for Breadth
+First Search. In Proceedings of the 2017 ACM/SIGDA International Symposium on
+Field-Programmable Gate Arrays (FPGA ’17). ACM, New York, NY, USA, 207–216.
+https://doi.org/10.1145/3020078.3021737
+[37] J. Zhang, W. Zhang, G. Luo, X. Wei, Y. Liang, and J. Cong. 2019. Frequency
+Improvement of Systolic Array-Based CNNs on FPGAs. In 2019 IEEE International
+Symposium on Circuits and Systems (ISCAS). 1–4. https://doi.org/10.1109/ISCAS.
+2019.8702071
+[38] Muhan Zhang and Yixin Chen. 2018. Link prediction based on graph neural
+networks. In Advances in Neural Information Processing Systems. 5165–5175.
+[39] Xiaofan Zhang, Junsong Wang, Chao Zhu, Yonghua Lin, Jinjun Xiong, Wen-mei
+Hwu, and Deming Chen. 2018. DNNBuilder: an automated tool for building
+high-performance DNN hardware accelerators for FPGAs. In Proceedings of the
+International Conference on Computer-Aided Design. ACM, 56.
+[40] Wenlai Zhao, Haohuan Fu, Wayne Luk, Teng Yu, Shaojun Wang, Bo Feng, Yuchun
+Ma, and Guangwen Yang. 2016. F-CNN: An FPGA-based framework for training
+Convolutional Neural Networks. In 2016 IEEE 27th International Conference on
+Application-specific Systems, Architectures and Processors (ASAP). IEEE, 107–114.
+[41] S. Zhou, C. Chelmis, and V. K. Prasanna. 2016. High-Throughput and Energy-
+Efficient Graph Processing on FPGA. In 2016 IEEE 24th Annual International
+Symposium on Field-Programmable Custom Computing Machines (FCCM). 103–
+110. https://doi.org/10.1109/FCCM.2016.35
+Session: Deep Learning II
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+265
+

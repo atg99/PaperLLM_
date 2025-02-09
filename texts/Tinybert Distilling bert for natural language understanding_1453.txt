@@ -1,0 +1,1155 @@
+==== Page 1 ====
+TinyBERT: Distilling BERT for Natural Language Understanding
+Xiaoqi Jiao1y, Yichun Yin2z, Lifeng Shang2z, Xin Jiang2
+Xiao Chen2, Linlin Li3, Fang Wang1zand Qun Liu2
+1Key Laboratory of Information Storage System, Huazhong University of
+Science and Technology, Wuhan National Laboratory for Optoelectronics
+2Huawei Noah’s Ark Lab
+3Huawei Technologies Co., Ltd.
+fjiaoxiaoqi,wangfang g@hust.edu.cn
+fyinyichun,shang.lifeng,jiang.xin g@huawei.com
+fchen.xiao2,lynn.lilinlin,qun.liu g@huawei.com
+Abstract
+Language model pre-training, such as BERT,
+has signiﬁcantly improved the performances
+of many natural language processing tasks.
+However, pre-trained language models are usu-
+ally computationally expensive, so it is difﬁ-
+cult to efﬁciently execute them on resource-
+restricted devices. To accelerate inference
+and reduce model size while maintaining
+accuracy, we ﬁrst propose a novel Trans-
+former distillation method that is specially de-
+signed for knowledge distillation (KD) of the
+Transformer-based models. By leveraging this
+new KD method, the plenty of knowledge en-
+coded in a large “teacher” BERT can be ef-
+fectively transferred to a small “student” Tiny-
+BERT. Then, we introduce a new two-stage
+learning framework for TinyBERT, which per-
+forms Transformer distillation at both the pre-
+training and task-speciﬁc learning stages. This
+framework ensures that TinyBERT can capture
+the general-domain as well as the task-speciﬁc
+knowledge in BERT.
+TinyBERT 41with 4 layers is empirically ef-
+fective and achieves more than 96.8% the per-
+formance of its teacher BERT BASE on GLUE
+benchmark, while being 7.5x smaller and9.4x
+faster on inference. TinyBERT 4is also signiﬁ-
+cantly better than 4-layer state-of-the-art base-
+lines on BERT distillation, with only 28%
+parameters and31% inference time of them.
+Moreover, TinyBERT 6with 6 layers performs
+on-par with its teacher BERT BASE .
+1 Introduction
+Pre-training language models then ﬁne-tuning on
+downstream tasks has become a new paradigm for
+Authors contribute equally.
+yThis work is done when Xiaoqi Jiao is an intern at
+Huawei Noah’s Ark Lab.
+zCorresponding authors.
+1The code and models are publicly available at https:
+//github.com/huawei-noah/Pretrained-Language-Model/tree/
+master/TinyBERTnatural language processing (NLP). Pre-trained lan-
+guage models (PLMs), such as BERT (Devlin et al.,
+2019), XLNet (Yang et al., 2019), RoBERTa (Liu
+et al., 2019), ALBERT (Lan et al., 2020), T5 (Raf-
+fel et al., 2019) and ELECTRA (Clark et al., 2020),
+have achieved great success in many NLP tasks
+(e.g., the GLUE benchmark (Wang et al., 2018)
+and the challenging multi-hop reasoning task (Ding
+et al., 2019)). However, PLMs usually have a
+large number of parameters and take long infer-
+ence time, which are difﬁcult to be deployed on
+edge devices such as mobile phones. Recent stud-
+ies (Kovaleva et al., 2019; Michel et al., 2019; V oita
+et al., 2019) demonstrate that there is redundancy
+in PLMs. Therefore, it is crucial and feasible to
+reduce the computational overhead and model stor-
+age of PLMs while retaining their performances.
+There have been many model compression tech-
+niques (Han et al., 2016) proposed to accelerate
+deep model inference and reduce model size while
+maintaining accuracy. The most commonly used
+techniques include quantization (Gong et al., 2014),
+weights pruning (Han et al., 2015), and knowl-
+edge distillation (KD) (Romero et al., 2014). In
+this paper, we focus on knowledge distillation, an
+idea originated from Hinton et al. (2015), in a
+teacher-student framework. KD aims to transfer
+the knowledge embedded in a large teacher net-
+work to a small student network where the student
+network is trained to reproduce the behaviors of the
+teacher network. Based on the framework, we pro-
+pose a novel distillation method speciﬁcally for the
+Transformer-based models (Vaswani et al., 2017),
+and use BERT as an example to investigate the
+method for large-scale PLMs.
+KD has been extensively studied in NLP (Kim
+and Rush, 2016; Hu et al., 2018) as well as for
+pre-trained language models (Sanh et al., 2019;
+Sun et al., 2019, 2020; Wang et al., 2020). The
+pre-training-then-ﬁne-tuning paradigm ﬁrstly pre-arXiv:1909.10351v5  [cs.CL]  16 Oct 2020
+
+==== Page 2 ====
+Large -scale 
+Text CorpusGeneral
+TinyBERTFine -tuned 
+TinyBERTGeneral 
+Distillation
+Task DatasetAugmented 
+Task D atasetData AugmentationTask -specific
+DistillationFigure 1: The illustration of TinyBERT learning.
+trains BERT on a large-scale unsupervised text
+corpus, then ﬁne-tunes it on task-speciﬁc dataset,
+which greatly increases the difﬁculty of BERT dis-
+tillation. Therefore, it is required to design an ef-
+fective KD strategy for both training stages.
+To build a competitive TinyBERT, we ﬁrstly
+propose a new Transformer distillation method to
+distill the knowledge embedded in teacher BERT.
+Speciﬁcally, we design three types of loss func-
+tions to ﬁt different representations from BERT
+layers: 1) the output of the embedding layer; 2) the
+hidden states and attention matrices derived from
+the Transformer layer; 3) the logits output by the
+prediction layer. The attention based ﬁtting is in-
+spired by the recent ﬁndings (Clark et al., 2019)
+that the attention weights learned by BERT can cap-
+ture substantial linguistic knowledge, and it thus
+encourages the linguistic knowledge can be well
+transferred from teacher BERT to student Tiny-
+BERT. Then, we propose a novel two-stage learn-
+ingframework including the general distillation
+and the task-speciﬁc distillation , as illustrated in
+Figure 1. At general distillation stage, the original
+BERT without ﬁne-tuning acts as the teacher model.
+The student TinyBERT mimics the teacher’s behav-
+ior through the proposed Transformer distillation
+on general-domain corpus. After that, we obtain
+a general TinyBERT that is used as the initializa-
+tion of student model for the further distillation.
+At the task-speciﬁc distillation stage, we ﬁrst do
+the data augmentation, then perform the distilla-
+tion on the augmented dataset using the ﬁne-tuned
+BERT as the teacher model. It should be pointed
+out that both the two stages are essential to improve
+the performance and generalization capability of
+TinyBERT.
+The main contributions of this work are as fol-
+lows: 1) We propose a new Transformer distilla-
+tion method to encourage that the linguistic knowl-
+edge encoded in teacher BERT can be adequately
+transferred to TinyBERT; 2) We propose a novel
+two-stage learning framework with performing the
+proposed Transformer distillation at both the pre-
+training and ﬁne-tuning stages, which ensures thatTinyBERT can absorb both the general-domain and
+task-speciﬁc knowledge of the teacher BERT. 3)
+We show in the experiments that our TinyBERT 4
+can achieve more than 96.8% the performance of
+teacher BERT BASE on GLUE tasks, while having
+much fewer parameters ( 13.3%) and less infer-
+ence time (10.6%), and signiﬁcantly outperforms
+other state-of-the-art baselines with 4 layers on
+BERT distillation; 4) We also show that a 6-layer
+TinyBERT 6can perform on-par with the teacher
+BERT BASE on GLUE.
+2 Preliminaries
+In this section, we describe the formulation of
+Transformer (Vaswani et al., 2017) and Knowledge
+Distillation (Hinton et al., 2015). Our proposed
+Transformer distillation is a specially designed KD
+method for Transformer-based models.
+2.1 Transformer Layer
+Most of the recent pre-trained language mod-
+els (e.g., BERT, XLNet and RoBERTa) are built
+with Transformer layers, which can capture long-
+term dependencies between input tokens by self-
+attention mechanism. Speciﬁcally, a standard
+Transformer layer includes two main sub-layers:
+multi-head attention (MHA) and fully connected
+feed-forward network (FFN).
+Multi-Head Attention (MHA) . The calculation of
+attention function depends on the three components
+of queries, keys and values, denoted as matrices Q,
+KandVrespectively. The attention function can
+be formulated as follows:
+A=QKT
+pdk; (1)
+Attention (Q;K;V)=softmax (A)V;(2)
+wheredkis the dimension of keys and acts as a
+scaling factor, Ais the attention matrix calculated
+from the compatibility of QandKby dot-product
+operation. The ﬁnal function output is calculated
+as a weighted sum of values V, and the weight is
+computed by applying softmax() operation on
+the each column of matrix A. According to Clark
+et al. (2019), the attention matrices in BERT can
+capture substantial linguistic knowledge, and thus
+play an essential role in our proposed distillation
+method.
+Multi-head attention is deﬁned by concatenating
+the attention heads from different representation
+
+==== Page 3 ====
+subspaces as follows:
+MHA(Q;K;V)=Concat (h1;:::; hk)W;(3)
+wherekis the number of attention heads, and hi
+denotes thei-th attention head, which is calculated
+by the Attention ()function with inputs from
+different representation subspaces. The matrix W
+acts as a linear transformation.
+Position-wise Feed-Forward Network (FFN) .
+Transformer layer also contains a fully connected
+feed-forward network, which is formulated as fol-
+lows:
+FFN(x) = max(0;xW1+b1)W2+b2:(4)
+We can see that the FFN contains two linear trans-
+formations and one ReLU activation.
+2.2 Knowledge Distillation
+KD aims to transfer the knowledge of a large
+teacher network Tto a small student network S.
+The student network is trained to mimic the behav-
+iors of teacher networks. Let fTandfSrepresent
+thebehavior functions of teacher and student net-
+works, respectively. The behavior function targets
+at transforming network inputs to some informa-
+tive representations, and it can be deﬁned as the
+output of any layer in the network. In the context of
+Transformer distillation, the output of MHA layer
+or FFN layer, or some intermediate representations
+(such as the attention matrix A) can be used as
+behavior function. Formally, KD can be modeled
+as minimizing the following objective function:
+LKD=X
+x2XL 
+fS(x);fT(x)
+; (5)
+whereL()is a loss function that evaluates the dif-
+ference between teacher and student networks, x
+is the text input and Xdenotes the training dataset.
+Thus the key research problem becomes how to de-
+ﬁne effective behavior functions and loss functions.
+Different from previous KD methods, we also need
+to consider how to perform KD at the pre-training
+stage of BERT in addition to the task-speciﬁc train-
+ing stage.
+3 Method
+In this section, we propose a novel distillation
+method for Transformer-based models, and present
+atwo-stage learning framework for our model dis-
+tilled from BERT, which is called TinyBERT.
+…  Teacher (BERT)…Student (TinyBERT)
+……Transformer
+Distillation𝑁 𝑀
+𝑑𝑑′
+… …
+Text Input…
+…Hidn𝑙𝑜𝑠𝑠Attn𝑙𝑜𝑠𝑠
+(ℝℎ𝑒𝑎𝑑∗𝑙∗𝑙) (ℝℎ𝑒𝑎𝑑∗𝑙∗𝑙)…
+…
+(ℝ𝑙∗𝒅) (ℝ𝑙∗𝒅′)
+ADD & NormADD & Norm
+FFN
+MHAADD & NormADD & Norm
+FFN
+MHAAttention Matrices Attention Matrices
+Hidden States Hidden States
+Teacher Layer Student Layer
+(a)
+(b)Transformer Layer:
+Layer Number: 𝑁>𝑀
+Hidden Size: 𝑑>𝑑′Embedding Layer:
+Prediction Layer :…Figure 2: The details of Transformer-layer distillation
+consisting of Attn loss(attention based distillation) and
+Hidn loss(hidden states based distillation).
+3.1 Transformer Distillation
+The proposed Transformer distillation is a specially
+designed KD method for Transformer networks. In
+this work, both the student and teacher networks are
+built with Transformer layers. For a clear illustra-
+tion, we formulate the problem before introducing
+our method.
+Problem Formulation . Assuming that the stu-
+dent model has MTransformer layers and teacher
+model hasNTransformer layers, we start with
+choosingMout ofNlayers from the teacher
+model for the Transformer-layer distillation . Then
+a functionn=g(m)is deﬁned as the mapping
+function between indices from student layers to
+teacher layers, which means that the m-th layer
+of student model learns the information from the
+g(m)-th layer of teacher model. To be precise, we
+set 0 to be the index of embedding layer and M+ 1
+to be the index of prediction layer, and the corre-
+sponding layer mappings are deﬁned as 0 =g(0)
+andN+ 1 =g(M+ 1) respectively. The effect
+of the choice of different mapping functions on the
+performances is studied in the experiment section.
+Formally, the student can acquire knowledge from
+the teacher by minimizing the following objective:
+Lmodel=X
+x2XM+1X
+m=0mLlayer(fS
+m(x);fT
+g(m)(x));(6)
+whereLlayerrefers to the loss function of a given
+model layer (e.g., Transformer layer or embed-
+ding layer), fm(x)denotes the behavior function
+induced from the m-th layers and mis the hyper-
+
+==== Page 4 ====
+parameter that represents the importance of the
+m-th layer’s distillation.
+Transformer-layer Distillation . The proposed
+Transformer-layer distillation includes the atten-
+tion based distillation andhidden states based dis-
+tillation , which is shown in Figure 2. The atten-
+tion based distillation is motivated by the recent
+ﬁndings that attention weights learned by BERT
+can capture rich linguistic knowledge (Clark et al.,
+2019). This kind of linguistic knowledge includes
+the syntax and coreference information, which is
+essential for natural language understanding. Thus
+we propose the attention based distillation to en-
+courage that the linguistic knowledge can be trans-
+ferred from teacher (BERT) to student (TinyBERT).
+Speciﬁcally, the student learns to ﬁt the matrices
+of multi-head attention in the teacher network, and
+the objective is deﬁned as:
+Lattn=1
+hXh
+i=1MSE(AS
+i;AT
+i); (7)
+wherehis the number of attention heads, Ai2
+Rllrefers to the attention matrix corresponding
+to thei-th head of teacher or student, lis the input
+text length, and MSE() means the mean squared
+error loss function. In this work, the (unnormal-
+ized) attention matrix Aiis used as the ﬁtting target
+instead of its softmax output softmax (Ai), since
+our experiments show that the former setting has a
+faster convergence rate and better performances.
+In addition to the attention based distillation,
+we also distill the knowledge from the output of
+Transformer layer, and the objective is as follows:
+Lhidn=MSE(HSWh;HT); (8)
+where the matrices HS2Rld0andHT2Rld
+refer to the hidden states of student and teacher net-
+works respectively, which are calculated by Equa-
+tion 4. The scalar values dandd0denote the hidden
+sizes of teacher and student models, and d0is often
+smaller than dto obtain a smaller student network.
+The matrix Wh2Rd0dis a learnable linear trans-
+formation, which transforms the hidden states of
+student network into the same space as the teacher
+network’s states.
+Embedding-layer Distillation . Similar to the
+hidden states based distillation, we also perform
+embedding-layer distillation and the objective is:
+Lembd=MSE(ESWe;ET); (9)where the matrices ESandHTrefer to the em-
+beddings of student and teacher networks, respec-
+tively. In this paper, they have the same shape as
+the hidden state matrices. The matrix Weis a linear
+transformation playing a similar role as Wh.
+Prediction-layer Distillation . In addition to im-
+itating the behaviors of intermediate layers, we
+also use the knowledge distillation to ﬁt the predic-
+tions of teacher model as in Hinton et al. (2015).
+Speciﬁcally, we penalize the soft cross-entropy loss
+between the student network’s logits against the
+teacher’s logits:
+Lpred=CE(zT=t;zS=t); (10)
+where zSandzTare the logits vectors predicted
+by the student and teacher respectively, CEmeans
+thecross entropy loss, andtmeans the tempera-
+ture value. In our experiment, we ﬁnd that t= 1
+performs well.
+Using the above distillation objectives (i.e. Equa-
+tions 7, 8, 9 and 10), we can unify the distilla-
+tion loss of the corresponding layers between the
+teacher and the student network:
+Llayer=8
+><
+>:Lembd; m =0
+Lhidn+Lattn;Mm>0
+Lpred; m =M+ 1(11)
+3.2 TinyBERT Learning
+The application of BERT usually consists of two
+learning stages: the pre-training and ﬁne-tuning.
+The plenty of knowledge learned by BERT in the
+pre-training stage is of great importance and should
+be transferred to the compressed model. There-
+fore, we propose a novel two-stage learning frame-
+work including the general distillation and the
+task-speciﬁc distillation , as illustrated in Figure 1.
+General distillation helps TinyBERT learn the rich
+knowledge embedded in pre-trained BERT, which
+plays an important role in improving the general-
+ization capability of TinyBERT. The task-speciﬁc
+distillation further teaches TinyBERT the knowl-
+edge from the ﬁne-tuned BERT. With the two-step
+distillation, we can substantially reduce the gap
+between teacher and student models.
+General Distillation . We use the original BERT
+without ﬁne-tuning as the teacher and a large-scale
+text corpus as the training data. By performing the
+Transformer distillation2on the text from general
+2In the general distillation, we do not perform prediction-
+layer distillation as Equation 10. Our motivation is to make
+
+==== Page 5 ====
+Algorithm 1 Data Augmentation Procedure for
+Task-speciﬁc Distillation
+Input :xis a sequence of words
+Params :pt: the threshold probability
+Na: the number of samples augmented per example
+K: the size of candidate set
+Output :D0: the augmented data
+1:n 0 ;D0 [ ]
+2:while n < N ado
+3: xm x
+4: fori 1 to len (x)do
+5: ifx[i]is a single-piece word then
+6: Replace xm[i]with[MASK]
+7: C Kmost probable words of BERT (xm)[i]
+8: else
+9: C Kmost similar words of x[i]from GloVe
+10: end if
+11: Sample pUniform(0, 1)
+12: ifpptthen
+13: Replace xm[i]with a word in Crandomly
+14: end if
+15: end for
+16: Append xmtoD0
+17: n n+ 1
+18:end while
+19:return D0
+domain, we obtain a general TinyBERT that can be
+ﬁne-tuned for downstream tasks. However, due to
+the signiﬁcant reductions of the hidden/embedding
+size and the layer number, general TinyBERT per-
+forms generally worse than BERT.
+Task-speciﬁc Distillation . Previous studies
+show that the complex models, such as ﬁne-
+tuned BERTs, suffer from over-parametrization for
+domain-speciﬁc tasks (Kovaleva et al., 2019). Thus,
+it is possible for smaller models to achieve com-
+parable performances to the BERTs. To this end,
+we propose to produce competitive ﬁne-tuned Tiny-
+BERTs through the task-speciﬁc distillation. In
+the task-speciﬁc distillation, we re-perform the pro-
+posed Transformer distillation on an augmented
+task-speciﬁc dataset. Speciﬁcally, the ﬁne-tuned
+BERT is used as the teacher and a data augmenta-
+tion method is proposed to expand the task-speciﬁc
+training set. Training with more task-related exam-
+ples, the generalization ability of the student model
+can be further improved.
+Data Augmentation . We combine a pre-trained
+language model BERT and GloVe (Pennington
+et al., 2014) word embeddings to do word-level
+the TinyBERT primarily learn the intermediate structures of
+BERT at pre-training stage. From our preliminary experi-
+ments, we also found that conducting prediction-layer distilla-
+tion at pre-training stage does not bring extra improvements
+on downstream tasks, when the Transformer-layer distillation
+(Attn and Hidn distillation) and Embedding-layer distillation
+have already been performed.replacement for data augmentation. Speciﬁcally,
+we use the language model to predict word replace-
+ments for single-piece words (Wu et al., 2019), and
+use the word embeddings to retrieve the most simi-
+lar words as word replacements for multiple-pieces
+words3. Some hyper-parameters are deﬁned to con-
+trol the replacement ratio of a sentence and the
+amount of augmented dataset. More details of the
+data augmentation procedure are shown in Algo-
+rithm 1. We set pt= 0.4,Na= 20,K= 15 for all
+our experiments.
+The above two learning stages are complemen-
+tary to each other: the general distillation provides
+a good initialization for the task-speciﬁc distilla-
+tion, while the task-speciﬁc distillation on the aug-
+mented data further improves TinyBERT by focus-
+ing on learning the task-speciﬁc knowledge. Al-
+though there is a signiﬁcant reduction of model size,
+with the data augmentation and by performing the
+proposed Transformer distillation method at both
+the pre-training and ﬁne-tuning stages, TinyBERT
+can achieve competitive performances in various
+NLP tasks.
+4 Experiments
+In this section, we evaluate the effectiveness and
+efﬁciency of TinyBERT on a variety of tasks with
+different model settings.
+4.1 Datasets
+We evaluate TinyBERT on the General Language
+Understanding Evaluation (GLUE) (Wang et al.,
+2018) benchmark, which consists of 2 single-
+sentence tasks: CoLA (Warstadt et al., 2019), SST-
+2 (Socher et al., 2013), 3 sentence similarity tasks:
+MRPC (Dolan and Brockett, 2005), STS-B (Cer
+et al., 2017), QQP (Chen et al., 2018), and 4 natural
+language inference tasks: MNLI (Williams et al.,
+2018), QNLI (Rajpurkar et al., 2016), RTE (Ben-
+tivogli et al., 2009) and WNLI (Levesque et al.,
+2012). The metrics for these tasks can be found in
+the GLUE paper (Wang et al., 2018).
+4.2 TinyBERT Settings
+We instantiate a tiny student model (the number
+of layersM=4, the hidden size d0=312, the feed-
+forward/ﬁlter size d0
+i=1200 and the head number
+h=12) that has a total of 14.5M parameters. This
+model is referred to as TinyBERT 4. The original
+3A word is tokenized into multiple word-pieces by the
+tokenizer of BERT.
+
+==== Page 6 ====
+System #Params #FLOPs Speedup MNLI-(m/mm) QQP QNLI SST-2 CoLA STS-B MRPC RTE Avg
+BERT BASE (Teacher) 109M 22.5B 1.0x 83.9/83.4 71.1 90.9 93.4 52.8 85.2 87.5 67.0 79.5
+BERT TINY 14.5M 1.2B 9.4x 75.4/74.9 66.5 84.8 87.6 19.5 77.1 83.2 62.6 70.2
+BERT SMALL 29.2M 3.4B 5.7x 77.6/77.0 68.1 86.4 89.7 27.8 77.0 83.4 61.8 72.1
+BERT 4-PKD 52.2M 7.6B 3.0x 79.9/79.3 70.2 85.1 89.4 24.8 79.8 82.6 62.3 72.6
+DistilBERT 4 52.2M 7.6B 3.0x 78.9/78.0 68.5 85.2 91.4 32.8 76.1 82.4 54.1 71.9
+MobileBERT TINYy 15.1M 3.1B - 81.5/81.6 68.9 89.5 91.7 46.7 80.1 87.9 65.1 77.0
+TinyBERT 4(ours) 14.5M 1.2B 9.4x 82.5/81.8 71.3 87.7 92.6 44.1 80.4 86.4 66.6 77.0
+BERT 6-PKD 67.0M 11.3B 2.0x 81.5/81.0 70.7 89.0 92.0 - - 85.0 65.5 -
+PD 67.0M 11.3B 2.0x 82.8/82.2 70.4 88.9 91.8 - - 86.8 65.3 -
+DistilBERT 6 67.0M 11.3B 2.0x 82.6/81.3 70.1 88.9 92.5 49.0 81.3 86.9 58.4 76.8
+TinyBERT 6(ours) 67.0M 11.3B 2.0x 84.6/83.2 71.6 90.4 93.1 51.1 83.7 87.3 70.0 79.4
+Table 1: Results are evaluated on the test set of GLUE ofﬁcial benchmark. The best results for each group of student
+models are in-bold. The architecture of TinyBERT 4and BERT TINY is (M=4,d=312,di=1200), BERT SMALL
+is (M=4,d=512,di=2048), BERT 4-PKD and DistilBERT 4is (M=4,d=768,di=3072) and the architecture of
+BERT 6-PKD, DistilBERT 6and TinyBERT 6is (M=6,d=768,di=3072). All models are learned in a single-task
+manner. The inference speedup is evaluated on a single NVIDIA K80 GPU. ydenotes that the comparison between
+MobileBERT TINY and TinyBERT 4may not be fair since the former has 24 layers and is task-agnosticly distilled
+from IB-BERT LARGE while the later is a 4-layers model task-speciﬁcally distilled from BERT BASE .
+BERT BASE (N=12,d=768,di=3072 andh=12)
+is used as the teacher model that contains 109M
+parameters. We use g(m) = 3mas the layer
+mapping function, so TinyBERT 4learns from ev-
+ery 3 layers of BERT BASE . The learning weight
+of each layer is set to 1. Besides, for a direct
+comparisons with baselines, we also instantiate a
+TinyBERT 6(M=6,d0=768,d0
+i=3072 andh=12)
+with the same architecture as BERT 6-PKD (Sun
+et al., 2019) and DistilBERT 6(Sanh et al., 2019).
+TinyBERT learning includes the general distil-
+lation and the task-speciﬁc distillation. For the
+general distillation, we set the maximum sequence
+length to 128 and use English Wikipedia (2,500M
+words) as the text corpus and perform the interme-
+diate layer distillation for 3 epochs with the su-
+pervision from a pre-trained BERT BASE and keep
+other hyper-parameters the same as BERT pre-
+training (Devlin et al., 2019). For the task-speciﬁc
+distillation, under the supervision of a ﬁne-tuned
+BERT, we ﬁrstly perform intermediate layer distil-
+lation on the augmented data for 20 epochs4with
+batch size 32 and learning rate 5e-5, and then per-
+form prediction layer distillation on the augmented
+data5for 3 epochs with choosing the batch size
+fromf16, 32gand learning rate from f1e-5, 2e-5,
+3e-5gon dev set. At task-speciﬁc distillation, the
+maximum sequence length is set to 64 for single-
+sentence tasks, and 128 for sequence pair tasks.
+4For large datasets MNLI, QQP, and QNLI, we only per-
+form 10 epochs of the intermediate layer distillation , and for
+the challenging task CoLA, we perform 50 epochs at this step.
+5For regression task STS-B, the original train set is better.4.3 Baselines
+We compare TinyBERT with BERT TINY ,
+BERT SMALL6(Turc et al., 2019) and several
+state-of-the-art KD baselines including BERT-
+PKD (Sun et al., 2019), PD (Turc et al., 2019),
+DistilBERT (Sanh et al., 2019) and Mobile-
+BERT (Sun et al., 2020). BERT TINY means
+directly pretraining a small BERT, which has the
+same model architecture as TinyBERT 4. When
+training BERT TINY , we follow the same learning
+strategy as described in the original BERT (Devlin
+et al., 2019). To make a fair comparison, we use
+the released code to train a 4-layer BERT 4-PKD7
+and a 4-layer DistilBERT 48and ﬁne-tuning these
+4-layer baselines with suggested hyper-paramters.
+For 6-layer baselines, we use the reported numbers
+or evaluate the results on the test set of GLUE with
+released models.
+4.4 Experimental Results on GLUE
+We submitted our model predictions to the ofﬁcial
+GLUE evaluation server to obtain results on the
+test set9, as summarized in Table 1.
+The experiment results from the 4-layer student
+models demonstrate that: 1) There is a large perfor-
+mance gap between BERT TINY (or BERT SMALL )
+and BERT BASE due to the dramatic reduction in
+model size. 2) TinyBERT 4is consistently bet-
+ter than BERT TINY on all the GLUE tasks and
+6https://github.com/google-research/bert
+7https://github.com/intersun/
+PKD-for-BERT-Model-Compression
+8https://github.com/huggingface/transformers/tree/
+master/examples/distillation
+9https://gluebenchmark.com
+
+==== Page 7 ====
+obtains a large improvement of 6.8% on aver-
+age. This indicates that the proposed KD learn-
+ing framework can effectively improve the per-
+formances of small models on a variety of down-
+stream tasks. 3) TinyBERT 4signiﬁcantly outper-
+forms the 4-layer state-of-the-art KD baselines (i.e.,
+BERT 4-PKD and DistilBERT 4) by a margin of at
+least 4.4%, with28% parameters and 3.1x in-
+ference speedup. 4) Compared with the teacher
+BERT BASE , TinyBERT 4is 7.5x smaller and 9.4x
+faster in the model efﬁciency, while maintaining
+competitive performances. 5) For the challeng-
+ing CoLA dataset (the task of predicting linguis-
+tic acceptability judgments), all the 4-layer dis-
+tilled models have big performance gaps compared
+to the teacher model, while TinyBERT 4achieves
+a signiﬁcant improvement over the 4-layer base-
+lines. 6) We also compare TinyBERT with the 24-
+layer MobileBERT TINY , which is distilled from
+24-layer IB-BERT LARGE . The results show that
+TinyBERT 4achieves the same average score as
+the 24-layer model with only 38.7% FLOPs. 7)
+When we increase the capacity of our model to
+TinyBERT 6, its performance can be further ele-
+vated and outperforms the baselines of the same
+architecture by a margin of 2.6% on average and
+achieves comparable results with the teacher. 8)
+Compared with the other two-stage baseline PD,
+which ﬁrst pre-trains a small BERT, then performs
+distillation on a speciﬁc task with this small model,
+TinyBERT initialize the student in task-speciﬁc
+stage via general distillation. We analyze these two
+initialization methods in Appendix C.
+In addition, BERT-PKD and DistilBERT initial-
+ize their student models with some layers of a pre-
+trained BERT, which makes the student models
+have to keep the same size settings of Transformer
+layer (or embedding layer) as their teacher. In our
+two-stage distillation framework, TinyBERT is ini-
+tialized through general distillation, making it more
+ﬂexible in choosing model conﬁguration.
+More Comparisons. We demonstrate the effec-
+tiveness of TinyBERT by including more base-
+lines such as Poor Man’s BERT (Sajjad et al.,
+2020), BERT-of-Theseus (Xu et al., 2020) and
+MiniLM (Wang et al., 2020), some of which only
+report results on the GLUE dev set. In addition,
+we evaluate TinyBERT on SQuAD v1.1 and v2.0.
+Due to the space limit, we present our results in the
+Appendix A and B.System MNLI-m MNLI-mm MRPC CoLA Avg
+TinyBERT 4 82.8 82.9 85.8 50.8 75.6
+w/o GD 82.5 82.6 84.1 40.8 72.5
+w/o TD 80.6 81.2 83.8 28.5 68.5
+w/o DA 80.5 81.0 82.4 29.8 68.4
+Table 2: Ablation studies of different procedures (i.e.,
+TD, GD, and DA) of the two-stage learning framework.
+The variants are validated on the dev set.
+System MNLI-m MNLI-mm MRPC CoLA Avg
+TinyBERT 4 82.8 82.9 85.8 50.8 75.6
+w/o Embd 82.3 82.3 85.0 46.7 74.1
+w/o Pred 80.5 81.0 84.3 48.2 73.5
+w/o Trm 71.7 72.3 70.1 11.2 56.3
+w/o Attn 79.9 80.7 82.3 41.1 71.0
+w/o Hidn 81.7 82.1 84.1 43.7 72.9
+Table 3: Ablation studies of different distillation objec-
+tives in the TinyBERT learning. The variants are vali-
+dated on the dev set.
+4.5 Ablation Studies
+In this section, we conduct ablation studies to in-
+vestigate the contributions of : a) different proce-
+dures of the proposed two-stage TinyBERT learn-
+ing framework in Figure 1, and b) different distilla-
+tion objectives in Equation 11.
+4.5.1 Effects of Learning Procedure
+The proposed two-stage TinyBERT learning frame-
+work consists of three key procedures: GD (Gen-
+eral Distillation), TD (Task-speciﬁc Distillation)
+and DA (Data Augmentation). The performances
+of removing each individual learning procedure are
+analyzed and presented in Table 2. The results indi-
+cate that all of the three procedures are crucial for
+the proposed method. The TD and DA has com-
+parable effects in all the four tasks. We note that
+the task-speciﬁc procedures (TD and DA) are more
+helpful than the pre-training procedure (GD) on all
+of the tasks. Another interesting observation is that
+GD contribute more on CoLA than on MNLI and
+MRPC. We conjecture that the ability of linguistic
+generalization (Warstadt et al., 2019) learned by
+GD plays an important role in the task of linguistic
+acceptability judgments.
+4.5.2 Effects of Distillation Objective
+We investigate the effects of distillation objec-
+tives on the TinyBERT learning. Several base-
+lines are proposed including the learning with-
+out the Transformer-layer distillation (w/o Trm),
+the embedding-layer distillation (w/o Emb) or the
+
+==== Page 8 ====
+prediction-layer distillation (w/o Pred)10respec-
+tively. The results are illustrated in Table 3 and
+show that all the proposed distillation objectives
+are useful. The performance w/o Trm11drops
+signiﬁcantly from 75.6 to 56.3. The reason for
+the signiﬁcant drop lies in the initialization of stu-
+dent model. At the pre-training stage, obtaining
+a good initialization is crucial for the distillation
+of transformer-based models, while there is no su-
+pervision signal from upper layers to update the
+parameters of transformer layers at this stage un-
+der the w/o Trm setting. Furthermore, we study
+the contributions of attention (Attn) and hidden
+states (Hidn) in the Transformer-layer distillation.
+We can ﬁnd the attention based distillation has a
+greater impact than hidden states based distillation.
+Meanwhile, these two kinds of knowledge distilla-
+tion are complementary to each other, which makes
+them the most important distillation techniques for
+Transformer-based model in our experiments.
+4.6 Effects of Mapping Function
+We also investigate the effects of different map-
+ping functions n=g(m)on the TinyBERT learn-
+ing. Our original TinyBERT as described in sec-
+tion 4.2 uses the uniform strategy, and we compare
+with two typical baselines including top-strategy
+(g(m) =m+N M; 0<mM)and bottom-
+strategy (g(m) =m; 0<mM).
+The comparison results are presented in Table 4.
+We ﬁnd that the top-strategy performs better than
+the bottom-strategy on MNLI, while being worse
+on MRPC and CoLA, which conﬁrms the observa-
+tions that different tasks depend on the knowledge
+from different BERT layers. The uniform strategy
+covers the knowledge from bottom to top layers
+of BERT BASE , and it achieves better performances
+than the other two baselines in all the tasks. Adap-
+tively choosing layers for a speciﬁc task is a chal-
+lenging problem and we leave it as future work.
+5 Related Work
+Pre-trained Language Models Compression
+Generally, pre-trained language models (PLMs)
+can be compressed by low-rank approximation (Ma
+10The prediction-layer distillation performs soft cross-
+entropy as Equation 10 on the augmented data. “w/o Pred”
+means performing standard cross-entropy against the ground-
+truth of original train set.
+11Under “w/o Trm” setting, we actually 1) conduct
+embedding-layer distillation at the pre-training stage; 2) per-
+form embedding-layer and prediction-layer distillation at ﬁne-
+tuning stage.System MNLI-m MNLI-mm MRPC CoLA Avg
+Uniform 82.8 82.9 85.8 50.8 75.6
+Top 81.7 82.3 83.6 35.9 70.9
+Bottom 80.6 81.3 84.6 38.5 71.3
+Table 4: Results (dev) of different mapping strategies
+for TinyBERT 4.
+et al., 2019; Lan et al., 2020), weight sharing (De-
+hghani et al., 2019; Lan et al., 2020), knowledge
+distillation (Tang et al., 2019; Sanh et al., 2019;
+Turc et al., 2019; Sun et al., 2020; Liu et al., 2020;
+Wang et al., 2020), pruning (Cui et al., 2019; Mc-
+Carley, 2019; F. et al., 2020; Elbayad et al., 2020;
+Gordon et al., 2020; Hou et al., 2020) or quantiza-
+tion (Shen et al., 2019; Zafrir et al., 2019). In this
+paper, our focus is on knowledge distillation.
+Knowledge Distillation for PLMs There have
+been some works trying to distill pre-trained
+language models (PLMs) into smaller models.
+BiLSTM SOFT (Tang et al., 2019) distills task-
+speciﬁc knowledge from BERT into a single-
+layer BiLSTM. BERT-PKD (Sun et al., 2019) ex-
+tracts knowledges not only from the last layer
+of the teacher, but also from intermediate lay-
+ers at ﬁne-tuning stage. DistilBERT (Sanh et al.,
+2019) performs distillation at pre-training stage
+on large-scale corpus. Concurrent works, Mobile-
+BERT (Sun et al., 2020) distills a BERT LARGE
+augmented with bottleneck structures into a 24-
+layer slimmed version by progressive knowledge
+transfer at pre-training stage. MiniLM (Wang et al.,
+2020) conducts deep self-attention distillation also
+at pre-training stage. By contrast, we propose a new
+two-stage learning framework to distill knowledge
+from BERT at both pre-training and ﬁne-tuning
+stages by a novel transformer distillation method.
+Pretraining Lite PLMs Other related works aim
+at directly pretraining lite PLMs. Turc et al. (2019)
+pre-trained 24 miniature BERT models and show
+that pre-training remains important in the con-
+text of smaller architectures, and ﬁne-tuning pre-
+trained compact models can be competitive. AL-
+BERT (Lan et al., 2020) incorporates embedding
+factorization and cross-layer parameter sharing to
+reduce model parameters. Since ALBERT does not
+reduce hidden size or layers of transformer block,
+it still has large amount of computations. Another
+concurrent work, ELECTRA (Clark et al., 2020)
+proposes a sample-efﬁcient task called replaced to-
+ken detection to accelerate pre-training, and it also
+presents a 12-layer ELECTRA small that has com-
+parable performance with TinyBERT 4. Different
+
+==== Page 9 ====
+from these small PLMs, TinyBERT 4is a 4-layer
+model which can achieve more speedup.
+6 Conclusion and Future Work
+In this paper, we introduced a new method for
+Transformer-based distillation, and further pro-
+posed a two-stage framework for TinyBERT. Ex-
+tensive experiments show that TinyBERT achieves
+competitive performances meanwhile signiﬁcantly
+reducing the model size and inference time of
+BERT BASE , which provides an effective way to
+deploy BERT-based NLP models on edge devices.
+In future work, we would study how to effectively
+transfer the knowledge from wider and deeper
+teachers (e.g., BERT LARGE ) to student TinyBERT.
+Combining distillation with quantization/pruning
+would be another promising direction to further
+compress the pre-trained language models.
+Acknowledgements
+This work is supported in part by NSFC
+NO.61832020, No.61821003, 61772216, Na-
+tional Science and Technology Major Project
+No.2017ZX01032-101, Fundamental Research
+Funds for the Central Universities.
+References
+L. Bentivogli, P. Clark, I. Dagan, and D. Giampiccolo.
+2009. The ﬁfth pascal recognizing textual entail-
+ment challenge.
+D. Cer, M. Diab, E. Agirre, I. Lopez-Gazpio, and
+L. Specia. 2017. Semeval-2017 task 1: Semantic
+textual similarity multilingual and crosslingual fo-
+cused evaluation. In Proceedings of the 11th Inter-
+national Workshop on Semantic Evaluation .
+Z. Chen, H. Zhang, X. Zhang, and L. Zhao. 2018.
+Quora question pairs.
+K. Clark, U. Khandelwal, O. Levy, and C. D. Manning.
+2019. What does bert look at? an analysis of bert’s
+attention. In Proceedings of the 2019 ACL Work-
+shop BlackboxNLP: Analyzing and Interpreting Neu-
+ral Networks for NLP .
+K. Clark, M. Luong, Q. V . Le, and C. D. Manning.
+2020. Electra: Pre-training text encoders as discrim-
+inators rather than generators. In ICLR .
+B. Cui, Y . Li, M. Chen, and Z. Zhang. 2019. Fine-
+tune bert with sparse self-attention mechanism. In
+EMNLP .
+M. Dehghani, S. Gouws, O. Vinyals, J. Uszkoreit, and
+L. Kaiser. 2019. Universal transformers. In ICLR .J. Devlin, M. Chang, K. Lee, and K. Toutanova. 2019.
+Bert: Pre-training of deep bidirectional transformers
+for language understanding. In NAACL .
+M. Ding, C. Zhou, Q. Chen, H. Yang, and J. Tang. 2019.
+Cognitive graph for multi-hop reading comprehen-
+sion at scale. In ACL.
+W. B. Dolan and C. Brockett. 2005. Automatically
+constructing a corpus of sentential paraphrases. In
+Proceedings of the Third International Workshop on
+Paraphrasing .
+M. Elbayad, J. Gu, E. Grave, and M. Auli. 2020. Depth-
+adaptive transformer. In ICLR .
+Angela F., Edouard G., and Armand J. 2020. Reduc-
+ing transformer depth on demand with structured
+dropout. In ICLR .
+Y . Gong, L. Liu, M. Yang, and L. Bourdev. 2014. Com-
+pressing deep convolutional networks using vector
+quantization. arXiv preprint arXiv:1412.6115 .
+M. A. Gordon, K. Duh, and N. Andrews. 2020.
+Compressing bert: Studying the effects of weight
+pruning on transfer learning. arXiv preprint
+arXiv:2002.08307 .
+S. Han, Mao H., and Dally W. J. 2016. Deep compres-
+sion: Compressing deep neural network with prun-
+ing, trained quantization and huffman coding. In
+ICLR .
+S Han, J. Pool, J. Tran, and W. Dally. 2015. Learning
+both weights and connections for efﬁcient neural net-
+work. In NIPS .
+G. Hinton, O. Vinyals, and J. Dean. 2015. Distilling
+the knowledge in a neural network. arXiv preprint
+arXiv:1503.02531 .
+L. Hou, L. Shang, X. Jiang, and Q. Liu. 2020. Dyn-
+abert: Dynamic bert with adaptive width and depth.
+arXiv preprint arXiv:2004.04037 .
+M. Hu, Y . Peng, F. Wei, Z. Huang, D. Li, N. Yang,
+and M. Zhou. 2018. Attention-guided answer dis-
+tillation for machine reading comprehension. In
+EMNLP .
+Y . Kim and A. M. Rush. 2016. Sequence-level knowl-
+edge distillation. In EMNLP .
+O. Kovaleva, A. Romanov, A. Rogers, and
+A. Rumshisky. 2019. Revealing the dark secrets of
+bert. In EMNLP .
+Z. Lan, M. Chen, S. Goodman, K. Gimpel, P. Sharma,
+and R. Soricut. 2020. Albert: A lite bert for self-
+supervised learning of language representations. In
+ICLR .
+Hector Levesque, Ernest Davis, and Leora Morgen-
+stern. 2012. The winograd schema challenge. In
+Thirteenth International Conference on the Princi-
+ples of Knowledge Representation and Reasoning .
+
+==== Page 10 ====
+W. Liu, P. Zhou, Z. Zhao, Z. Wang, H. Deng, and Q. Ju.
+2020. Fastbert: a self-distilling bert with adaptive
+inference time. arXiv preprint arXiv:2004.02178 .
+Y . Liu, M. Ott, N. Goyal, J. Du, M. Joshi, D. Chen,
+O. Levy, M. Lewis, L. Zettlemoyer, and V . Stoyanov.
+2019. Roberta: A robustly optimized bert pretrain-
+ing approach. arXiv preprint arXiv:1907.11692 .
+X. Ma, P. Zhang, S. Zhang, N. Duan, Y . Hou, M. Zhou,
+and D. Song. 2019. A tensorized transformer for
+language modeling. In NIPS .
+J. S. McCarley. 2019. Pruning a bert-based question an-
+swering model. arXiv preprint arXiv:1910.06360 .
+P. Michel, O. Levy, and G. Neubig. 2019. Are sixteen
+heads really better than one? In NIPS .
+J. Pennington, R. Socher, and C. D. Manning. 2014.
+Glove: Global vectors for word representation. In
+EMNLP .
+C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang,
+M. Matena, Y . Zhou, W. Li, and P. J. Liu. 2019.
+Exploring the limits of transfer learning with a
+uniﬁed text-to-text transformer. arXiv preprint
+arXiv:1910.10683 .
+P. Rajpurkar, R. Jia, and P. Liang. 2018. Know what
+you don’t know: Unanswerable questions for squad.
+InACL.
+P. Rajpurkar, J. Zhang, K. Lopyrev, and P. Liang. 2016.
+Squad: 100,000+ questions for machine comprehen-
+sion of text. In EMNLP .
+A. Romero, N. Ballas, S. E. Kahou, A. Chassang,
+C. Gatta, and Y . Bengio. 2014. Fitnets: Hints for
+thin deep nets. arXiv preprint arXiv:1412.6550 .
+H. Sajjad, F. Dalvi, N. Durrani, and P. Nakov. 2020.
+Poor man’s bert: Smaller and faster transformer
+models. arXiv preprint arXiv:2004.03844 .
+V . Sanh, L. Debut, J. Chaumond, and T. Wolf.
+2019. Distilbert, a distilled version of bert:
+smaller, faster, cheaper and lighter. arXiv preprint
+arXiv:1910.01108 .
+S. Shen, Z. Dong, J. Ye, L. Ma, Z. Yao, A. Gholami,
+M. W. Mahoney, and K. Keutzer. 2019. Q-bert: Hes-
+sian based ultra low precision quantization of bert.
+arXiv preprint arXiv:1909.05840 .
+R. Socher, A. Perelygin, J. Wu, J. Chuang, C. D. Man-
+ning, A. Y . Ng, and C. Potts. 2013. Recursive deep
+models for semantic compositionality over a senti-
+ment treebank. In EMNLP .
+S. Sun, Y . Cheng, Z. Gan, and J. Liu. 2019. Patient
+knowledge distillation for bert model compression.
+InEMNLP .
+Z. Sun, H. Yu, X. Song, R. Liu, Y . Yang, and
+D. Zhou. 2020. Mobilebert: a compact task-
+agnostic bert for resource-limited devices. arXiv
+preprint arXiv:2004.02984 .R. Tang, Y . Lu, L. Liu, L. Mou, O. Vechtomova,
+and J. Lin. 2019. Distilling task-speciﬁc knowl-
+edge from bert into simple neural networks. arXiv
+preprint arXiv:1903.12136 .
+I. Turc, M. Chang, K. Lee, and K. Toutanova. 2019.
+Well-read students learn better: The impact of stu-
+dent initialization on knowledge distillation. arXiv
+preprint arXiv:1908.08962 .
+A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit,
+L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin.
+2017. Attention is all you need. In NIPS .
+E. V oita, D. Talbot, F. Moiseev, R. Sennrich, and
+I. Titov. 2019. Analyzing multi-head self-attention:
+Specialized heads do the heavy lifting, the rest can
+be pruned. In ACL.
+A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and
+S. Bowman. 2018. Glue: A multi-task benchmark
+and analysis platform for natural language under-
+standing. In Proceedings of the 2018 EMNLP Work-
+shop BlackboxNLP: Analyzing and Interpreting Neu-
+ral Networks for NLP .
+W. Wang, F. Wei, L. Dong, H. Bao, N. Yang, and
+M. Zhou. 2020. Minilm: Deep self-attention distil-
+lation for task-agnostic compression of pre-trained
+transformers. arXiv preprint arXiv:2002.10957 .
+A. Warstadt, A. Singh, and S. R. Bowman. 2019. Neu-
+ral network acceptability judgments. TACL .
+A. Williams, N. Nangia, and S. Bowman. 2018. A
+broad-coverage challenge corpus for sentence under-
+standing through inference. In NAACL .
+X. Wu, S. Lv, L. Zang, J. Han, and S. Hu. 2019. Con-
+ditional bert contextual augmentation. In Interna-
+tional Conference on Computational Science .
+C. Xu, W. Zhou, T. Ge, F. Wei, and M. Zhou.
+2020. Bert-of-theseus: Compressing bert by
+progressive module replacing. arXiv preprint
+arXiv:2002.02925 .
+Z. Yang, Z. Dai, Y . Yang, J. Carbonell, R. R. Salakhut-
+dinov, and Q. V . Le. 2019. Xlnet: Generalized au-
+toregressive pretraining for language understanding.
+InNIPS .
+O. Zafrir, G. Boudoukh, P. Izsak, and M. Wasserblat.
+2019. Q8bert: Quantized 8bit bert. arXiv preprint
+arXiv:1910.06188 .
+Appendix
+A More Comparisons on GLUE
+Since some prior works on BERT compression only
+evaluate their models on the GLUE dev set, for an
+easy and direct comparison, we here compare our
+TinyBERT 6with the reported results from these
+prior works. All the compared methods have the
+
+==== Page 11 ====
+System CoLA MNLI-m MNLI-mm MRPC QNLI QQP RTE SST-2 STS-B
+(8.5k) (393k) (393k) (3.7k) (105k) (364k) (2.5k) (67k) (5.7k)
+Mcc Acc Acc F1/Acc Acc F1/Acc Acc Acc Pear/Spea
+Same Student Architecture ( M=6;d0=768;d0
+i=3072)
+DistilBERT 6 51.3 82.2 - 87.5/- 89.2 -/88.5 59.9 92.7 -/86.9
+Poor Man’s BERT 6 - 81.1 - -/80.2 87.6 -/90.4 65.0 90.3 -/88.5
+BERT-of-Theseus 51.1 82.3 - 89.0/- 89.5 -/89.6 68.2 91.5 -/88.7
+MiniLM 6 49.2 84.0 - 88.4/- 91.0 -/91.0 71.5 92.0 -
+TinyBERT 6 54.0 84.5 84.5 90.6/86.3 91.1 88.0/91.1 73.4 93.0 90.1/89.6
+Table 5: Comparisons between TinyBERT with other baselines on the dev set of GLUE tasks. Mcc refers to
+Matthews correlation and Pear/Spea refer to Pearson/Spearman.
+same model architecture as TinyBERT 6(i.e.M=6,
+d0=768,d0
+i=3072).
+The direct comparison results are shown in Ta-
+ble 5. We can see the TinyBERT 6outperforms all
+the baselines under the same settings of architec-
+ture and evaluation methods. The effectiveness of
+TinyBERT is further conﬁrmed.
+B Results on SQuAD v1.1 and v2.0
+We also demonstrate the effectiveness of Tiny-
+BERT on the question answering (QA) tasks:
+SQuAD v1.1 (Rajpurkar et al., 2016) and SQuAD
+v2.0 (Rajpurkar et al., 2018). Following the learn-
+ing procedure in the previous work (Devlin et al.,
+2019), we treat these two tasks as the problem of
+sequence labeling which predicts the possibility
+of each token as the start or end of answer span.
+One small difference from the GLUE tasks is that
+we perform the prediction-layer distillation on the
+original training dataset instead of the augmented
+dataset, which can bring better performances.
+The results show that TinyBERT consistently
+outperforms both the 4-layer and 6-layer baselines,
+which indicates that the proposed framework also
+works for the tasks of token-level labeling. Com-
+pared with sequence-level GLUE tasks, the ques-
+tion answering tasks depend on more subtle knowl-
+edge to infer the correct answer, which increases
+the difﬁculty of knowledge distillation. We leave
+how to build a better QA-TinyBERT as future work.
+C Initializing TinyBERT with BERT TINY
+In the proposed two-stage learning framework,
+to make TinyBERT effectively work for different
+downstream tasks, we propose the General Distilla-
+tion (GD) to capture the general domain knowledge,
+through which the TinyBERT learns the knowledgeSystem SQuAD 1.1 SQuAD 2.0
+EM F1 EM F1
+BERT BASE (Teacher) 80.7 88.4 74.5 77.7
+4-layer student models
+BERT 4-PKD 70.1 79.5 60.8 64.6
+DistilBERT 4 71.8 81.2 60.6 64.1
+MiniLM 4 - - - 69.7
+TinyBERT 4 72.7 82.1 68.2 71.8
+6-layer student models
+BERT 6-PKD 77.1 85.3 66.3 69.8
+DistilBERT 6 78.1 86.2 66.0 69.5
+MiniLM 6 - - - 76.4
+TinyBERT 6 79.7 87.5 74.7 77.7
+Table 6: Results (dev) of baselines and TinyBERT
+on question answering tasks. The architecture of
+MiniLM 4is (M=4,d=384,di=1536) which is wider
+than TinyBERT 4, and the architecture of MiniLM 6is
+the same as TinyBERT 6(M=6,d=768,di=3072)
+System MNLI-m MNLI-mm MRPC CoLA Avg
+(392k) (392k) (3.5k) (8.5k)
+BERT TINY 75.9 76.9 83.2 19.5 63.9
+BERT TINY (+TD) 79.2 79.7 82.9 12.4 63.6
+TinyBERT (GD) 76.6 77.2 82.0 8.7 61.1
+TinyBERT (GD+TD) 80.5 81.0 82.4 29.8 68.4
+Table 7: Results of different methods at pre-training
+stage. TD and GD refers to Task-speciﬁc Distillation
+(without data augmentation) and General Distillation,
+respectively. The results are evaluated on dev set.
+from intermediate layers of teacher BERT at the
+pre-training stage. After that, a general TinyBERT
+is obtained and used as the initialization of stu-
+dent model for Task-speciﬁc Distillation (TD) on
+downstream tasks.
+In our preliminary experiments, we have also
+tried to initialize TinyBERT with the directly pre-
+trained BERT TINY , and then conduct the TD
+on downstream tasks. We denote this compres-
+sion method as BERT TINY (+TD). The results
+in Table 7 show that BERT TINY (+TD) performs
+
+==== Page 12 ====
+even worse than BERT TINY on MRPC and CoLA
+tasks. We conjecture that if without imitating the
+BERT BASE ’s behaviors at the pre-training stage,
+BERT TINY will derive mismatched distributions in
+intermediate representations (e.g., attention matri-
+ces and hidden states) with the BERT BASE model.
+The following task-speciﬁc distillation under the
+supervision of ﬁne-tuned BERT BASE will fur-
+ther disturb the learned distribution/knowledge of
+BERT TINY , ﬁnally leading to poor performances
+on some less-data tasks. For the intensive-data
+task (e.g. MNLI), TD has enough training data to
+make BERT TINY acquire the task-speciﬁc knowl-
+edge very well, although the pre-trained distribu-
+tions have already been disturbed.
+From the results of Table 7, we ﬁnd that GD can
+effectively transfer the knowledge from the teacher
+BERT to the student TinyBERT and achieve compa-
+rable results with BERT TINY (61.1 vs. 63.9), even
+without performing the MLM and NSP tasks. Fur-
+thermore, the task-speciﬁc distillation boosts the
+performances of TinyBERT by continuing on learn-
+ing the task-speciﬁc knowledge from ﬁne-tuned
+teacher BERT BASE .
+D GLUE Details
+The GLUE datasets are described as follows:
+MNLI. Multi-Genre Natural Language Inference
+is a large-scale, crowd-sourced entailment classi-
+ﬁcation task (Williams et al., 2018). Given a pair
+ofhpremise;hypothesis i, the goal is to predict
+whether the hypothesis is an entailment, contra-
+diction, or neutral with respect to the premise .
+QQP. Quora Question Pairs is a collection of ques-
+tion pairs from the website Quora. The task is to
+determine whether two questions are semantically
+equivalent (Chen et al., 2018).
+QNLI. Question Natural Language Inference is
+a version of the Stanford Question Answering
+Dataset which has been converted to a binary sen-
+tence pair classiﬁcation task by Wang et al. (2018).
+Given a pairhquestion;context i. The task is to
+determine whether the context contains the answer
+to thequestion .
+SST-2. The Stanford Sentiment Treebank is a
+binary single-sentence classiﬁcation task, where
+the goal is to predict the sentiment of movie re-
+views (Socher et al., 2013).
+CoLA. The Corpus of Linguistic Acceptability is
+a task to predict whether an English sentence is a
+grammatically correct one (Warstadt et al., 2019).STS-B. The Semantic Textual Similarity Bench-
+mark is a collection of sentence pairs drawn from
+news headlines and many other domains (Cer et al.,
+2017). The task aims to evaluate how similar two
+pieces of texts are by a score from 1 to 5.
+MRPC. Microsoft Research Paraphrase Corpus is
+a paraphrase identiﬁcation dataset where systems
+aim to identify if two sentences are paraphrases of
+each other (Dolan and Brockett, 2005).
+RTE. Recognizing Textual Entailment is a binary
+entailment task with a small training dataset (Ben-
+tivogli et al., 2009).
+

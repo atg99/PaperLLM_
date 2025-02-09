@@ -1,0 +1,792 @@
+==== Page 1 ====
+Revisiting the Calibration of
+Modern Neural Networks
+Matthias Minderer Josip Djolonga Rob Romijnders Frances Hubis
+Xiaohua Zhai Neil Houlsby Dustin Tran Mario Lucic
+Google Research, Brain Team
+{mjlm, lucic}@google.com
+Abstract
+Accurate estimation of predictive uncertainty (model calibration) is essential for the
+safe application of neural networks. Many instances of miscalibration in modern
+neural networks have been reported, suggesting a trend that newer, more accurate
+models produce poorly calibrated predictions. Here, we revisit this question for
+recent state-of-the-art image classiﬁcation models. We systematically relate model
+calibration and accuracy, and ﬁnd that the most recent models, notably those not
+using convolutions, are among the best calibrated. Trends observed in prior model
+generations, such as decay of calibration with distribution shift or model size, are
+less pronounced in recent architectures. We also show that model size and amount
+of pretraining do not fully explain these differences, suggesting that architecture is
+a major determinant of calibration properties.
+1 Introduction
+Neural networks, especially vision models, are increasingly used in safety-critical applications such
+as autonomous driving (Bojarski et al., 2016), medical diagnosis (Esteva et al., 2017; Jiang et al.,
+2012), and meteorological forecasting (Sønderby et al., 2020). For such applications, it is essential
+that model predictions are not just accurate, but also well calibrated. Model calibration refers to the
+accuracy with which the scores provided by the model reﬂect its predictive uncertainty. For example,
+in a medical application, we would like to defer images for which the model makes low-conﬁdence
+predictions to a physician for review (Kompa et al., 2021). Skipping human review due to conﬁdent,
+but incorrect, predictions, could have disastrous consequences.
+While intense research and engineering effort has focused on improving the predictive accuracy of
+models, less attention has been given to model calibration. In fact, over the last few years, there have
+been many reports that calibration of modern neural networks can be surprisingly poor, despite the
+advances in accuracy (e.g. Guo et al. 2017; Lakshminarayanan et al. 2017; Malinin & Gales 2018;
+Thulasidasan et al. 2019; Hendrycks et al. 2020b; Ovadia et al. 2019; Wenzel et al. 2020; Havasi et al.
+2021; Rahaman & Thiery 2020; Leathart & Polaczuk 2020). Some works suggest a trend for larger,
+more accurate models to be worse calibrated (Guo et al., 2017).
+These concerns are more relevant than ever, since the architecture size, amount of training data,
+and computing power used by state-of-the-art models continue to increase. At the same time,
+rapid advances in model architecture (Tolstikhin et al., 2021; Dosovitskiy et al., 2021) and training
+approaches (Chen et al., 2020; Mahajan et al., 2018; Radford et al., 2021) raise the question whether
+past results on calibration, largely obtained on standard convolutional architectures, extend to current
+state-of-the-art models. Since model advances are quickly translated to real-world, safety-critical
+applications (e.g. Mustafa et al. 2021), there is an urgent need to re-assess the calibration properties
+of current state-of-the-art models.
+35th Conference on Neural Information Processing Systems (NeurIPS 2021).
+
+==== Page 2 ====
+Contributions. To address this need, we provide a systematic comparison of recent image classiﬁ-
+cation models, relating their accuracy, calibration, and design features. We ﬁnd that:
+1.The best current models, including the non-convolutional MLP-Mixer (Tolstikhin et al., 2021)
+and Vision Transformers (Dosovitskiy et al., 2021), are well calibrated compared to past models
+and their performance is more robust to distribution shift.
+2.In-distribution calibration slightly deteriorates with increasing model size, but this is out-
+weighed by a simultaneous improvement in accuracy.
+3.Under distribution shift, calibration improves with model size, reversing the trend seen in-
+distribution.
+4.Accuracy and calibration are correlated under distribution shift, such that optimizing for
+accuracy may also beneﬁt calibration.
+5.Model size, pretraining duration, and pretraining dataset size cannot fully explain differences
+in calibration properties between model families.
+Our results suggest that further improvements in model accuracy will continue to beneﬁt calibration.
+They also hint at architecture as an important determinant of model calibration. We provide code and
+a large dataset of calibration measurements, comprising 180 distinct models from 16 families, each
+evaluated on 79 ImageNet-scale datasets and 28 metric variants.1
+2 Related Work
+Measures of model calibration. The losses that are commonly used to train classiﬁcation models,
+such as cross-entropy and squared error, are proper scoring rules (Gneiting et al., 2007) and are
+therefore guaranteed to yield perfectly calibrated models at their minimum—in the inﬁnite-data
+limit. However, in practice, due to model mismatch and overﬁtting, even losses based on proper
+scoring rules may result in poor model calibration. Miscalibration is commonly quantiﬁed in terms
+of Expected Calibration Error (ECE; Naeini et al. 2015), which measures the absolute difference
+between predictive conﬁdence and accuracy. We focus on ECE because it is a widely used and
+accepted calibration metric. Nevertheless, it is well understood that estimating ECE accurately is
+difﬁcult because estimators can be strongly biased and many estimator variants exist (Nixon et al.,
+2019; Roelofs et al., 2020; Vaicenavicius et al., 2019; Gupta et al., 2021). Section 5 discusses these
+issues and our approaches to mitigate them.
+Alternatives to ECE include likelihood measures, Brier score (Brier, 1950), Bayesian methods (Gel-
+man et al., 2013), and conformal prediction (Shafer & V ovk, 2008). Further, model calibration can be
+represented visually with reliability diagrams (DeGroot & Fienberg, 1983). Figure 8 and Appendix F
+provide likelihoods, Brier scores, and reliability diagrams for our main analyses.
+Empirical studies of model calibration. There have been many recent empirical studies on the
+robustness (accuracy under distribution shift) of image classiﬁers (Geirhos et al., 2019; Taori et al.,
+2020; Djolonga et al., 2020; Hendrycks et al., 2020a). Several works have also studied calibration.
+Most notable is Guo et al. (2017), who found that “modern neural networks, unlike those from
+a decade ago, are poorly calibrated”, that larger networks tend to be calibrated worse, and that
+“miscalibration worsen[s] even as classiﬁcation error is reduced.” Other works have corroborated
+some of these ﬁndings (e.g., Thulasidasan et al. 2019; Wen et al. 2021). This line of work suggests
+a trend that larger models are worse calibrated, which would have major implications for research
+toward bigger models and datasets. We show that for more recent models, this trend is negligible
+in-distribution and in fact reverses under distribution shift.
+Ovadia et al. (2019) empirically study calibration under distribution shift and provide a large compar-
+ison of methods for improving calibration. They report that both accuracy and calibration deteriorate
+with distribution shift. While we observe the same trend, we ﬁnd that the calibration of some recent
+model families decays so slowly under distribution shift that the decay in accuracy is likely more
+relevant in practice (Section 4.3).
+Ovadia et al. also ﬁnd that, across methods for improving calibration , improvements on in-distribution
+data do not necessarily translate to out-of-distribution data. This ﬁnding may suggest that there is
+little correlation between in-distribution and out-of-distribution calibration in general. However, our
+1Available at https://github.com/google-research/robustness_metrics/tree/master/
+robustness_metrics/projects/revisiting_calibration .
+2
+
+==== Page 3 ====
+results show that, across model architectures , the models with the best in-distribution calibration are
+also the best-calibrated on a range of out-of-distribution benchmarks. The important implication of
+this result is that designing models based on in-distribution performance likely also beneﬁts their
+out-of-distribution performance.
+Improving calibration. Many strategies have been proposed to improve model calibration such
+as post-hoc rescaling of predictions (Guo et al., 2017), averaging multiple predictions (Lakshmi-
+narayanan et al., 2017; Wen et al., 2020), and data augmentation (Thulasidasan et al., 2019; Wen
+et al., 2021). Here, we focus on the intrinsic calibration properties of state-of-the-art model families,
+rather than methods to further improve calibration.
+As a baseline on top of a model’s intrinsic calibration properties, we study temperature scaling (Guo
+et al., 2017). It is effective in improving calibration and so simple that it can be applied in many cases
+at minimal additional cost, in contrast to many more sophisticated methods. Temperature scaling
+re-scales a model’s logits by a single parameter, chosen to optimize the model’s likelihood on a
+held-out portion of the training data. This temperature factor changes the model’s conﬁdence , i.e.,
+whether the model predictions are on average too certain (overconﬁdent), optimally conﬁdent, or too
+uncertain (underconﬁdent). The classiﬁcation accuracy of the model is not affected by temperature
+scaling. A large fraction of model miscalibration is typically due to average over- or underconﬁdence,
+e.g. due to suboptimal training duration (Guo et al., 2017). By normalizing a model’s conﬁdence,
+temperature scaling not only improves calibration, but also removes a primary confounder that can
+hide trends in calibration between models (see Section 4.2 and Appendix D). Therefore, we study
+both unscaled and temperature-scaled predictions in the paper.
+3 Deﬁnitions and Notation
+We consider the multi-class classiﬁcation problem, as analyzed by Bröcker (2009), where we observe
+a variableXand predict a categorical variable Y2f1;2;:::;kg. We model our predictor fas a
+function that maps every input instance Xto a categorical distribution over klabels, represented using
+a vectorf(X)belonging to the (k 1)-dimensional simplex  =fp2[0;1]kjPk
+y=1py= 1g.
+Intuitively, a model fis well-calibrated if its output truthfully quantiﬁes the predictive uncertainty.
+For example, if we take all data points xfor which the model predicts [f(x)]y= 0:3, we expect 30%
+of them to indeed take on the label y. Formally, the model fis said to be calibrated if (Bröcker, 2009)
+8p2:P(Y=yjf(X) =p) =py: (1)
+We will focus on a slightly weaker, but more practical condition, called top-label or argmax calibration
+(Kumar et al., 2019; Guo et al., 2017). This requires that the above holds only for the most likely
+label, i.e.,8p2[0;1]
+P(Y2arg maxpjmaxf(X) =p) =p; (2)
+where the max andarg max act coordinate-wise.
+The most common measure of the degree of miscalibration is the Expected Calibration Error (ECE) ,
+which computes the expected disagreement between the two sides of eq. (2)
+E
+jp E[Y2arg maxf(X)jmaxf(X) =pj
+: (3)
+Unfortunately, eq. (3)cannot be estimated without quantization as it conditions on a null event.
+Hence, one typically ﬁrst buckets the predictions into mbinsB1;:::;B mbased on their top predicted
+probability, and then takes the expectation over these buckets. Namely, if we are given a set of n
+i.i.d. samples (x1;y1);:::; (xn;yn)distributed as P(X;Y ), then we assign each j2f1;:::;ng
+to a bucketBibased on maxf(xj). Then, we compute in each bucket Bitheconﬁdence (Bi) =
+1
+jBijP
+j2Bimaxf(xj)and the accuracy (Bi) =1
+jBijP
+j2BiJyj2arg maxf(xj)K, where JKis the
+Iverson bracket. Finally, we construct an estimator by taking the expectation over the bins
+dECE =mX
+i=1jBij
+njaccuracy (Bi) conﬁdence (Bi)j: (4)
+In Section 5 we discuss the statistical properties of this estimator, possible pitfalls, and several
+mitigation strategies.
+3
+
+==== Page 4 ====
+0.1 0.2 0.3 0.4 0.5
+ImageNet error0.010.020.030.040.050.060.070.080.09ECE
+(no recalibration)MLP-Mixer
+ViT
+BiT
+ResNeXt WSL
+SimCLR
+CLIP
+AlexNet
+Guo et al.0.00.51.0Sample frac.MLP-Mixer-H/14
+0 1.0
+Confidence
+(unscaled)0.00.20.40.60.81.0AccuracyViT-H/14
+0 1.0
+Confidence
+(unscaled)BiT-L (R152x4)
+0 1.0
+Confidence
+(unscaled)WSL 32x48d
+0 1.0
+Confidence
+(unscaled)SimCLR-4x
+0 1.0
+Confidence
+(unscaled)Figure 1: Some modern neural network families are both highly accurate and well-calibrated. Left:
+Expected calibration error (ECE) vs. classiﬁcation error on IMAGE NETfor state-of-the-art image
+classiﬁcation models. Marker size indicates relative model size within its family. Points labeled
+“Guo et al.” are the values reported for DenseNet-161 and ResNet-152 in Guo et al. (2017). Right:
+Conﬁdence distribution (top row) and reliability diagrams (bottom row) for some of the models.
+4 Empirical Evaluation
+4.1 Experimental Setup
+Model families. In this study, we consider a range of recent and some historic state-of-the-art
+image classiﬁcation models. Our selection of models covers convolutional and non-convolutional
+architectures, as well as supervised, weakly supervised, unsupervised and zero-shot training. We
+follow the original publications in naming the model variants within each family (e.g. different model
+sizes). See Appendix A.1 for a detailed description of all used models.
+1.MLP-Mixer (Tolstikhin et al., 2021) is based exclusively on multi-layer perceptrons (MLPs)
+and is pre-trained on large supervised datasets.
+2.ViT (Dosovitskiy et al., 2021) processes images with a transformer architecture originally
+designed for language (Vaswani et al., 2017) and is also pre-trained on large supervised datasets.
+3.BiT (Kolesnikov et al., 2020) is a ResNet-based architecture (He et al., 2016). It is also
+pre-trained on large supervised datasets.
+4.ResNext-WSL (Mahajan et al., 2018) is based on the ResNeXt architecture and trained with
+weak supervision from billions of hashtags on social media images.
+5. SimCLR (Chen et al., 2020) is a ResNet, pretrained with an unsupervised contrastive loss.
+6. CLIP (Radford et al., 2021) is pretrained on raw text and imagery using a contrastive loss.
+7.AlexNet (Krizhevsky et al., 2012; Krizhevsky, 2014) was the ﬁrst convolutional neural network
+to win the ImageNet challenge.
+All models are either trained or ﬁne-tuned on the IMAGE NETtraining set, except for CLIP, which
+makes zero-shot predictions using I MAGE NETclass names as queries.
+Datasets. We evaluate accuracy and calibration on the IMAGE NETvalidation set and the following
+out-of-distribution benchmarks using the Robustness Metrics library (Djolonga et al., 2020):
+1.IMAGE NETV2(Recht et al., 2019) is a new IMAGE NETtest set collected by closely following
+the original I MAGE NETlabeling protocol.
+2.IMAGE NET-C(Hendrycks & Dietterich, 2019) consists of the images from IMAGE NET,
+modiﬁed with synthetic perturbations such as blur, pixelation, and compression artifacts at a
+range of severities.
+3.IMAGE NET-R(Hendrycks et al., 2020a) contains artiﬁcial renditions of IMAGE NETclasses
+such as art, cartoons, drawings, sculptures, and others.
+4.IMAGE NET-A(Hendrycks et al., 2021) contains images that are classiﬁed as belonging to
+IMAGE NETclasses by humans, but adversarially selected to be hard to classify for a ResNet50
+trained on I MAGE NET.
+For the post-hoc recalibration of models, we reserve 20% of the IMAGE NETvalidation set (randomly
+sampled) for ﬁtting the temperature scaling parameter. All reported metrics are computed on the
+remaining 80% of the data. For evaluations on IMAGE NET-C, we also exclude the 20% of images
+that are based on the I MAGE NETimages used for temperature scaling.
+4
+
+==== Page 5 ====
+Calibration metric. Throughout the paper, we estimate ECE using equal-mass binning and 100
+bins. Appendix E shows that our results hold for other ECE variants and are consistent with the Brier
+score and model likelihood.
+4.2 In-Distribution Calibration
+We begin by considering ECE on clean IMAGE NETimages (referred to as in-distribution). Figure 1
+shows in-distribution ECE and reliability diagrams before any recalibration of the predicted prob-
+abilities. We ﬁnd that several recent model families (MLP-Mixer, ViT, and BiT) are both highly
+accurate andwell-calibrated compared to prior models, such as AlexNet or the models studied by
+Guo et al. (2017). This suggests that there may be no continuing trend for highly accurate modern
+neural networks to be poorly calibrated, as suggested previously (Guo et al., 2017; Lakshminarayanan
+et al., 2017; Malinin & Gales, 2018; Thulasidasan et al., 2019; Hendrycks et al., 2020b; Ovadia et al.,
+2019; Wenzel et al., 2020; Havasi et al., 2021; Rahaman & Thiery, 2020; Leathart & Polaczuk, 2020).
+In addition, we ﬁnd that a recent zero-shot model, CLIP, is well-calibrated given its accuracy.
+Temperature scaling reveals consistent properties of model families. The poor calibration of
+past models can often be remedied by post-hoc recalibration such as temperature scaling (Guo et al.,
+2017), which raises the question whether a difference between models remains after recalibration. We
+ﬁnd that the most recent architectures are better calibrated than past models even after temperature
+scaling (Figure 2, right).
+0.1 0.2 0.3 0.4 0.5
+ImageNet error0.010.020.030.040.050.060.070.080.09ECEUnscaled
+0.1 0.2 0.3 0.4 0.5
+ImageNet errorTemperature-scaled
+MLP-Mixer
+ViT
+BiT
+ResNeXt WSL
+SimCLR
+CLIP
+AlexNet
+Guo et al.
+Figure 2: Temperature scaling reveals consistent
+properties of model families. Left: ECE vs. clas-
+siﬁcation error as in Figure 1. Right: ECE after
+applying temperature scaling.More generally, temperature scaling reveals con-
+sistent trends in the calibration properties be-
+tween families that are obscured in the unscaled
+data by simple over- or underconﬁdence mis-
+calibration. Before temperature scaling (Fig-
+ure 2, left), several families overlap in their ac-
+curacy/calibration properties (MLP-Mixer, ViT,
+BiT). After temperature scaling (Figure 2, right),
+a clearer separation of families and consistent
+trends between accuracy and calibration within
+each family become apparent. Notably, temper-
+ature scaling reconciles our results for BiT (a
+ResNet architecture) with the results reported by
+Guo et al. for ResNets trained on IMAGE NET.
+Furthermore, models pretrained without addi-
+tional labels (SimCLR) or with noisy labels (ResNeXt-WSL) tend to be calibrated worse for a given
+accuracy than ResNets trained with supervision (BiT and the models studied by Guo et al.). Finally,
+non-convolutional model families like MLP-Mixer and ViT can perform just as well, if not better,
+than convolutional ones.
+Differences between families are not explained by model size or pretraining amount. We next
+attempt to disentangle how the differences between model families affect their calibration properties.
+We focus on model size and amount of pretraining, both important trends in state of-the-art models.
+We ﬁrst consider model size. Prior work has suggested that larger neural networks are worse
+calibrated (Guo et al., 2017). We also ﬁnd that within most families, larger members tend to have
+higher calibration error (Figure 2, right). However, at the same time, larger models have consistently
+lower classiﬁcation error. This means that each model family occupies a different Pareto set in
+the tradeoff between accuracy and calibration. For example, our results suggest that, at any given
+accuracy, ViT models are better calibrated than BiT models. Changing the size of a BiT model cannot
+move it into the Pareto set of ViT models. Model size can therefore not fully explain the intrinsic
+calibration differences between these model families.2
+We next consider model pretraining. Many current state-of-the-art image models use transfer learning,
+in which a model is pre-trained on a large dataset and then ﬁne-tuned to the task of interest (Kolesnikov
+et al., 2020; Chen et al., 2020; Xie et al., 2020). With transfer learning, large data sources can be
+2This relationship between model size, accuracy and calibration holds for all families we study except
+ResNeXt-WSL, for which increasing model sizes improves both accuracy andcalibration. While investigating
+this difference was out of the scope of this work, it may be a promising direction for future research.
+5
+
+==== Page 6 ====
+exploited to train the model, even if little data are available for the ﬁnal task. To test how the amount
+of pretraining affects calibration, we compare BiT models pretrained on IMAGE NET(1.3M images),
+IMAGE NET-21K(12.8M images), or JFT-300 (300M images; Sun et al. 2017).
+0.000.010.020.030.040.050.060.070.080.09ECE
+(no recalibration)BiT-ImageNet
+Model family
+MLP-Mixer ViT BiT SimCLR Guo et al.0.1 0.2 0.3
+ImageNet error0.000.010.020.030.040.05ECE
+(temperature-scaled)BiT-ImageNet21k
+0.1 0.2 0.3
+ImageNet errorBiT-JFT
+0.1 0.2 0.3
+ImageNet error
+Figure 3: Family differences are not fully ex-
+plained by the amount of pretraining. Each
+column shows ECE vs. classiﬁcation error on
+ImageNet for BiT models pre-trained with a
+different dataset: IMAGE NET(1.3M images),
+IMAGE NET-21K(12.8M images), or JFT-300
+(300M images). The values for other models are
+provided for reference in light shading (same val-
+ues as in Figure 2). Note how all BiT models
+remain in the same relative location between ViT
+and SimCLR across a 300-fold difference in pre-
+training data size.More pretraining data consistently increases ac-
+curacy, especially for larger models. It has no
+consistent effect on calibration (Figure 3). In
+particular, after temperature scaling, ECE is
+essentially unchanged across this 300-fold in-
+crease in pretraining dataset size (e.g. for BiT-
+R50x1 pretrained on IMAGE NET,IMAGE NET-
+21KandJFT-300 , the ECEs are 0.0185, 0.0182,
+0.0185, respectively; for BiT-R101x3, they are
+0.0272, 0.0311, 0.0236; Figure 3, bottom).
+Therefore, regardless of the pretraining dataset,
+BiT always remains Pareto-dominant over Sim-
+CLR and Pareto-dominated by ViT and MLP-
+Mixer in our experiments.
+The BiT models compared in Figure 3 differ
+in both the amount of pretraining data and the
+duration of pretraining (see Kolesnikov et al.
+(2020) for details). To further disentangle these
+variables, we trained BiT models on varying
+numbers of pretraining examples while holding
+the number of training steps constant, and vice
+versa. We ﬁnd that pretraining dataset size has
+no signiﬁcant effect on calibration, while pre-
+training duration only shifts the model within its
+accuracy/calibration Pareto set (longer-trained
+models are more accurate and worse calibrated;
+Figure 10). These results suggest that pretrain-
+ing alone cannot explain the differences between
+model families that we observe.
+In summary, our results show that some modern neural network families combine high accuracy and
+state-of-the-art calibration on in-distribution data, both before and after post-hoc recalibration by
+temperature scaling. In Figure 8 and Appendices E and F, we show that these results generally hold
+for other measures of model calibration (other ECE variants, Brier score, and model likelihood). Our
+experiments further suggest that model size and pretraining amount do not fully explain the intrinsic
+calibration differences between model families. Given that the best-calibrated families (MLP-Mixer
+and ViT) are non-convolutional, we speculate that model architecture, and in particular its spatial
+inductive bias, play an important role.
+4.3 Accuracy and Calibration Under Distribution Shift
+For safety-critical applications, the model should produce reasonable uncertainty estimates not just
+in-distribution, but also under distribution shifts that were not anticipated at training time. We ﬁrst
+assess out-of-distribution calibration on the IMAGE NET-Cdataset, which consists of images that
+have been synthetically corrupted at ﬁve different severities. As expected, both classiﬁcation and
+calibration error generally increase with distribution shift (Figure 4; Ovadia et al. 2019; Hendrycks &
+Dietterich 2019). Interestingly, this decay in calibration performance is slower for MLP-Mixer and
+ViT than for the other model families, both before and after temperature scaling.
+Regarding the effect of model size on calibration, we observed some trend towards worse calibration
+of larger models on in-distribution data. However, the trend is reversed for most model families as
+we move out of distribution, especially after accounting for conﬁdence bias by temperature scaling
+(note positive slope of the gray lines at high corruption severities in Figure 4, bottom row). In other
+words, the calibration of larger models is more robust to distribution shift (Figure 5).
+6
+
+==== Page 7 ====
+0.000.050.100.150.200.25ECE
+(no recalibration)MLP-Mixer ViT BiT SimCLR ResNeXt WSL
+0.0 0.2 0.4 0.6 0.8
+ImageNet-C error0.000.050.100.15ECE
+(temperature-scaled) 0.0 0.2 0.4 0.6 0.8
+ImageNet-C error0.0 0.2 0.4 0.6 0.8
+ImageNet-C error0.0 0.2 0.4 0.6 0.8
+ImageNet-C error0.0 0.2 0.4 0.6 0.8
+ImageNet-C error
+ImageNet-C corruption severity
+0 1 2 3 4 5ImageNet-C corruption severity
+0 1 2 3 4 5Figure 4: Calibration and accuracy on IMAGE NET-Cbefore (top) and after (bottom) temperature
+scaling on IMAGE NET. Severity 0 refers to the clean IMAGE NETtest set; marker size indicates
+relative model size within its family (see Table 1 for model details). The calibration of some recent
+model families, e.g. MLP-Mixer and ViT, is more robust to distribution shift than past models.
+We next consider to what degree the insights from in-distribution and IMAGE NET-Ccalibration
+transfer to natural out-of-distribution data. Previous work on IMAGE NET-Csuggests that, when
+comparing recalibration methods, better in-distribution calibration and accuracy do not usually predict
+better calibration under distribution shift (Ovadia et al., 2019). Here, comparing model families, we
+ﬁnd that the performance on several natural out-of-distribution datasets is largely consistent with
+that on IMAGE NET(Figure 6). In particular, models that are Pareto-optimal (i.e. no other model is
+both more accurate and better calibrated) on IMAGE NETremain Pareto-optimal on the OOD datasets.
+Further, we observe a strong correlation between accuracy and calibration on the OOD datasets. This
+relationship is consistent across models within a family and across datasets, over a wide range of
+accuracies (Figure 11).
+0.00.10.20.3Classification error
+( to largest model)
+MLP-Mixer ViT BiT
+012345
+Corruption
+severity0.000.02ECE
+( to largest model)
+012345
+Corruption
+severity012345
+Corruption
+severity
+Figure 5: Classiﬁcation error and ECE for the top
+three families on IMAGE NET-C, relative to the
+largest model variant in each family. As distribu-
+tion shift increases, both errors tend to increase
+more slowly for larger models. Also note that
+changes in ECE are much smaller than changes in
+classiﬁcation error.These results suggest that larger and more accu-
+rate models, and in particular MLP-Mixer and
+ViT, can maintain their good in-distribution cal-
+ibration even under severe distribution shifts.
+Based on the observed relationship between cal-
+ibration and accuracy, we can reasonably hope
+that good calibration on in-distribution data (and
+anticipated distribution shifts) generally trans-
+lates into good calibration on unanticipated out-
+of-distribution data, similar to what has been
+observed for accuracy (Djolonga et al., 2020).
+4.4 Relating Accuracy
+and Calibration Within Model Families
+Our data suggest that most model families lie on
+different Pareto sets in the accuracy/calibration
+space, which establishes a clear preference be-
+tween families. We next consider how to com-
+pare individual models within a family (or more
+speciﬁcally, within a Pareto set), where one
+model is more accurate but worse calibrated, and
+the other is less accurate but better calibrated.
+Which model should a practitioner choose for a
+safety-critical application?
+7
+
+==== Page 8 ====
+0.000.020.040.060.080.100.120.14ECE
+(no recalibration)ImageNet-v2
+Model family
+MLP-Mixer
+ViT
+BiT
+ResNeXt WSL
+SimCLR
+CLIP
+AlexNet0.00.10.20.3ImageNet-R
+0.00.20.40.6ImageNet-A
+0.1 0.2 0.3 0.4 0.5
+Classification error0.000.020.040.060.080.100.120.14ECE
+(temperature-scaled)
+0.2 0.4 0.6 0.8
+Classification error0.00.10.20.3
+0.2 0.4 0.6 0.8 1.0
+Classification error0.00.20.40.6Figure 6: Calibration and accuracy before (top row) and after (bottom row) temperature scaling
+on out-of-distribution benchmarks. Marker size indicates relative model size within its family.
+IMAGE NET-RandIMAGE NET-Ause a reduced subset of 200 classes; we follow the literature and
+select the subset of the model logits for these classes before evaluation. Out-of-distribution calibration
+tends to correlate with in-distribution calibration (Figure 1) and out-of-distribution accuracy.
+1 10 1000.00.20.40.60.8Abstention rateImageNet
+1 10 100ImageNet-R
+-0.2 0.0 2.4Log relative cost of 
+lower-ECE model
+Misclassification cost (relative to abstention cost)Expected cost in selective prediction
+Figure 7: Relative cost of BiT-R152x4 and BiT-
+R50x1 models in a selective prediction scenario,
+computed as a combination of the misclassiﬁca-
+tion and abstention costs at a given cost ratio
+(x-axis) and abstention rate (y-axis). Blue indi-
+cates regions where the higher-accuracy model
+(R152x4) achieves a lower cost than the better-
+calibrated model (R50x1). The accuracy advantage
+outweighs the calibration advantage for practical
+rejection rates, across all tested abstention costs.The answer depends on the cost structure of
+the speciﬁc application (Hernández-Orallo et al.,
+2012). As an example, consider the scenario of
+selective prediction , which is common in med-
+ical diagnosis. In this task, one can choose to
+ignore the model prediction (“abstain”) at a ﬁxed
+cost if the prediction conﬁdence is low, rather
+than risking a (more costly) prediction error.
+Figure 7 compares the expected cost for two
+BiT variants, one with better classiﬁcation er-
+ror (R152x4, by 0.08), and one with better ECE
+(R50x1, by 0.009). For abstention rates up to
+70% (which covers most practical scenarios with
+abstention rates low enough for the model to
+be useful), the model with better accuracy has
+a lower overall cost than the model with bet-
+ter ECE. The same is true for all other model
+families we study (Appendix B.3). For these
+families and this cost scenario, a practitioner
+should therefore always choose the most accu-
+rate available model regardless of differences in calibration. Ultimately, real-world cost structures are
+complex and may yield different results; Figure 7 presents one common scenario with downstream
+ramiﬁcations for the importance of the calibration differences compared to accuracy.
+5 Pitfalls and Limitations
+For this study, we approached calibration with a simple, practical question: Given two models, one
+more accurate and the other better calibrated, which should a practitioner choose? While working
+towards answering this question, we encountered several pitfalls that complicate the interpretation of
+calibration results.
+Measuring calibration is challenging, and while the quantity we want to estimate is well speciﬁed,
+the estimator itself can be biased. There are two sources of bias: (i) from estimating ECE by binning,
+and (ii) from the ﬁnite sample size used to estimate the per-bin statistics.
+8
+
+==== Page 9 ====
+0.010.020.030.040.05ECE
+(temp.-scaled)ImageNet
+Model family
+MLP-Mixer ViT BiT ResNeXt WSL SimCLR CLIP AlexNet0.050.060.07ImageNet-v2
+0.050.100.150.20ImageNet-R
+0.10.20.30.4ImageNet-A
+0.51.01.5NLL
+(temp.-scaled)1.01.52.02.5
+12345
+246
+0.05
+0.000.050.10NLL (residual)
+0.1
+0.00.10.2
+0.5
+0.00.5
+0.00.51.01.5
+0.20.30.40.50.6Brier score
+(temp.-scaled)
+0.30.40.50.60.7
+0.20.40.60.81.0
+0.40.60.81.01.2
+0.2 0.3 0.4
+Classification error0.01
+0.000.01Brier (residual)
+0.2 0.3 0.4 0.5
+Classification error0.02
+0.01
+0.000.01
+0.2 0.4 0.6 0.8
+Classification error0.010
+0.005
+0.0000.005
+0.2 0.4 0.6 0.8 1.0
+Classification error0.06
+0.04
+0.02
+0.000.02Figure 8: Alternative calibration metrics: negative log-likelihood (NLL) and Brier score. For
+comparison, the ﬁrst row shows ECE as in Figure 6. Since NLL, Brier score, and classiﬁcation error
+are all highly correlated, we also provide the residuals of NLL and Brier score after regressing out
+classiﬁcation error (third and ﬁfth row). Speciﬁcally, we ﬁrst ﬁt a linear regression yi=0+1xi,
+wherexiis the classiﬁcation error and yiis the calibration measure of model i. We then report the
+residualyi (0+1xi)on they-axis of the plots in the third and ﬁfth row. The residuals show
+which models have better (or worse) NLL and Brier score than what can be expected from their
+accuracy alone. The relationships between model families are largely similar across all calibration
+metrics.
+The ﬁrst of these biases is always negative (Kumar et al., 2019), while the second one is always
+positive. Thus, the estimator can both under- and over-estimate the true value, and the magnitude of
+the bias can depend on multiple factors. In practice, this means that the ranking of models depends
+on which ECE variant is chosen to estimate calibration (Nixon et al., 2019). As we show below, this
+is especially problematic for the positive bias, because this bias depends on the accuracy of the model .
+It is therefore possible to arrive at opposite conclusions about the relationship between accuracy and
+calibration, depending on the chosen bin size (Figure 9), especially when comparing models with
+widely varying accuracies.
+9
+
+==== Page 10 ====
+0.2 0.3
+Classification
+error0.000.020.04ECE
+(temp.-scaled)15 bins 
+(2667 points/bin)
+0.2 0.3
+Classification
+error0.000.020.04100 bins 
+(400 points/bin)
+0.2 0.3
+Classification
+error0.060.080.100.125000 bins 
+(8 points/bin)
+Figure 9: The effect of binning-induced bias in
+ECE depends on accuracy. Each dot represents a
+BiT ResNet model. Plotted models differ in model
+size, pretraining dataset size, and pretraining dura-
+tion. All models are ﬁne-tuned and evaluated on
+IMAGE NET. After temperature scaling, there is a
+near-linear relationship between ECE and classiﬁ-
+cation error. However, whether this relationship is
+positive or negative depends on the number of bins
+used for estimating ECE. This effect is explained
+by an accuracy-dependent bias that increases with
+the number of bins.Intuitively, a larger number of bins implies
+fewer points per bin and thus higher variance
+of the estimate of the model accuracy in each
+bin, which adds positive bias to the estimate of
+ECE. More formally, to estimate accuracy (Bi)
+precisely, we need a number of samples in-
+versely proportional to the standard deviationp
+pi(1 pi)=jBij, wherepiis the expected ac-
+curacy inBi. This indicates that the bias would
+be smaller for models with extreme average
+accuracies (i.e. close to 0 or 1) and larger for
+models with an accuracy close to 0.5. A de-
+tailed analysis reveals additional effects that fur-
+ther reduce the bias for higher-accuracy mod-
+els (Appendix C). In particular, if we estimate
+(E[accuracy (Bi)] E[conﬁdence (Bi)])2for any
+biniwithnisamples (using the sample means
+of the conﬁdences and the accuracies), the bias
+can be shown to be equal to (conditioning on
+X2Biomitted for brevity)
+1
+ni 
+V[A] +V[C] 2Cov[C;A]
+; (5)
+whereA=JY2arg maxf(X)KandC= maxf(X). Hence, from Equation 5 we can conclude
+that higher accuracy models have a lower bias not only due to higher accuracy (lower V[A]), but also
+because their outputs correlate more with the correct label (higher covariance).
+In addition to a careful choice of bin size, considering accuracy and calibration jointly mitigates this
+issue, because the Pareto-optimal models rarely change, even if the ranking based on ECE alone
+does (Appendix E). In Appendices E and F, we provide the main ﬁgures of the paper for other ECE
+variants (number of bins, binning scheme, normalization metric, top-label, all-label, class-wise).
+Finally, metrics such as Brier score (Brier, 1950) and likelihood provide alternative assessments
+of model calibration that do not require estimating expected calibration error. We ﬁnd that the
+relationships between model families are consistent across ECE, NLL and Brier score (Figure 8). In
+particular, the same models (speciﬁcally the largest MLP-Mixer and ViT variants) remain Pareto-
+optimal with respect to the calibration metric and classiﬁcation error in most cases. The relationship
+between models is visualized especially clearly after regressing out from the calibration metrics their
+correlation with classiﬁcation error (Figure 8, third and ﬁfth row).
+6 Conclusion
+We performed a large study of the calibration of recent state-of-the-art image models and its relation-
+ship with accuracy. We ﬁnd that modern image models are well calibrated across distribution shifts
+despite being designed with a focus on accuracy. Our results suggest that there is no general trend for
+recent or highly accurate neural networks to be poorly calibrated compared to older or less accurate
+models.
+Our experiments suggest that simple dimensions such as model size and pretraining amount do
+not fully account for the performance differences between families, pointing towards architecture
+as a major determinant of calibration. Of particular note is the ﬁnding that MLP-Mixer and Vi-
+sion Transformers—two recent architectures that are not based on convolutions—are among the
+best-calibrated models both in-distribution and out-of-distribution. Self-attention (which Vision
+Transformers employ heavily) has been shown previously to be beneﬁcial for certain kinds of out-
+of-distribution robustness (Hendrycks et al., 2020a). Our work now hints at calibration beneﬁts of
+non-convolutional architectures more broadly, for certain kinds of distribution shift. Further work on
+the inﬂuence of architectural inductive biases on calibration and out-of-distribution robustness will
+be necessary to tell whether these results generalize. If so, they may further hasten the end of the
+convolutional era in computer vision.
+10
+
+==== Page 11 ====
+Acknowledgments and Disclosure of Funding
+We thank Carlos Riquelme and Balaji Lakshminarayanan for valuable comments on the manuscript.
+The authors declare no competing interests.
+References
+Bojarski, M., Del Testa, D., Dworakowski, D., Firner, B., Flepp, B., Goyal, P., Jackel, L. D., Monfort,
+M., Muller, U., Zhang, J., et al. End to end learning for self-driving cars. arXiv: 1604.07316 , 2016.
+Brier, G. W. Veriﬁcation of forecasts expressed in terms of probability. Monthly weather review ,
+1950.
+Bröcker, J. Reliability, sufﬁciency, and the decomposition of proper scores. Journal of the Royal
+Meteorological Society , 2009.
+Chen, T., Kornblith, S., Norouzi, M., and Hinton, G. E. A simple framework for contrastive learning
+of visual representations. In International Conference on Machine Learning , 2020.
+DeGroot, M. H. and Fienberg, S. E. The comparison and evaluation of forecasters. Journal of the
+Royal Statistical Society , 1983.
+Deng, J., Dong, W., Socher, R., Li, L.-J., Li, K., and Fei-Fei, L. Imagenet: A large-scale hierarchical
+image database. In Conference on Computer Vision and Pattern Recognition , 2009.
+Djolonga, J., Matthias, M., Nado, Z., Nixon, J., Romijnders, R., Tran, D., and Lucic, M. Robustness
+Metrics, 2020. URL https://github.com/google-research/robustness_metrics .
+Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner, T., Dehghani,
+M., Minderer, M., Heigold, G., Gelly, S., Uszkoreit, J., and Houlsby, N. An image is worth 16x16
+words: Transformers for image recognition at scale. In International Conference on Learning
+Representations , 2021.
+Esteva, A., Kuprel, B., Novoa, R. A., Ko, J., Swetter, S. M., Blau, H. M., and Thrun, S. Dermatologist-
+level classiﬁcation of skin cancer with deep neural networks. Nature , 2017.
+Geirhos, R., Rubisch, P., Michaelis, C., Bethge, M., Wichmann, F. A., and Brendel, W. Imagenet-
+trained CNNs are biased towards texture; increasing shape bias improves accuracy and robustness.
+InInternational Conference on Learning Representations , 2019.
+Gelman, A., Carlin, J. B., Stern, H. S., Dunson, D. B., Vehtari, A., and Rubin, D. B. Bayesian data
+analysis . CRC press, 2013.
+Gneiting, T., Balabdaoui, F., and Raftery, A. E. Probabilistic forecasts, calibration and sharpness.
+Journal of the Royal Statistical Society , 2007.
+Guo, C., Pleiss, G., Sun, Y ., and Weinberger, K. Q. On calibration of modern neural networks. In
+International Conference on Machine Learning , 2017.
+Gupta, K., Rahimi, A., Ajanthan, T., Mensink, T., Sminchisescu, C., and Hartley, R. Calibration of
+neural networks using splines. International Conference on Learning Representations , 2021.
+Havasi, M., Jenatton, R., Fort, S., Liu, J. Z., Snoek, J., Lakshminarayanan, B., Dai, A. M., and
+Tran, D. Training independent subnetworks for robust prediction. In International Conference on
+Learning Representations , 2021.
+He, K., Zhang, X., Ren, S., and Sun, J. Identity mappings in deep residual networks. In European
+Conference on Computer Vision , 2016.
+Hendrycks, D. and Dietterich, T. Benchmarking neural network robustness to common corruptions
+and perturbations. In International Conference on Learning Representations , 2019.
+Hendrycks, D., Basart, S., Mu, N., Kadavath, S., Wang, F., Dorundo, E., Desai, R., Zhu, T., Parajuli,
+S., Guo, M., et al. The many faces of robustness: A critical analysis of out-of-distribution
+generalization. arXiv: 2006.16241 , 2020a.
+11
+
+==== Page 12 ====
+Hendrycks, D., Mu, N., Cubuk, E. D., Zoph, B., Gilmer, J., and Lakshminarayanan, B. Augmix: A
+simple data processing method to improve robustness and uncertainty. In International Conference
+on Learning Representations , 2020b.
+Hendrycks, D., Zhao, K., Basart, S., Steinhardt, J., and Song, D. Natural adversarial examples. In
+Conference on Computer Vision and Pattern Recognition , 2021.
+Hernández-Orallo, J., Flach, P. A., and Ferri, C. A uniﬁed view of performance metrics: translating
+threshold choice into expected classiﬁcation loss. Journal of Machine Learning Research , 2012.
+Jiang, X., Osl, M., Kim, J., and Ohno-Machado, L. Calibrating predictive model estimates to support
+personalized medicine. Journal of the American Medical Informatics Association , 2012.
+Kolesnikov, A., Beyer, L., Zhai, X., Puigcerver, J., Yung, J., Gelly, S., and Houlsby, N. Big transfer
+(bit): General visual representation learning. In European Conference on Computer Vision , 2020.
+Kompa, B., Snoek, J., and Beam, A. L. Second opinion needed: communicating uncertainty in
+medical machine learning. NPJ Digital Medicine , 2021.
+Krizhevsky, A. One weird trick for parallelizing convolutional neural networks. arXiv: 1404.5997 ,
+2014.
+Krizhevsky, A., Sutskever, I., and Hinton, G. E. Imagenet classiﬁcation with deep convolutional
+neural networks. In Advances in Neural Information Processing Systems , 2012.
+Kumar, A., Liang, P. S., and Ma, T. Veriﬁed uncertainty calibration. In Advances in Neural
+Information Processing Systems , 2019.
+Lakshminarayanan, B., Pritzel, A., and Blundell, C. Simple and scalable predictive uncertainty
+estimation using deep ensembles. In Advances in Neural Information Processing Systems , 2017.
+Leathart, T. and Polaczuk, M. Temporal probability calibration. arXiv: 2002.02644 , 2020.
+Mahajan, D., Girshick, R. B., Ramanathan, V ., He, K., Paluri, M., Li, Y ., Bharambe, A., and van der
+Maaten, L. Exploring the limits of weakly supervised pretraining. In European Conference on
+Computer Vision , 2018.
+Malinin, A. and Gales, M. J. F. Predictive uncertainty estimation via prior networks. In Advances in
+Neural Information Processing Systems , 2018.
+Müller, R., Kornblith, S., and Hinton, G. E. When does label smoothing help? In Advances in Neural
+Information Processing Systems , 2019.
+Mustafa, B., Loh, A., Freyberg, J., MacWilliams, P., Wilson, M., McKinney, S. M., Sieniek, M.,
+Winkens, J., Liu, Y ., Bui, P., Prabhakara, S., Telang, U., Karthikesalingam, A., Houlsby, N., and
+Natarajan, V . Supervised transfer learning at scale for medical imaging. arXiv: 2101.05913 , 2021.
+Naeini, M. P., Cooper, G., and Hauskrecht, M. Obtaining well calibrated probabilities using bayesian
+binning. In AAAI Conference on Artiﬁcial Intelligence , 2015.
+Nixon, J., Dusenberry, M. W., Zhang, L., Jerfel, G., and Tran, D. Measuring calibration in deep
+learning. In IEEE Conference on Computer Vision and Pattern Recognition Workshops , 2019.
+Ovadia, Y ., Fertig, E., Lakshminarayanan, B., Nowozin, S., Sculley, D., Dillon, J. V ., Ren, J., Nado,
+Z., and Snoek, J. Can you trust your model’s uncertainty? evaluating predictive uncertainty under
+dataset shift. In Advances in Neural Information Processing Systems , 2019.
+Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G., Askell, A.,
+Mishkin, P., Clark, J., et al. Learning transferable visual models from natural language supervision.
+Technical report, OpenAI, 2021.
+Rahaman, R. and Thiery, A. H. Uncertainty quantiﬁcation and deep ensembles. arXiv: 2007.08792 ,
+2020.
+12
+
+==== Page 13 ====
+Recht, B., Roelofs, R., Schmidt, L., and Shankar, V . Do imagenet classiﬁers generalize to imagenet?
+InInternational Conference on Machine Learning , 2019.
+Roelofs, R., Cain, N., Shlens, J., and Mozer, M. C. Mitigating bias in calibration error estimation.
+arXiv: 2012.08668 , 2020.
+Shafer, G. and V ovk, V . A tutorial on conformal prediction. Journal of Machine Learning Research ,
+2008.
+Sønderby, C. K., Espeholt, L., Heek, J., Dehghani, M., Oliver, A., Salimans, T., Agrawal, S., Hickey,
+J., and Kalchbrenner, N. Metnet: A neural weather model for precipitation forecasting. arXiv:
+2003.12140 , 2020.
+Sun, C., Shrivastava, A., Singh, S., and Gupta, A. Revisiting unreasonable effectiveness of data in
+deep learning era. In International Conference on Computer Vision , 2017.
+Szegedy, C., Vanhoucke, V ., Ioffe, S., Shlens, J., and Wojna, Z. Rethinking the inception architecture
+for computer vision. In Conference on Computer Vision and Pattern Recognition , 2016.
+Taori, R., Dave, A., Shankar, V ., Carlini, N., Recht, B., and Schmidt, L. Measuring robustness to
+natural distribution shifts in image classiﬁcation. Advances in Neural Information Processing
+Systems , 2020.
+Thulasidasan, S., Chennupati, G., Bilmes, J. A., Bhattacharya, T., and Michalak, S. On mixup
+training: Improved calibration and predictive uncertainty for deep neural networks. In Advances in
+Neural Information Processing Systems , 2019.
+Tolstikhin, I., Houlsby, N., Kolesnikov, A., Beyer, L., Zhai, X., Unterthiner, T., Yung, J., Steiner, A.,
+Keysers, D., Uszkoreit, J., Lucic, M., and Dosovitskiy, A. MLP-Mixer: An all-MLP architecture
+for vision. arXiv: 2105.01601 , 2021.
+Vaicenavicius, J., Widmann, D., Andersson, C. R., Lindsten, F., Roll, J., and Schön, T. B. Evaluating
+model calibration in classiﬁcation. In International Conference on Artiﬁcial Intelligence and
+Statistics , 2019.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., and
+Polosukhin, I. Attention is all you need. In Advances in Neural Information Processing Systems ,
+2017.
+Wen, Y ., Tran, D., and Ba, J. Batchensemble: an alternative approach to efﬁcient ensemble and
+lifelong learning. In Advances in Neural Information Processing Systems , 2020.
+Wen, Y ., Jerfel, G., Muller, R., Dusenberry, M. W., Snoek, J., Lakshminarayanan, B., and Tran,
+D. Combining ensembles and data augmentation can harm your calibration. In International
+Conference on Learning Representations , 2021.
+Wenzel, F., Snoek, J., Tran, D., and Jenatton, R. Hyperparameter ensembles for robustness and
+uncertainty quantiﬁcation. In Advances in Neural Information Processing Systems , 2020.
+Xie, Q., Luong, M.-T., Hovy, E., and Le, Q. V . Self-training with noisy student improves imagenet
+classiﬁcation. In Conference on Computer Vision and Pattern Recognition , 2020.
+13
+

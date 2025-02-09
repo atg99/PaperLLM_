@@ -1,0 +1,2863 @@
+==== Page 1 ====
+Policy-Aware Model Learning for Policy Gradient Methods
+Romina Abachi∗Mohammad Ghavamzadeh†Amir-massoud Farahmand‡
+January 5, 2021
+Abstract
+This paper considers the problem of learning a model in model-based reinforcement learning
+(MBRL). We examine how the planning module of an MBRL algorithm uses the model, and
+propose that model learning should incorporate the way the planner is going to use the model.
+This is in contrast to conventional model learning approaches, such as those based on maxi-
+mum likelihood estimation, that learn a predictive model of the environment without explicitly
+considering the interaction of the model and the planner. We focus on policy gradient planning
+algorithms and derive new loss functions for model learning that incorporate how the planner
+uses the model. We call this approach Policy-Aware Model Learning (PAML). We theoretically
+analyze a model-based policy gradient algorithm and provide a convergence guarantee for the
+optimized policy. We also empirically evaluate PAML on some benchmark problems, showing
+promising results.
+1 Introduction
+A model-based reinforcement learning (MBRL) agent gradually learns a model of the environment
+as it interacts with it, and uses the learned model to plan and nd a good policy. This can be done
+by planning with samples coming from the model, instead of or in addition to the samples from the
+environment, e.g., Sutton (1990); Peng and Williams (1993); Sutton et al. (2008); Deisenroth et al.
+(2015); Talvitie (2017); Ha and Schmidhuber (2018). If learning a model is easier than learning
+the policy or value function in a model-free manner, MBRL will lead to a reduction in the number
+of required interactions with the real-world and will improve the sample complexity of the agent.
+However, this is contingent on the ability of the agent to learn an accurate model of the real
+environment. Thus, the problem of learning a good model of the environment is of paramount
+importance in the success of MBRL. This paper addresses the question of how to approach the
+problem of learning a model of the environment, and proposes a method called policy-aware model
+learning (PAML).
+The conventional approach to model learning in MBRL is to learn a model that is a good
+predictor of the environment. If the learned model is accurate enough, this leads to a value function
+or a policy that is close to the optimal one. Learning a good predictive model can be achieved by
+minimizing some form of a probabilistic loss. A common choice is to minimize the KL-divergence
+∗Department of Computer Science, University of Toronto & the Vector Institute, Toronto, Canada
+†Google Research, CA, USA
+‡The Vector Institute & the Department of Computer Science and the Department of Mechanical and Industrial
+Engineering, University of Toronto, Toronto, Canada
+1arXiv:2003.00030v2  [cs.AI]  4 Jan 2021
+
+==== Page 2 ====
+between the empirical data and the model, which leads to the Maximum Likelihood Estimator
+(MLE).
+The often-unnoticed fact, however, is that no model can be completely accurate, and there are
+always dierences between the model and the real-world. An important source of inaccuracy/error
+is the choice of model space, i.e., the space of predictors, such as a particular class of deep neural
+networks. We suer an error if the model space does not contain the true model of the physical
+system.
+The decision-aware model learning (DAML) viewpoint suggests that instead of trying to learn
+a model that is a good predictor of the environment, which may not be possible as just argued,
+one should learn only those aspects of the environment that are relevant to the decision problem.
+Trying to learn the complex dynamics that are irrelevant to the underlying decision problem is
+pointless, e.g., in a self-driving car, the agent does not need to model the movement of the leaves
+on trees when the decision problem is simply to decide whether or not to stop at a red light. The
+conventional model learning approach cannot distinguish between decision-relevant and irrelevant
+aspects of the environment, and may waste the \capacity" of the model on unnecessary details. In
+order to focus the model on the decision-relevant aspects, we shall incorporate certain aspects of
+the decision problem into the model learning process.
+There are several relatively recent works that can be interpreted as doing DAML, even though
+they do not always explicitly express their goal as such. Some methods such as Joseph et al.
+(2013); Silver et al. (2017b); Oh et al. (2017); Farquhar et al. (2018) learn a model implicitly, in
+an end-to-end fashion. This can be interpreted as DAML because the model is learned in service
+of improving policy performance. Other methods incorporate the value function in model-learning.
+For example, Value-Aware Model Learning (VAML) is an instantiation of DAML that incorporates
+the information about the value function in learning the model of the environment (Farahmand
+et al., 2017; Farahmand, 2018). Recent similar works include Ayoub et al. (2020); Luo et al. (2019).
+In the latter, the loss is dened to only include the value function learned on the model, whereas
+Farahmand et al. (2017); Farahmand (2018); Ayoub et al. (2020) require the inclusion of the true
+value function in their loss as well. The formulation by Farahmand et al. (2017) incorporates the
+knowledge about the value function space in learning the model, and the formulation by Farahmand
+(2018) benets from how the value functions are generated within an approximate value iteration
+(AVI)-based MBRL agent. We explain the VAML framework in more details in Section 2.
+Designing a decision-aware model learning approach, however, is not limited to methods that
+benet from the structure of the value function. Policy is another main component of RL that can
+be exploited for learning a model. Using the policy in model learning is done concurrently by D'Oro
+et al. (2020) and Schrittwieser et al. (2019). We briey compare to D'Oro et al. (2020) in Section
+3. MuZero (Schrittwieser et al., 2019) takes into account both the value function and policy.
+The model in MuZero includes separate functions for predicting next \internal" states, policies
+and values. The policy prediction function learns to predict policies that would be obtained by
+the MCTS planner that is used to train it. On the other hand, in this work we consider policy
+gradient planners and instead of predicting policies directly, consider the interaction of the policy
+and value function in obtaining policy gradients. The high-level idea is simple: If we are using
+a policy gradient (PG) method to search for a good policy, we only need to learn a model that
+provides accurate estimates of the PG. All other details of the environment that do not contribute
+to estimating PG are irrelevant. Formalizing this intuition is the main algorithmic contribution of
+this paper (Section 3).
+The rst theoretical contribution of this work is a result that shows how the error in the model,
+2
+
+==== Page 3 ====
+in terms of total variation, aects the quality of the PG estimate (Theorem 2 in Section 4.1). This
+is reassuring as it shows that a good model leads to an accurate estimate of the PG. It might
+seem natural to assume that an accurate gradient estimate leads to convergence to a good policy.
+However, we could not quantify the quality of the converged policy in a PG procedure beyond
+stating that it is a local optimum until recently, when Agarwal et al. (2019) provided quantitative
+guarantees on the convergence of PG methods beyond convergence to a local optimum. Our second
+theoretical contribution is Theorem 4 (Section 4) that extends one of the results in Agarwal et al.
+(2019) to model-based PG and shows the eect of PG error on the quality of the converged policy,
+as compared to the best policy in the policy class. We also have a subtle, but perhaps important,
+technical contribution in the denition of the policy approximation error, which holds even in the
+original model-free setting. Our empirical contributions are demonstrating that PAML can easily be
+formulated for two commonly-used PG algorithms and showing its performance in benchmark envi-
+ronments (Section 5), for which the code is made available at https://github.com/rabachi/paml .
+In addition, our results in a nite-state environment show that PAML outperforms conventional
+methods when the model capacity is limited.
+2 Background on Decision-Aware Model Learning (DAML)
+A MBRL agent interacts with an environment, collects data, improves its internal model, and
+uses the internal model, perhaps alongside the real-data, to improve its policy. To formalize, we
+consider a (discounted) Markov Decision Process (MDP) ( X;A;R;P;) (Szepesv ari, 2010). We
+denote the state space by X, the action space by A, the reward distribution by R, the transition
+probability kernel by P, and the discount factor by 0 1. In general, the true transition
+modelPand the reward distribution Rare not known to an RL agent. The agent instead can
+interact with the environment to collect samples from these distributions. The collected data is in
+the form of
+Dn=f(Xi;Ai;Ri;X0
+i)gn
+i=1; (1)
+with the current state-action being distributed according to Zi= (Xi;Ai)(XA )2M(XA ),
+the reward RiR(jXi;Ai), and the next-state X0
+iP(jXi;Ai). Note that Mrefers to the set
+of all probability distributions dened over XandA. In many cases, an RL agent might follow a
+trajectoryX1;X2;::: in the state space (and similar for actions and rewards), that is, Xi+1=X0
+i.
+We denote the expected reward by r(x;a) =E[R(jx;a)].1
+A MBRL agent uses the interaction data to learn an estimate ^Pof the true model Pand ^R
+(or simply ^ r) of the true reward distribution R(orr). This is called model learning . These
+models are then used by a planning algorithm Planner to nd a close-to-optimal policy. The policy
+may be used by the agent to collect more data and improve the estimates ^Pand ^R. This generic
+Dyna-style (Sutton, 1990) MBRL algorithm is shown in Algorithm 1.
+How should we learn a model ^Pthat is most suitable for a particular Planner ? This is the
+fundamental question in model learning. The conventional approach in model learning ignores
+how Planner is going to use the model and instead focuses on learning a good predictor of the
+environment. This can be realized by using a probabilistic loss, such as KL-divergence, which leads
+1Given a set 
+ and its -algebra 
+,M(
+) refers to the set of all probability distributions dened over 
+. As
+we do not get involved in the measure theoretic issues in this paper, we do not explicitly dene the -algebra, and
+simply use a well-dened and \standard" one, e.g., Borel sets dened for metric spaces.
+3
+
+==== Page 4 ====
+Algorithm 1 Generic MBRL Algorithm
+Initialize a policy 0
+fork= 0;1;:::;K do
+Generate training set D(k)
+n=f(Xi;Ai;Ri;X0
+i)gn
+i=1by interacting with the true environment (poten-
+tially using k), i.e., (Xi;Ai)kwithX0
+iP(jXi;Ai) andRiR(jXi;Ai).
+^P(k+1) argminP2M LossP(P;[k
+i=0D(i)
+n)fPAML: LossP=krJ(k
+) r^J(k
+)k2
+[k
+i=0D(i)
+ng
+^r argminr2GLossR(r;[k
+i=0D(i)
+n)
+k+1
+ Planner (^P;^R)fPAML: PG-based (e.g., REINFORCE or DDPG); k+1 k+r^J(k
+).g
+end for ,fReturnKg
+to the maximum likelihood estimate (MLE), or similar approaches. Ignoring how the planner uses
+the model, however, might not be a good idea, especially if the model class M, from which we select
+our estimate ^P, does not contain the true model P, i.e.,P=2M . This is the model approximation
+error and its consequence is that we cannot capture all aspects of the dynamics. The thesis behind
+DAML is that instead of being oblivious to how Planner uses the model, the model learner should
+pay more attention to those aspects of the model that aect the decision problem the most. A
+purely probabilistic loss ignores the underlying decision problem and how Planner uses the learned
+model, whereas a DAML method incorporates the decision problem and Planner .
+Value-Aware Model Learning (VAML) is a class of DAML methods (Farahmand et al., 2016a,
+2017; Farahmand, 2018). It is a model learning approach that is designed for a value-based type
+ofPlanner , i.e., a planner that nds a good policy by approximating the optimal value function
+Qby^Q, and then computes the greedy policy w.r.t. ^Q. In particular, the suggested formu-
+lations of VAML so far focus on value-based methods that use the Bellman optimality operator
+to nd the optimal value function (as opposed to a Monte Carlo-based solution). The use of the
+Bellman [optimality] operator, or a sample-based approximation thereof, is a key component of
+many value-based approaches, such as the family of (Approximate) Value Iteration (Gordon, 1995;
+Szepesv ari and Smart, 2004; Ernst et al., 2005; Munos and Szepesv ari, 2008; Farahmand et al.,
+2009; Farahmand and Precup, 2012; Mnih et al., 2015; Tosatto et al., 2017; Chen and Jiang, 2019)
+or (Approximate) Policy Iteration (API) algorithms (Lagoudakis and Parr, 2003a; Antos et al.,
+2008; Bertsekas, 2011; Lazaric et al., 2012; Scherrer et al., 2012; Farahmand et al., 2016b).
+To be more concrete in the description of VAML, let us rst recall that the Bellman optimality
+operator w.r.t. the transition kernel Pis dened as
+T
+P:Q7!r+Pmax
+aQ: (2)
+VAML attempts to nd ^Psuch that applying the Bellman operator T
+^Paccording to the model ^P
+on a value function Qhas a similar eect as applying the true Bellman operator T
+Pon the same
+function, i.e., T
+^PQT
+PQ. This ensures that one can replace the true dynamics with the model
+without (much) aecting the internal mechanism of a Bellman operator-based Planner . How this
+might be achieved is described in the original papers, which are summarized in Appendix B .
+The VAML framework is an instantiation of DAML when Planner benets from extra knowl-
+edge available about the value function, either in the form of the value function space (as in the
+original VAML formulation) or particular value functions generated by AVI (as in the IterVAML
+formulation), to learn a model ^P. The value function and our knowledge about it, however, are
+not the only extra information that we might have about the decision problem. Another source of
+4
+
+==== Page 5 ====
+information is the policy. The goal of the next section is to develop a model learning framework
+that benets from the properties of the policy.
+3 Policy-Aware Model Learning
+The policy gradient (PG) algorithm and its several variants are important tools to solve RL prob-
+lems (Williams, 1992; Sutton et al., 2000; Baxter and Bartlett, 2001; Marbach and Tsitsiklis, 2001;
+Kakade, 2001; Peters et al., 2003; Cao, 2005; Ghavamzadeh and Engel, 2007; Peters and Schaal,
+2008; Bhatnagar et al., 2009; Deisenroth et al., 2013; Schulman et al., 2015). These algorithms pa-
+rameterize the policy and compute the gradient of the performance (cf. (4)) w.r.t. the parameters.
+Model-free PG algorithms use the environment to estimate the gradient, but model-based ones use
+an estimated ^Pto generate \virtual" samples to estimate the gradient. In this section, we derive a
+loss function for model learning that is designed for model-based PG estimation. We specialize the
+derivation to discounted MDPs, but the changes for the episodic, nite-horizon, or average reward
+MDPs are straightforward.
+A PG method relies on accurate estimation of the gradient. Intuitively, a model-based PG
+method would perform well if the gradient of the performance evaluated according to the model
+^Pis close to the one computed from the true dynamics P. In this case, one may use the learned
+model instead of the true environment to compute the PG. To formalize this intuition, we rst
+introduce some notations.
+Given a transition probability kernel P, we denote byP(jx;k) the future-state distribution
+of following policy from state xforksteps, i.e.,P(jx;k),(P)k(jx), with the understand-
+ing that (P)0(jx) =Iis the identity map. For an initial probability distribution 2M(X),R
+(dx)P(jx;k) is the distribution of selecting the initial distribution according to and following
+Pforksteps. We dene a discounted future-state distribution of starting from and following
+Pas
+
+() =(;P),(1 )X
+k0kZ
+d(x)P(jx;k): (3)
+We may drop the dependence on , if it is clear from the context. We use a shorthand notation
+^
+=(;^P), and a similar notation for other distributions, e.g., 
+and ^
+.
+For an MDP (X;A;R;P;), we use the subscript Pin the denition of value function V
+Pand
+Q
+P, if we want to emphasize its dependence on the transition probability kernel. We reserve the
+use ofVandQforV
+PandQ
+P, the value functions of the true dynamics.
+The performance of an agent starting from a user-dened initial probability distribution 2
+M(X), following policy in the true MDP ( X;A;R;P;) is
+J() =J() =Z
+d(x)V(x): (4)
+When the policy =is parameterized by 2, from the derivation of the PG theorem (cf.
+proof of Theorem 1 by Sutton et al. 2000), we have that
+@V(x)
+@=X
+k0kZ
+P(dx0jx;k)X
+a02A@(a0jx0)
+@Q
+P(x0;a0);
+5
+
+==== Page 6 ====
+If the dependence of Qon the transition kernel is clear, we may omit it and simply use Q. We
+also usePinstead ofPto simplify the notation. The gradient of the performance J() (4)
+w.r.t.is then
+rJ() =@J()
+@=X
+k0kZ
+d(x)Z
+P(dx0jx;k)X
+a02A@(a0jx0)
+@Q(x0;a0)
+=1
+1 Z
+(dx;P)X
+a2A(ajx)@log(ajx)
+@Q(x;a): (5)
+Let us expand the denition of rJ, which shall help us easily describe several ways a model-
+based PG method can be devised. For two transition probability kernels P1andP2, and a policy
+, we dene
+rJ(;P1;P2) =X
+k0kZ
+d(x)Z
+P
+1(dx0jx;k)X
+a02A@(a0jx0)
+@Q
+P2(x0;a0): (6)
+This vector-valued function can be seen as the PG of following according toP1, and using a
+critic that is the value function in an MDP with P2as the transition kernel.
+We have several choices to design a model learning loss function that is suitable for a PG method.
+The overall goal is to match the true PG, i.e.,@J()
+@=rJ(;P;P), or an empirical estimate
+thereof, with a PG that is somehow computed by the model ^P. Let us dene@^J()
+@,rJ(;^P;P)
+and set the goal of model learning to
+@J()
+@@^J()
+@: (7)
+This ensures that the gradient estimate based on following the learned model ^Pand computed
+using the true action-value function Q
+Pis close to the true gradient. There are various ways to
+quantify the error between the gradient vectors. We choose the `2-norm of their dierence. When
+the gradient w.r.t. the model is close to the true gradient, we may use the model to perform PG.
+Subtracting the gradient of the performances under two dierent transition probability kernels
+and taking the `2-norm, we get a loss function between the true and model PGs, i.e.,
+c(P;^P) =@J()
+@ @^J()
+@
+2
+=X
+k0kZ
+d(x)Z
+P(dx0jx;k) ^P(dx0jx;k)X
+a02A@(ajx0)
+@Q(x0;a0)
+2:
+(8)
+Note that the summation (or integral) over actions can be done using any of the commonly-known
+Monte Carlo gradient estimators such as the score function (REINFORCE) or pathwise gradient
+estimators (Mohamed et al., 2019), as we demonstrate in the Empirical Studies.
+Several comments are in order. This is a population loss function, in the sense that Pappears
+in it. To make this loss practical, we need to use its empirical version. Moreover, this formulation
+6
+
+==== Page 7 ====
+requires us to know the action-value function Q=Q
+P, which is w.r.t. the true dynamics. This
+can be estimated using a model-free critic that only uses the real transition data (and not the data
+obtained by the model ^P) and provides ^QQ
+P.
+To be concrete, let us assume that we are given nepisodes with length Tof following policy
+Pstarting from an initial state distribution . That is,X(i)
+1,A(i)
+k(jX(i)
+k) andX(i)
+k+1
+P(jX(i)
+k;A(i)
+k) fork= 0;:::;T 1 andi= 1;:::;n . In order to compute the expectation w.r.t. ^ ,
+we generate samples from ^Pas follows: For each i= 1;:::;n andj= 1;:::;m , we set ~X(i)
+1;j=X(i)
+1
+(the same initial states as in the real data). And for the next steps, we let ~A(i)
+k;j(jX(i)
+k) and
+~X(i)
+k+1;j^P(j~X(i)
+k;j;~A(i)
+k;j) (which should be interpreted as the same model as ^P) fori= 1;:::;n ,
+j= 1;:::;m , andk= 0;:::;T 1. The empirical loss can then be dened as
+cn(P;^P) =1
+nnX
+i=1TX
+k=1k"
+rlog(A(i)
+kjX(i)
+k)^Q(X(i)
+k;A(i)
+k) 
+1
+mmX
+j=1rlog(~A(i)
+k;jjX(i)
+k)^Q(X(i)
+k;j;~A(i)
+k;j)#
+2: (9)
+Also note the loss function c(P;^P) (8) is dened for a particular policy . However,
+policygradually changes during the run of a PG algorithm. To deal with this change, we should
+regularly update ^Pbased on data collected by the most recent . In Section 4.5, we show that
+under certain conditions, the error in the PG estimation of a new policy newusing a model that
+was learned for an old policy oldisO(knew oldk). Our empirical studies (including in the
+Supp) show that the model does not expire quickly with policy changes.
+SettingrJ(;P;P)rJ(;^P;P) is only one way to dene a model learning objective
+for a PG method. We can opt instead to nd a ^Psuch that
+rJ(;P;P)8
+><
+>:rJ(;^P;P); (10a)
+rJ(;P;^P); (10b)
+rJ(;^P;^P): (10c)
+The dierence between these cases is in whether the discounted future-state distribution is com-
+puted according to the true dynamics Por the learned dynamics ^P, and whether the critic Q
+Pis
+computed according to the true dynamics or the learned dynamics. Case (10a) is the same as (7).
+Case (10b) uses the model only to train the critic, but not to compute the future-state distribution
+^. Having ^P, the critic can be estimated using Monte Carlo estimates or any other method for
+estimating the value function given a model. This is similar to how D'Oro et al. (2020) use their
+model, though their loss function is a weighted log-likelihood, and the model-learning step does not
+take the action-value function into account. Case (10c) corresponds to calculating the whole PG
+according to the model ^P. This requires us to estimate both the future-state distribution and the
+critic according to the model. In this paper, we theoretically analyze (10a) and provide empirical
+results for approximations of (10a) and (10b).
+If the policy is deterministic (Silver et al., 2014), the formulation would be almost the same
+with the dierence that instead of terms in the form ofP
+a2Ar(ajx)Q(x;a), we would have
+r(x)@Q(x;a)
+@aja=(x).
+7
+
+==== Page 8 ====
+4 Theoretical Analysis of PAML
+We theoretically study some aspects of a generic model-based PG (MBPG) method. Theorem 2 in
+Section 4.1 quanties the error between the PG rJ() obtained by following the true model P
+and the PGr^J() obtained by following ^P, and relates it to the error between the models. Even
+though having a small PG error might intuitively suggest that using r^J() instead ofrJ()
+should lead to a good policy, it does not show the quality of the converged policy. Theorem 4
+in Section 4.2 (for exact critic) and Theorem 6 in Section 4.4 (for inexact critic) provide such
+convergence guarantees for a MBPG and shows that having a small PG error indeed leads to a
+better solution.
+4.1 Policy Gradient Error
+Given the trueP=Pand estimated ^Ptransition probability kernel, a policy , and their in-
+duced discounted future-state distributions =(;P) and ^=(;^P), the performance
+gradients@J()
+@(according toP) and@^J()
+@(according to ^P) are
+@J()
+@=1
+1 EX(;P)
+EA(jX)[rlog(AjX)Q(X;A)]
+;
+@^J()
+@=1
+1 EX(;^P)
+EA(jX)[rlog(AjX)Q(X;A)]
+: (11)
+We want to compare the dierence of these two PG. Recall that this is the case when the same
+criticQ=Q
+Pis used for both PG calculation, e.g., a critic is learned in a model-free way, and
+not based on ^P. At rst we assume that the critic is exact, and we do not consider that one should
+learn it based on data, which brings in considerations on the approximation and estimation errors
+for a policy evaluation method. Theoretical analyses on how well we might learn a critic have been
+studied before. We study the eect of having an inexact critic in Section 4.4.
+We rst introduce some notations and denitions. Let us denote  P=P ^P. For the
+error in transition kernel  P(jx), which is a signed measure, we use kP(jx)k1to denote its
+total variation (TV) distance, i.e., kP(jx)k1= 2 supA2XjR
+P(dyjx)Ify2Agj, where the
+supremum is over the measurable subsets of X. We have
+kP(jx)k1= sup
+kfk11Z
+P(dyjx)f(y); (12)
+where the supremum is over 1-bounded measurable functions on X. When P(jx) has a density
+w.r.t. to some countably additive non-negative measure, it holds that kP(jx)k1=R
+jP(dyjx)j.
+We dene the following two norms on  P: Consider a probability distribution 2M(X). We
+dene
+kPk1;1= sup
+x2XkP(jx)k1;kPk1;1()=Z
+d(x)kP(jx)k1:
+We also dene
+KL1(P
+1jjP
+2) = sup
+x2XKL(P
+1(jx)jjP
+2(jx));KL1()(P
+1jjP
+2) =Z
+d(x)KL(P
+1(jx)jjP
+2(jx)):
+8
+
+==== Page 9 ====
+For an action-value function Q:XA! R, a probability distribution 2M(X) and a policy
+:X! M(A), andp2[1;1), we dene the following norm:
+kQkp(;)=psZ
+d(x)(dajx)jQ(x;a)jp: (13)
+When the action-space is nite jAj<1, we also dene the following norm:
+kQ(x;)k2=s
+1
+jAjX
+a2AjQ(x;a)j2: (14)
+This can be seen as similar to the norm (13) with the choice of a policy that assigns a uniform
+probability1
+jAjto all actions in the nite action space (but it is not exactly the same, because here
+we are only concerned of a specic state x, instead of a distribution over the states). These norms
+will be used later when we analyze the eect of the critic error.
+For a vector-valued function f:X!Rd(for somed1), we dene its mixed p;1-norm as
+kfkp;1= sup
+x2Xkf(x)kp: (15)
+We shall see that the error in gradient depends on the discounted future-state distribution (3).
+Sometimes we may want to express the errors w.r.t. another distribution 2M(X), which is, for
+example but not necessarily, the distribution used to collect data to train the model. This requires a
+change of measure argument. Recall that for a measurable function f:X!Rand two probability
+measures1;22M(X), if1is absolutely continuous w.r.t. 2(12), the Radon-Nikydom
+(R-N) derivatived1
+d2exists, and we have
+Z
+f(x)d1=Z
+f(x)d1
+d2d2d1
+d2
+1Z
+jf(x)jd2; (16)
+where d1
+d2
+1= sup
+xd1
+d2(x):
+The supremum of the R-N derivative of 
+w.r.t.plays an important role in our results. It is
+called the Discounted Concentrability Coecient. We formally dene it next.
+Denition 1 (Discounted Concentrability Coecient) .Given two distributions ;2M(X)and
+a policy, dene
+cPG(;;),d
+
+d
+1:
+If the discounted future-state distribution is not absolutely continuous w.r.t. , we setcPG(;;) =
+1.
+The modelsPand ^Pinduce discounted future-state distributions 
+and ^
+. We can compare
+the expectation of a given (vector-valued) function under these two distributions. The next lemma
+upper bounds the dierence in the `p-norm of these expectations, and relates it to the error in the
+models, and some MDP-related quantities.
+9
+
+==== Page 10 ====
+Lemma 1. Consider a vector-valued function f:X ! Rd, two distributions ;2M(X), and
+two transition probability kernels Pand ^P. For any 0 <1, and 1p1 , we have
+EX(;P)[f(X)] EX(;^P)[f(X)]
+p
+1 kfkp;1(
+cPG(;;)kPk1;1();
+kPk1;1:
+Proof. Fork= 0;1;:::, dene the vector-valued function Ek:X!Rdby
+Ek(x) =Z
+P(dyjx;k) ^P(dyjx;k)
+f(y);
+for anyx2X. Note that E0(x) = 0. So we can write
+1
+1 Z
+(dx;P) (dx;^P)
+f(x) =X
+k0kZ
+d(x)
+P(dyjx;k) ^P(dyjx;k)
+f(y)
+=X
+k0kZ
+d(x)Ek(x): (17)
+In order to upper bound the norm of (17), we provide an upper bound on the norm of each
+Ek. We start by inductively expressing Ekas a function of Ek 1, P, and other quantities. For
+k1, and for any x2X, we write
+Ek(x) =Z
+P(dyjx;k) ^P(dyjx;k)
+f(y)
+=Z
+P(dx0jx)P(dyjx0;k 1) ^P(dx0jx)^P(dyjx0;k 1)
+f(y)
+=Z
+P(dx0jx)P(dyjx0;k 1) [P(dx0jx) P(dx0jx)]^P(dyjx0;k 1)
+f(y)
+=Z
+P(dx0jx)h
+P(dyjx0;k 1) ^P(dyjx0;k 1)i
+f(y) + P(dx0jx)^P(dyjx0;k 1)f(y)
+=Z
+P(dx0jx)Ek 1(x0) + P(dx0jx)^P(dyjx0;k 1)f(y):
+To simplify the notation, we denote the `p-norm (for any 1 p1 ) ofEk(x) byek(x), i.e.,
+ek(x) =kEk(x)kp. Moreover, we denote "(x) =R
+jP(dx0jx)j. By the convexity of the `p-norm
+for 1p1 and the application of the Jensen's inequality, we get
+ek(x) =kEk(x)kp=Z
+P(dx0jx)Ek 1(x0) + P(dx0jx)^P(dyjx0;k 1)f(y)
+p
+Z
+P(dx0jx)kEk 1(x0)kp+ZP(dx0jx)^P(dyjx0;k 1)f(y)
+p
+Z
+P(dx0jx)ek 1(x0) + sup
+y2Xkf(y)kpZ
+jP(dx0jx)j
+=Z
+P(dx0jx)ek 1(x0) +kfkp;1"(x):
+10
+
+==== Page 11 ====
+This relates ektoek 1and"andP. By unrolling ek 1;ek 2;:::, we get
+ek(x)kfkp;1"(x) +Z
+P(dx0jx)
+kfkp;1"(x0) +Z
+P(dx0jx)ek 2(x0)
+
+kfkp;1k 1X
+i=0Z
+P(dx0jx;i)"(x0):
+As a result, the norm of (17) can be upper bounded as
+X
+k0kZ
+d(x)Ek(x)
+pX
+k0kZ
+d(x)ek(x)
+kfkp;1Z
+d(x)X
+k0kk 1X
+i=0Z
+P(dx0jx;i)"(x0)
+
+1 kfkp;1X
+k0kZ
+d(x)P(dx0jx;k)"(x0)
+=
+(1 )2kfkp;1Z
+
+(dx)"(x); (18)
+where we used the denition of 
+(3) in the last equality. By the change of measure argument, we
+have
+Z
+
+(dx)"(x) =Zd
+
+d(x)d(x)"(x)sup
+x2Xd
+
+d(x)Z
+d(x)"(x) =cPG(;;)k"k1():
+By (17) and (18), we get that
+Z
+(dx;P) (dx;^P)
+f(x)
+p
+1 cPG(;;)kfkp;1k"k1():
+This leads to the rst statement of the lemma.
+Alternatively, asR
+
+(dx0)"(x0)supx2X"(x), we can also upper bound (18) by
+
+(1 )2kfkp;1k"k1;
+which leads to the second part of the result.
+Lemma 1 is for a general function f. By choosing f(x) =f(x;) =EA(jx)[rlog(Ajx)Q(x;A)],
+one can provide an upper bound on the error in the PG (8). To be concrete, we consider a policy
+from the exponential family.
+Suppose that the policy :X ! M(A) is from the exponential family with features =
+(ajx) :XA! Rdand parameterized by 2Rd, and has the probability (or density) of
+(ajx) =exp 
+>(ajx)
+R
+exp (>(a0jx)) da0: (19)
+If the dependence of onis clear from the context, we may simply refer to it as .
+11
+
+==== Page 12 ====
+Theorem 2. Consider the policy parametrization (19), the initial state distribution 2M(X),
+and the discount factor 0 <1. The policy gradients w.r.t. the true model Pand the learned
+model ^Pare denoted by@J()
+@and@^J()
+@, respectively (11). Consider an arbitrary distribution
+2M(X). Assume thatkQk1Qmax. Forp2f2;1g, letBp= sup(x;a)2XAk(ajx)kp, and
+assume that Bp<1. We have
+@J()
+@ @^J()
+@
+p
+(1 )2QmaxBp(
+cPG(;;)kPk1;1();
+2kPk1;1:
+Proof. The policy gradient is
+@J()
+@=1
+1 EX(;P)[f(X)]
+with the choice of f(x) =f(x;) =EA(jx)[rlog(Ajx)Q(x;A)] (and similar for@^J()
+@).
+We can use Lemma 1 to upper bound the dierence between@J()
+@and@^J()
+@. To apply that
+lemma, we require to have upper bounds on the `2and`1norms off(x). AskQk1Qmax, for
+any 1p1 we have
+kf(x;)kpEA(jx)h
+krlog(Ajx)Q(x;A)kpi
+QmaxEA(jx)h
+krlog(Ajx)kpi
+:
+(20)
+By Lemma 12, we have
+EA(jx)h
+krlog(Ajx)kpi
+(
+B2; p = 2
+2B1: p=1
+Therefore by (20), we have the upper bounds kf(x;)k2QmaxB2andkf(x;)k12QmaxB1.
+This nishes the proof.
+This theorem shows the eect of the model error, quantied in the total variation-based norms
+kPk1;1orkPk1;1(), on the PG estimate. The norms measure how dierent the distribution
+of the true dynamics P=Pis from the distribution of the estimate ^P, according to the
+dierence in the total variation distance between their next-state distributions, i.e., kP(jx) 
+^P(jx)k1. The dierence between them is on whether we take the supremum over the state space
+Xor average (according to ) over it. Clearly, kPk1;1is a more strict norm compared to
+kPk1;1().
+For the average norm, a concentrability coecient cPG(;;) appears in the bound. This
+coecient measures how dierent the discounted future-state distribution is from the distri-
+bution, used for taking average over the total variation errors. If is selected to be , the
+coecientcPG(;;) would be equal to 1. Moreover, if we choose to be equal to the initial
+state distribution , one can show that the coecient cPG(;;)1
+1 (we show this in the
+proof of Theorem 3).
+We can use this upper bound to relate the quality of an MLE to the quality of the PGs. By
+Pinsker's inequality, the TV distance of two distributions can be upper bounded by their KL-
+divergence:
+kP(jx)k1r
+2KL
+P(jx)jj^P(jx)
+:
+12
+
+==== Page 13 ====
+Therefore, we also have kPk1;1q
+2KL1(Pjj^P) too. Moreover, as
+E[kP(jX)k1]2Eh
+kP(jX)k2
+1i
+Eh
+2KL
+P(jX)jj^P(jX)i
+= 2KL1()
+Pjj^P
+;
+we getkPk1;1()q
+2KL1()(Pjj^P). Combined with the upper bound of Theorem 2, we
+get that
+rJ() r^J()
+p
+(1 )2QmaxBp8
+<
+:cPG(;;)q
+2KL1()(Pjj^P);
+2q
+2KL1(Pjj^P):(21)
+This is an upper bound on the PG error for conventional model learning procedures. Recall
+that the MLE is the minimizer of the KL-divergence between the empirical distribution of samples
+generated fromPand ^P. There would be some statistical deviation between its minimizer
+and the minimizer of min P2M KL(PjjP), but if the model space is chosen properly, the dierence
+between the minimizer decreases as the number of samples increases.
+This upper bound suggests why PAML might be a more suitable approach in learning a model.
+An MLE-based approach tries to minimize an upper bound of an upper bound for the quantity
+that we care about (PG error). This consecutive upper bounding might be quite loose. On the
+other hand, the population version of PAML's loss (8) is exactly the error in the PG estimates
+that we care about. A question that may arise is that although these two losses are dierent, are
+their minimizers the same? In Figures 1a and 1b we show through a simple visualization that the
+minimizers of PAML and KLcould indeed be dierent.
+4.2 Convergence of Model-Based PG
+We provide a convergence guarantee for a MBPG method. The guarantee applies for the restricted
+policy space, and shows that the obtained policy is not much worse than the best policy in the
+class. The error depends on the number of PG iterations, the error in the PG computation, and
+some properties of the MDP and the sampling distributions. One factor that determines the PG
+error is the error in the model ^P. Another factor is the error in the critic ^Q. We rst consider the
+case when there is no error in the critic (Section 4.3). We then let the critic have some errors too
+and analyze its eect (Section 4.4). Our focus here is the analysis of the PG as an optimization
+procedure. Even though we consider model and critic errors, we do not relate those errors to the
+number of interactions with the environment, the capacity and expressiveness of the model space
+and the value function space, i.e., the learning aspects of analyzing a complete model-based actor-
+critic algorithm. Moreover, we suppose that given the model, the PG is calculated exactly, so there
+is no error in estimation of the gradient.
+Even though our promised analysis seems somewhat restrictive, we would like to note that until
+very recently there had not been much theoretical work on the convergence of the PG algorithm,
+including the actor-critic variants, beyond proving its convergence to a local optimum (Konda
+and Tsitsiklis, 2001; Baxter and Bartlett, 2001; Marbach and Tsitsiklis, 2001; Sutton et al., 2000;
+Bhatnagar et al., 2009; Tadi c et al., 2017). Nevertheless, there has been a recent surge of interest
+in providing global convergence guarantees for PG methods and variants (Agarwal et al., 2019;
+13
+
+==== Page 14 ====
+(a)(b)(c)(d)(i)(ii)(iii)(iv)(a) Visualization of minimizing models for PAML and MLE. Pis a Gaussian mixture model and the learned
+model is a single Gaussian. The loss minimized by PAML for this simple case is: jP
+x(P ^P)(x)f(x)j2.
+1 2 3 4 5
+Standard deviation2
+0246810MeanLog of Normalized LPAML
+1 2 3 4 5
+Standard deviation2
+0246810MeanLog of Normalized KL divergence
+12.0
+ 10.5
+ 9.0
+ 7.5
+ 6.0
+ 4.5
+ 3.0
+ 1.5
+ 0.0 9.0
+ 7.5
+ 6.0
+ 4.5
+ 3.0
+ 1.5
+ 0.0
+(b) Contours of the two loss surfaces for case (c) above, demonstrating the locations of the minimizers for
+each. Note that the losses were log-normalized for better visual contrast in this gure.
+Figure 1: Visualization of minimizers of PAML and KL for tting a simple distribution.
+Bhandari and Russo, 2019; Liu et al., 2019; Wang et al., 2019a; Shani et al., 2020; Xu et al., 2020).
+This section is based on the recent work by Agarwal et al. (2019), who have provided convergence
+results for several variations of the PG method. Their result is for a model-free setting, where the
+gradients are computed according to the true dynamics Pof the policy. We modify their result to
+show the convergence of MBPG. In addition to this dierence, we introduce a new notion of policy
+approximation error, which is perhaps a better characterization of the approximation error of the
+policy space. We also explicitly consider the critic error in Section 4.4.
+Instead of extending Agarwal et al.'s result to be suitable for the model-based setting, we provide
+a slightly, but crucially, dierent result for the convergence of a PG algorithm. In particular, we
+consider the same setting as in Section 6.2 (Projected Policy Gradient for Constrained Policy
+Classes) of Agarwal et al. (2019) and prove a result similar to their Theorem 6.11. We briey
+mention that the main dierence with their result is that our new notation of policy approximation
+error , to be dened shortly, considers 1)how well one can approximate the best policy in the policy
+class , instead of how well one can approximate the greedy policy w.r.t. the action-value function
+14
+
+==== Page 15 ====
+of the current policy, in their result, and 2)the interaction of the value function and the policy,
+as opposed to the error in only approximating the policy in their result. We explain this in more
+detail after we describe all the relevant quantities. This result, in turn, can be used to prove a
+convergence guarantee, as in their Corollary 6.14. Before continuing, we mention that we liberally
+use the groundwork provided by Agarwal et al. (2019).
+We analyze a projected PG with the assumption that the PGs are computed exactly. We
+consider a setup where the performance is evaluated according to a distribution 2M(X), but
+the PG is computed according to a possibly dierent distribution 2M(X). To be concrete, let
+us consider a policy space  = f:2gwith  being a convex subset of RdandProjbe the
+projection operator onto . Consider the projected policy gradient procedure
+t+1 Proj[t+rJ(t)];
+with a learning rate >0, to be specied.
+A policyis called"-stationary if for all +2 and with the constraint that kk21, we
+have
+>rJ()": (22)
+Let us denote the best policy in the policy class  according to the initial distribution by (or
+simply , if it is clear from the context), i.e.,
+ argmax
+2J(): (23)
+We dene a function called Policy Approximation Error (PAE) . Given a policy parameter and
+w2Rd, and for a probability distribution 2M(X), it is dened as
+LPAE(;w;),EX"X
+a2A 
+(ajX) (ajX) w>r(ajX)
+Q(X;a)#
+:
+This can be roughly interpreted as the error in approximating the improvement in the value from
+the current policy to the best policy in the class,  , i.e.,P
+a2A((ajX) (ajX))Q(X;a), by
+a linear modelP
+a2Aw>r(ajX)Q(X;a) =w>EA(jX)[rlog(ajX)Q(X;a)].
+For any2, we can dene the best w() =w(;) that minimizes LPAE(;w;) as
+w(;) argmin
+w+2LPAE(;w;): (24)
+We useLPAE(;) to represent LPAE(;w();). We may drop the distribution whenever it is
+clear from the context.
+The following result relates the performance loss of a policy compared to the best policy in the
+class (i.e.,J() J()) to its"-stationarity, the policy approximation error, and some other
+quantities. As we shall see, one can show the "-stationarity of projected PG using tools from
+the optimization literature (e.g., Theorem 10.15 of Beck 2017, quoted with slight modication as
+Lemma 11 in Appendix A.1), hence providing a performance guarantee.
+Theorem 3. Consider any initial distributions ;2M(X)and a policy with2, a convex
+set. Suppose that is an"-stationary w.r.t. distribution (22). Let be dened as (23) and
+w(;
+)as(24). Assume that 
+is absolutely continuous w.r.t. , and 0 <1. We then have
+J() J()1
+1 
+LPAE(;
+) +d
+
+d
+1(1_w(;
+))"
+:
+15
+
+==== Page 16 ====
+Proof. By the performance dierence lemma (Lemma 6.1 of Kakade and Langford (2002) or Lemma
+3.2 of Agarwal et al. 2019) for any policy and the best policy in class  = , we have that
+J() J() =1
+1 EX"X
+a2A(ajX)A(X;a)#
+(a)=1
+1 EX"X
+a2A((ajX) (ajX))A(X;a)#
+=1
+1 EX"X
+a2A((ajX) (ajX)) (Q(X;a) V(X))#
+(b)=1
+1 EX
+"X
+a2A((ajX) (ajX))Q(X;a)#
+;
+where (a) is becauseP
+a(ajx)A(x;a) =P
+a(ajx)(Q(x;a) V(x)) = 0 by the denition
+of the state-value function, and (b) is becauseP
+a((ajx) (ajx))V(x) =V(x)P
+a(ajx) 
+(ajx) =V(x)(1 1) = 0.
+Letw2Rdbe an arbitrary vector. By adding and subtracting the scalar w>rQ(X;a),
+we obtain
+J() J() =1
+1 EX"X
+a2A 
+(ajX) (ajX) w>r
+Q(X;a)#
++
+1
+1 EX"X
+a2Aw>r(ajX)Q(X;a)#
+1
+1 LPAE(;w;
+) +w>1
+1 EX"X
+a2A(ajX)rlog(ajX)Q(X;a)#
+:
+We make two observations. The rst is that as this inequality holds for any w, it holds for w()
+too, so we can substitute LPAE(;w;
+) withLPAE(;
+) =LPAE(;w();
+). The second is that
+the expectation EXP
+a2A(ajX)rlog(ajX)Q(X;a)
+is of the same general form of a
+policy gradientrJ(), with the dierence that the state distribution is w.r.t. the discounted
+future-state distribution of starting from and following the best policy in class  , as opposed to
+the discounted future-state distribution of starting from and following policy , cf. (11). We
+use a change of measure argument, similar to (16), to convert the expectation to the desired form.
+Based on these two observations, we obtain
+J() J()1
+1 LPAE(;
+) +d
+
+d
+1w()>rJ(): (25)
+We would like to use the "-stationary of the policy in order to upper bound the right-hand side
+(RHS). Dene =w()
+1_kw()k. It is clear that kk1. As both and+w() belong to the set
+ and  is convex, the line segment connecting them is within  too. The point +is on that
+line segment, so it is within . By the "-stationarity, we obtain that
+w()rJ() = (1_kw()k)>rJ()(1_kw()k)":
+16
+
+==== Page 17 ====
+We plug-in this result in (25) to get
+J() J()1
+1 LPAE(;
+) +d
+
+d
+1(1_kw()k)"
+1
+1 
+LPAE(;
+) +d
+
+d
+1(1_kw()k)"
+:
+The second inequality is because of the property of the Radon-Nikodym derivative that states that
+if
+, we have
+d
+
+d=d
+
+dd
+d;
+and the fact that kd
+dk11
+1 . To see the truth of the latter claim, consider any measurable set
+X0X and any policy . The probability of X0according to 
+is greater or equal to (1  ) times
+of its probability according to , that is,
+(X0) = (1 )[(X0)+(P)(X0)+((P)2(X0)+]
+(1 )(X0).
+To verify the conditions 
+, notice that the condition 
+is satised by
+assumption; the condition is satised as we just show that 
+(X0)(1 )(X0) for any
+policy; and if 
+is satised, 
+is satised too.
+This result is similar to Theorem 6.11 of Agarwal et al. (2019) with one small, but perhaps impor-
+tant dierence. The dierence is in the policy approximation error term. Instead of LPAE(;w;),
+they have a term called Bellman Policy Error , which is dened as
+LBPE(;w;),EX"X
+a2Aargmax
+a2AQ(X;a) (ajX) w>r(ajX)#
+:
+The minimizer of this function over w, that isLBPE(;
+) = minw+2LBPE(;w;
+), appears
+instead ofLPAE(;
+) in the upper bound of Theorem 3. The Bellman Policy Error measures the
+error in approximating the 1-step greedy policy improvement relative to a policy in the class.
+Both BPE and PAE are equal to zero for a nite state and action space with a direct parametriza-
+tion of the policy, i.e., (ajx) =x;afor2RXAwith appropriate constraints on to make
+(jx) a valid probability distribution. So both denitions pass the sanity check that they are not
+showing a non-zero value for policy approximation error when it should be zero (for a particular
+class of MDPs). To see this concretely, note that for the direct parametrization,@(ajx)
+@x0;a0= 1 when
+(x;a) = (x0;a0), and 0 otherwise. So if we choose w
+BPE(x;a) = argmaxa02AQ(x;a) (ajx),
+the BPE loss LBPE(;w
+BPE;) = 0 (Section 6.2 of Agarwal et al. (2019)). Likewise, if we choose
+w
+PAE(x;a) = (ajx) (ajx), we get that the PAE loss LPAE(;w
+PAE;) = 0.
+It is curious to know which of LBPEandLPAEis a better characterizer of the policy approxi-
+mation error. We do not have a denite answer to this question so far, as the properties of neither
+of them are well-understood yet, but we make two observations that show that LPAE is better
+(smaller) at least in some circumstances.
+The rst observation is that LBPEignores the value function Qand its interaction with the
+policy error, whereas LPAEdoes not. As an example, if the reward function is constant everywhere,
+the action-value function Qfor any policy would be constant too. In this case, LPAE(;) is zero
+(simply choose w= 0 as the minimizer), but LBPEmay not be.
+17
+
+==== Page 18 ====
+Weighting the error in policies with a value function is reminiscent of the loss function appearing
+in some classication-based approximate policy iteration methods such as the work by Lazaric et al.
+(2010); Farahmand et al. (2015); Lazaric et al. (2016) (and dierent from the original formulation
+by Lagoudakis and Parr (2003b) and more recent instantiation by Silver et al. (2017a) whose policy
+loss does not incorporate the value functions), Policy Search by Dynamic Programming (Bagnell
+et al., 2004), and Conservative Policy Iteration (Kakade and Langford, 2002).
+The other observation is that if the policy is parameterized such that there is only one policy in
+the policy class  = f:2g(but still  is a subset of Rd, so we can dene PG), any policy
+2 is the same as the best policy  , i.e.,= . In that case,
+LPAE(;0;) =EX"X
+a2A 
+(ajX) (ajX) 0>r(ajX)
+Q(X;a)#
+= 0:
+On the other hand, it may not be possible to make
+LBPE(;w;) =EX"X
+a2Aargmax
+a2AQ(X;a) (ajX) w>r(ajX)#
+equal to zero for any choice of w, as it requires the policy space to approximate the greedy policy,
+which is possibly outside the policy space. We leave further study of these two policy approximation
+errors to a future work.
+To provide a convergence rate, we require some extra assumptions on the smoothness of the
+policy.
+Assumption A1 (Assumption 6.12 of Agarwal et al. (2019)) Assume that there exist nite
+constants1;20 such that for all 1;22, and for all ( x;a)2XA , we have
+j1(ajx) 2(ajx)j1k1 2k2;
+kr1(ajx) r1(ajx)k22k1 2k2:
+As an example, this assumption holds for the exponential family (19) with bounded features
+k(ajx)k2B. In that case, 1= 2Band2= 6B2(Lemma 13 in Appendix A.2).
+Agarwal et al. (2019) assume that the reward function is in [0 ;1]. Here we consider the reward to
+beRmax-bounded, which leads to having the value function being Qmax-bounded with Qmax=Rmax
+1 .
+Some results should be slightly modied (particularly, Lemma E.2 and E.5 of that paper). We
+report the modications in Appendix A.2. Here we just mention that the dierence is that the
+upper bounds in those result should be multiplied by (1  )Qmax.
+4.3 Exact Critic
+We are ready to analyze the convergence behaviour of a model-based PG algorithm with exact
+critic. We consider a projected PG algorithm that uses the model ^Pkto compute the gradient,
+i.e.,
+t+1 Projh
+t+r^J(k)i
+; (26)
+with a learning rate >0 to be specied. The following theorem is the main result of this section.
+18
+
+==== Page 19 ====
+Theorem 4. Consider any initial distributions ;2M(X)and a policy space parameterized by
+2with being a convex subset of Rd. Assume that all policies 2satisfy Assumption A1.
+Furthermore, suppose that the value function is bounded by Qmax, the MDP has a nite number of
+actionsjAj, and 0 <1. Let
+=Qmax"
+22
+1jAj2
+(1 )2+2jAj
+1 #
+: (27)
+LetTbe an integer number. Starting from a 02, consider the sequence of policies 1;:::;T
+generated by the projected model-based PG algorithm (26) with step-size =1
+. LetW= sup2w(;
+)
+2,
+and assume that W <1. Assume that for any policy 2f0;:::;T 1g, there exist constants
+"PAE and"model such that
+LPAE(;
+)"PAE; (policy approximation error)rJ() r^J()
+2"model: (model error)
+We then have
+EtUnif(1;:::;T )[J() J(t)]1
+1 "
+"PAE+d
+
+d
+1(1_W) 
+4r
+Qmax
+T+"model!#
+:
+Proof. By Lemma 8 in Appendix A.2, Vis-smooth for all states xwithspecied in (27).
+Hence ^J() is also-smooth.
+Let the gradient mapping for be dened as
+G() =1
+
+Projh
++r^Ji
+ 
+:
+For a projected gradient ascent on a -smooth function over a convex set with a step-size of =1
+,
+Lemma 11, which is a slight modication of Theorem 10.15 of Beck (2017), shows that
+EtUnif(0;:::;T 1)[kG(t)k2]vuut2
+max2^J() ^J(0)
+Tr
+4Qmax
+T: (28)
+By Proposition 9 in Appendix A.2 (originally Proposition D.1 of Agarwal et al. 2019), if we let
+0=+G, we have that
+max
++2;kk21>r^J(0)(+ 1)kG()k2:
+This upper bound along (28) and +1 = 2 show that the sequence 0;1;:::;Tgenerated by (26)
+satises
+1
+TTX
+t=1max
+t+2;kk21>r^J(t)(+ 1)1
+TT 1X
+t=0kG(t)k24r
+Qmax
+T: (29)
+19
+
+==== Page 20 ====
+Note that this is a guarantee on >r^J(t), the inner product of a direction with the PG
+according to ^Pt, and not on >rJ(t), which has the PG according to Ptand is what we
+need in order to compare the performance. We can relate them, however. For any , including
+0;1;:::;T, we have
+max
+kk21>rJ()= max
+kk21>
+rJ() r^J() +r^J()
+max
+kk21>r^J()+ max
+kk21>
+rJ() r^J()
+= max
+kk21>r^J()+rJ() r^J()
+2: (30)
+This inequality together with (29) and the assumption on the model error provide an upper
+bound on the average of "-stationarities:
+1
+TTX
+t=1max
+kk21>rJ(t)"model + 4r
+Qmax
+T(31)
+We can now evoke Theorem 3 for each tand take a summation over both sides of the inequality.
+Suppose that tis"t-stationary, i.e., >rJ(t)"tfor any valid (cf. (22)). Also recall that
+W= sup2w(;
+)
+2. So we get
+1
+TTX
+t=1J() J(t)1
+1 1
+TTX
+t=1
+LPAE(t;
+) +d
+
+d
+1(1_w(t;
+))"t
+1
+1 "
+"PAE+d
+
+d
+1(1_W)1
+TTX
+t=1"t#
+;
+1
+1 "
+"PAE+d
+
+d
+1(1_W) 
+4r
+Qmax
+T+"model!#
+;
+where we used (31) in the last inequality. This is the desired result.
+This result shows the eect of the policy approximation error "PAE, the model error "model , and
+the number of iterations T. We observe that the error due to optimization decreases as O(1p
+T).
+The policy approximation error is similar to the function approximation term (or bias) in su-
+pervised learning, and depends on how expressive the policy space is. This term may not go to
+zero, which means that the projected PG method may not nd the best policy in the class, even if
+T!1 . This means that the convergence would not be to the global optimum within the policy
+class. What we know about the properties of Policy Approximation Error of this work or Bellman
+Policy Error of Agarwal et al. (2019) are rather limited at the moment, and studying them is an in-
+teresting future research direction. What we know so far, however, is that for nite state and action
+spaces with direct parameterization of the policy, both PAE and BPE are zero, as expected. This
+is discussed after Theorem 3. We also know that there are certain situations where PAE is zero,
+but PBE is not, suggesting that PAE might be a better way to quantify the policy approximation
+error.2
+2Though it might be possible to nd examples where PBE is zero, but PAE is not; we are not aware of such an
+example.
+20
+
+==== Page 21 ====
+As mentioned after Theorem 3, The model error "model captures how well one can replace the
+PG computed according to the true dynamics Pwith the learned dynamics ^P, i.e.,
+rJ() r^J()
+2"model:
+This is the error in the PG estimation between following the true model and the estimated model. If
+this error is small, the eect of using the model on the policies obtained from this MBPG procedure
+is small too. This norm is exactly what PAML tries to minimize (through its empirical version).
+Similar to the discussion after Theorem 2, this suggests that PAML's objective is more relevant for
+having a good MBPG method than a conventional model learning method that is based on MLE
+or similar criteria. The magnitude of this error depends on how expressive the model class is, the
+number of samples used in minimizing the loss, etc.
+The distribution mismatch between the discounted future-state distribution of following  with
+an initial state distribution of and the initial distribution , used for the computation of PG
+shows itself in the Radon-Nikodym derivative kd
+
+dk1.
+This result can be compared to Corollary 6.14 of Agarwal et al. (2019), whose proof we followed
+closely. There are several dierences that are noteworthy. The major dierence is that this result
+provides a guarantee for MBPG, whereas Agarwal et al.'s result is for model-free PG. The other
+dierence is that we have the policy approximation error "PAE, instead of the Bellman Policy Error
+of Agarwal et al. (2019). This is due to using Theorem 3, which we already have discussed. The other
+dierence is that the guarantee of this theorem is for the average over iterations of the performance
+lossEtUnif(1;:::;T )[J() J(t)] instead of the minimum over iterations of the performance loss
+mint<TJ() J(t), as in Agarwal et al. (2019). This is a minor dierence, and the current
+result holds for the minimum over tas well.
+We use this theorem along Theorem 2 on PG error estimate in order to provide the following
+convergence rate for the class of exponentially parameterized policies.
+Corollary 5. Consider any distributions ;;2M(X). Let the policy be in the exponential
+family (19) with2andbeing a convex subset of Rd. Assume that B= supx;a2XAk(ajx)k2<
+1. Suppose that the value function is bounded by Qmax, the MDP has a nite number of actions
+jAj, and1
+2 < 1. Let=B2Qmaxh
+8jAj2
+(1 )2+6jAj
+1 i
+. LetTbe an integer number. Starting
+from a02, consider the sequence of policies 1;:::;Tgenerated by the projected model-
+based PG algorithm (26) with step-size =1
+. LetW= sup2w(;
+)
+2, and assume that
+W <1. Assume that for any policy 2f0;:::;T 1g, there exists constant "PAE such that
+LPAE(;
+)"PAE. We then have
+EtUnif(1;:::;T )[J() J(t)]
+1
+1 "
+"PAE+BQmax
+1 cPG(;; )(1_W) 
+4jAjr
+14
+T+
+1 emodel!#
+:
+with
+emodel =(
+sup2cPG(;;)kPk1;1();
+2 sup2kPk1;1:
+Proof. For the exponential family policy parameterization (19), Lemma 13 shows that Assump-
+tion A1 is satised with the choice of 1= 2Band2= 6B2. We may now apply Theorem 4. To
+21
+
+==== Page 22 ====
+provide an upper bound for "model in that theorem, we apply Theorem 2. After some simplications
+applicable for 1=2, we obtain the desired result.
+Notice that the choice of 1=2 is only to simply the upper bound, and a similar result holds
+for any2[0;1).
+This result relates the performance of the best policy obtained as a result of Titerations of
+the PG algorithm to the number of iterations T, the distribution mismatch between cPG(;; ),
+some quantities related to the MDP and policy space, and in particular to the model error emodel .
+The model error is expressed in terms of the TV error kPk1;1, and not in terms of PAML-like
+objective, as in Theorem 4. This result shows how a conventional model learning approach, which
+can provide a guarantee on the TV error (or the KL-divergence), leads to a reasonable MBPG
+method. As discussed after Theorem 2, however, TV and KLmight provide loose upper bounds.
+4.4 Inexact Critic
+We now focus on the case that the true value function Qis unknown, and instead we have a critic
+^QQ. Rather than analyze the problem of how accurate we can estimate the critic given a
+number of samples, we only suppose that we have an upper bound on the error of the critic and
+analyze the eect of this error on the performance of the resulting policy. We assume that
+^Q Q
+2(^;)"critic:
+where the norm is dened as (13), and ^ 
+=(;^P) is the discounted future-state probability of
+following model ^P(cf. (3)). We also need to assume that ^QisQmax-bounded, which is easy to
+enforce by truncating the output of any estimator at the known threshold of Qmax.
+To make our discussion more clear, we introduce a new notation. For a transition probability
+kernelPand a value function estimate ^Q, we dene
+rJ(;P;^Q) =1
+1 EX(:;P)h
+EA(:jX)h
+rlog(AjX)^Q(X;A)ii
+: (32)
+This is the PG computed when the distribution is generated according to Pand the critic is
+^Q. Other combinations such as rJ(;^P;^Q) andrJ(;P;Q) follow the similar
+denition.
+We need to make another assumption about the critic.
+Assumption A2 The critic ^Qis such that for any 1;22 and for any x2X, there exists a
+constantL0 such that
+^Q1(x;) ^Q2(x;)
+2Lk1 2k2:
+This is an assumption on how much the critic changes as the policy changes. We require a
+Lipschitzness as a function of the policy parameter . The intuition of why we need this assumption
+is that if the critic changes too much as we change the policy, the performance according to this
+critic would not be smooth enough, hence making the optimization dicult. We did not require this
+assumption in the exact critic case in Section 4.3, because the exact value function Qis smooth,
+under the smoothness assumption on the policy space (Assumption A1), as stated in Lemma 8 in
+Appendix A.1.
+22
+
+==== Page 23 ====
+We consider a projected PG that uses the model ^Pt, similar to (26) of Section 4.3, but with
+a value function ^Qtthat might have some errors, i.e.,
+t+1 Projh
+t+rJ(t;^Pt;^Qt)i
+; (33)
+with a learning rate  > 0, to be specied. We particularly focus on the exponential policy
+parameterization (19) for nite action jAj<1, as opposed to the general policy class of Theorem 4.
+This is mainly to simplify some derivations, and potentially can be relaxed. The following theorem
+is the main result of this section.
+Theorem 6. Consider any initial distributions ;2M(X). Let the policy space consists of
+policiesin the exponential family (19) with2andbeing a convex subset of Rd. We
+assume that B= supx;a2XAk(ajx)k2<1, the MDP has a nite number of actions jAj, and
+the discount factor 0 <1. Furthermore, suppose that the critic satises Assumption A2 and is
+Qmax-bounded. Let
+=B
+1 p
+2jAjL+BQ max
+1 
+: (34)
+LetTbe an integer number. Starting from a 02, consider the sequence of policies 1;:::;T
+generated by the projected model-based PG algorithm (33) with step-size =1
+. LetW= sup2w(;
+)
+2,
+and assume that W <1. Assume that for any policy 2f0;:::;T 1g, there exist constants
+"PAE,"model , and"critic such that
+LPAE(;
+)"PAE; (policy approximation error)rJ(;P;^Q) rJ(;^P;^Q)
+2"model; (model error)
+Q ^Q
+2(;)"critic: (critic error)
+We then have
+EtUnif(1;:::;T )[J() J(t)]1
+1 "
+"PAE+d
+
+d
+1(1_W) 
+4r
+Qmax
+T+B"critic
+1 +"model!#
+:
+Proof. By Proposition 14 in Appendix A.2, the performance according to ^Pand with an inexact
+critic ^Q, that isJ(;^P;^Q), is-smooth w.r.t. . Let the gradient mapping for be dened
+as
+G() =1
+
+Projh
++rJ(;^P;^Q)i
+ 
+:
+For a projected gradient ascent on a -smooth function over a convex set with a step-size of =1
+,
+Lemma 11, which is a slight modication of Theorem 10.15 of Beck (2017), shows that
+EtUnif(0;:::;T 1)[kG(t)k2]vuut2
+max2J(;^P;^Q) J(0;^P;^Q)
+Tr
+4Qmax
+T:
+(35)
+23
+
+==== Page 24 ====
+By Proposition 9 in Appendix A.2 (originally Proposition D.1 of Agarwal et al. 2019), if we let
+0=+G, we have that
+max
++2;kk21>rJ(0;^P0;^Q0)(+ 1)kG()k2:
+This upper bound along (35) and +1 = 2 show that the sequence 0;1;:::;Tgenerated by (33)
+satises
+1
+TTX
+t=1max
+t+2;kk21>rJ(t;^Pt;^Qt)(+ 1)1
+TT 1X
+t=0kG(t)k24r
+Qmax
+T:(36)
+Note that this is a guarantee on >rJ(t;^Pt;^Qt), the inner product of a direction with
+the PG according to the model ^Ptand the inexact critic ^Qt, and not on >rJ(t;Pt;Qt),
+which has the PG according to Ptand the exact critic Qt. The latter is what we need in order
+to compare the performance. We can relate them, however, using a series of inequalities. For any
+, including 0;1;:::;T, we have
+max
+kk21>rJ(;P;Q)= max
+kk21>h
+rJ(;^P;^Q)+
+
+rJ(;P;Q) rJ(;P;^Q)
++
+
+rJ(;P;^Q) rJ(;^P;^Q)i
+max
+kk21>rJ(;^P;^Q)+
+max
+kk21>
+rJ(;P;Q) rJ(;P;^Q)+
+max
+kk21>
+rJ(;P;^Q) rJ(;^P;^Q)
+= max
+kk21>rJ(;^P;^Q)+
+rJ(;P;Q) rJ(;P;^Q)
+2+
+rJ(;P;^Q) rJ(;^P;^Q)
+2: (37)
+These terms represent error due to the optimization process (max kk21j>rJ(;^P;^Q)j),
+error due to having an inexact critic ( krJ(;P;Q) rJ(;P;^Q)k2), and model error
+(krJ(;P;^Q) rJ(;^P;^Q)k2). We provide an upper bound for each of them.
+The model error is upper bounded by assumption:
+rJ(;P;^Q) rJ(;^P;^Q)
+2"model: (38)
+24
+
+==== Page 25 ====
+The error due to the inexact critic can be upper bounded after an application of the Cauchy-
+Schwarz inequality, using Lemma 12, and our assumption on the critic error as follows
+rJ(;P;Q) rJ(;P;^Q)
+2
+=1
+1 EX(:;P)h
+EA(:jX)h
+rlog(AjX)
+Q(X;A) ^Q(X;A)ii
+2
+1
+1 EX(:;P)h
+EA(:jX)hrlog(AjX)
+Q(X;A) ^Q(X;A)
+2ii
+1
+1 r
+EX(:;P)h
+EA(:jX)h
+krlog(AjX)k2
+2ii
+
+s
+EX(:;P)
+EA(:jX)Q(X;A) ^Q(X;A)2
+B
+1 Q ^Q
+2(;)B
+1 "critic: (39)
+Plugging the upper bounds (36), (38), and (39) in (37) show that
+1
+TTX
+t=1max
+kk21>rJ(t;Pt;Qt)"model + 4r
+Qmax
+T+B
+1 "critic: (40)
+We can now evoke Theorem 3 for each tand take a summation over both sides of the inequality.
+Suppose that tis"t-stationary, i.e., >rJ(t;Pt;Qt)"tfor any valid , see (22). Also
+recall thatW= sup2w(;
+)
+2. So we have
+1
+TTX
+t=1J() J(t)1
+1 1
+TTX
+t=1
+LPAE(t;
+) +d
+
+d
+1(1_w(t;
+))"t
+1
+1 "
+"PAE+d
+
+d
+1(1_W)1
+TTX
+t=1"t#
+;
+1
+1 "
+"PAE+d
+
+d
+1(1_W) 
+4r
+Qmax
+T+"model +B
+1 "critic!#
+;
+where we used (40) in the last inequality. This is the desired result.
+4.5 Eect of Policy Change on the Loss Function
+Recall from Section 3 that since the loss function c(P;^P) (8) is dened for a particular policy
+, model ^Pshould be updated based on the most recent , because the policy gradually
+changes during the run of a PG algorithm. An important practical question is how quickly the
+model expires after a policy update. Should the model be updated very frequently, or can we
+update it only occasionally? We empirically study this question in Section 5 (see Figure 4). In this
+section, we theoretically study this question in some detail.
+25
+
+==== Page 26 ====
+Suppose that we start from policy a , learn a model ^Pthat minimizes the PAML's loss,
+and then update the policy to 0. We would like to know whether we might use the distribution
+induced by following ^Pin order to compute the PG w.r.t. the new policy 0.
+Let us introduce a new notation. Given two policies 1and2, we dene the PG of starting
+from initial state distribution , followingP1and evaluating the pointwise gradient
+EA2[rlog2(Ajx)Q2(x;A)] by
+rJ(2;P1) =X
+k0kZ
+d(x)Z
+P1(dx0jx;k)X
+a02A@2(a0jx0)
+@Q2(x0;a0)
+=1
+1 Z
+(dx;P1)X
+a2A(ajx)@log2(ajx)
+@Q2(x;a): (41)
+Note that the PG of w.r.t. the true model PisrJ() =rJ(;P) (see (5)) and the
+PG w.r.t. the learned model ^Pisr^J() =rJ(;^P). For both of these, the policy of the
+model and the policy of the integrand of the PG are the same.
+On the other hand, the PG of 0using the model learned at , that is ^P, isrJ(0;P).
+We would like to know how dierent rJ(0;P) is compared to the true PG of 0, which is
+rJ(0) =rJ(0;P0). If the dierence is small, it entails that the model is still valid.
+Before stating the result, recall that ^Pis the minimizer of the empirical version of the loss
+function (8). Depending on how close we get to the minimizer, which is a function of the number
+of samples, the expressivity of the model space, the optimizer, etc., we might have some error. We
+assume that the error is "model , i.e.,
+rJ(;P) rJ(;^P)
+2"model: (42)
+We are ready to state the main result of this section.
+Proposition 7 (Loss Change) .Consider a policy with the policy parameterization (19). As-
+sume thatB= sup(x;a)2XAk(ajx)k2<1, the action space is nite with jAjelements, and the
+action-value functions are all Qmax-bounded. Moreover, assume that the model error is bounded by
+"model (42). We then have
+rJ(0;P0) rJ(0;^P)
+2"model +c1k 0k2;
+with
+c1=QmaxB2jAj
+1 
+12 +4(1 + 2jAj)
+1 
+:
+Proof. Consider two policies and0. We have
+rJ(0;P0) rJ(0;^P)
+2krJ(0;P0) rJ(;P)k2+
+rJ(;P) rJ(;^P)
+2+
+rJ(;^P) rJ(0;^P)
+2:
+We consider each term in the RHS separately, and provide an upper bound for them.
+26
+
+==== Page 27 ====
+The termkrJ(0;P0) rJ(;P)k2is the change in the true PG from to0. It can
+be written as
+kEX[rV0(X) rV(X)]k2:
+By Lemma 8, for any policy that satises Assumption A1, we have that
+krV0(x) rV(x)k2k0 k2;
+with=Qmaxh
+22
+1jAj2
+(1 )2+2jAj
+1 i
+. Lemma 13 shows that for the exponential family, 1= 2Band
+2= 6B2. Therefore,
+krJ(0;P0) rJ(;P)k2QmaxB2 
+8jAj2
+(1 )2+6jAj
+1 !
+k0 k2: (43)
+The termkrJ(;P) rJ(;^P)k2is the model error at and is upper bounded by
+"model by assumption.
+To provide an upper bound for krJ(;^P) rJ(0;^P)k2, let us rst denote
+f(x;) =EA[rlog(Ajx)Q(x;A)]:
+We then have
+rJ(;^P) rJ(0;^P)
+2=1
+1 Z
+(dx;^P) (f(x;) f(x;0))
+2
+1
+1 Z
+(dx;^P)kf(x;) f(x;0)k2: (44)
+Lemma 10 shows that
+kf(x;) f(x;0)k2sup
+krf(x;)k2k 0k2: (45)
+Note thatrf(x;) is a matrix. To compute rf(x;), we rst note that f(x;) =P
+a2A(a)rlog(ajx)Q(x;a) =P
+a2Ar(ajx)Q(x;a). Therefore,
+rf(x;) =rX
+a2Ar(ajx)Q(x;a)
+=X
+a2A@2(ajx)
+@2Q(x;a) +r(ajx)rQ(x;a): (46)
+We need to upper bound the norm of each of these terms.
+Lemma 13 shows that
+krk22B; (47)
+@2(ajx)
+@
+26B2; (48)
+27
+
+==== Page 28 ====
+in which the matrix norm is the `2-induced norm.
+We use an argument similar to the proof of PG theorem (Theorem 1 by Sutton et al. 2000) to
+get
+rQ(x;a) =@
+@
+r(x;a) +Z
+P(dyjx;a)V(y)
+=Z
+P(dyjx;a)@V(y)
+@
+=Z
+P(dyjx;a)ZX
+k0kP(dzjy;k)f(z;);
+where we recursively expanded@V(y)
+@. Therefore,
+krQ(x;a)k2
+1 sup
+x2Xkf(x;)k2:
+For the exponential family, we get
+kf(x;)k2=X
+a2Ar(ajx)Q(x;a)da
+=X
+a2A(ajx) 
+(ajx) E(jx)[(Ajx)]
+Q(x;a)
+22BQmax:
+As a result,
+krQ(x;a)k22BQ max
+1 : (49)
+After plug-in (48), (47), and (49) in (46), we get
+krf(x;)k2X
+a2A@2(ajx)
+@2Q(x;a)
+2+kr(ajx)rQ(x;a)k2
+X
+a2AQmax@2(ajx)
+@2
+2+kr(ajx)k2krQ(x;a)k2
+X
+a2AQmax(6B2) + (2B)2BQ max
+1 
+=QmaxB2
+6 +4
+1 
+jAj: (50)
+This result together with (44) and (45) upper bound the third term as follows:
+rJ(;^P) rJ(0;^P)
+2QmaxB2
+1 
+6 +4
+1 
+jAjk 0k2: (51)
+The upper bounds (43), (51), and the upper bound on the model error lead to
+rJ(0;P0) rJ(0;^P)
+2"model +QmaxB2jAj
+1 
+12 +4(1 + 2jAj)
+1 
+k 0k2:
+28
+
+==== Page 29 ====
+0 2 4 6 8 10
+Norm of Model Params106
+104
+102
+100L_PAMLMinimizer of KL
+Minimizer of PAML
+0 2 4 6 8 10
+Norm of Model Params102
+101
+100101KL-divergence
+0 20 40 60 80 100
+Policy updates0.81.01.21.41.61.8Policy Performance (Expected Return)KL, Norm of model params = 11.00
+KL, Norm of model params = 5.00
+KL, Norm of model params = 0.50
+PAML, Norm of model params = 11.00
+PAML, Norm of model params = 5.00
+PAML, Norm of model params = 0.50Figure 2: Results for nite 3-state MDP dened in Appendix C. (Top) Comparison of the minimizers
+of the PAML loss and the KL-divergence as a function of the maximum allowable norm of model
+parameters. The true model's parameter norm would be close to 11 :0 as measured by minimizing the
+KLwithout constraints. (Bottom) Policy performance as a function of model loss and (maximum
+allowed) norm of model parameters. Note that there is no estimation error in this setting.
+5 Empirical Studies
+We compare the performances of PAML and MLE in the framework of Algorithm 1. We rst present
+an illustration of PAML and MLE for a nite-state MDP. We then discuss how the loss introduced
+in Section 3 can be formulated for two PG-based planners, namely REINFORCE (Williams, 1992)
+and DDPG (Lillicrap et al., 2015). Details for reproducing these results and additional experiments
+can be found in the Appendix .
+We illustrate the dierence between PAML and MLE on a nite 3-state MDPand 2-state MDP.
+In this setting, we can calculate exact PGs with no estimation error, and thus the exact PAML loss
+andKL-divergence. The details of the MDPs are provided in Appendix C. In these experiments,
+we use Projected Gradient Descent to update the model parameters and constrain their L2norm,
+in order to limit model capacity. In Figures 2 and 3 (Left two), we compare the PAML loss and
+KL-divergence of models trained to minimize each for a xed policy. We see that the PAML loss
+of a model trained to minimize PAML is (expectedly) much lower than that of a model trained to
+minimize KL. Note that the PAML loss of the KLminimizer decreases as the constraint on model
+parameters is relaxed, whereas the PAML minimizer is much less dependent on model capacity.
+We also evaluate the performances of policies learned using these models, in a process similar to
+Algorithm 1, but with exact values rather than sampled ones. Referring to Figures 2 (Right) and 3
+(Right) , as the norm of the model parameters becomes smaller, the performance of the KLagent
+drops much more than the PAML agent. However, when the constraint is relaxed (i.e. increased),
+theKLagent performs similarly to the PAML one. This example provides justication for the use
+of PAML: when the model space is constrained, such that it does not contain P, PAML is able to
+learn a model that is more useful for planning.
+A question that arises is how updates on the policy aect model error since PAML is policy-
+aware. The Top Figures of 4a and 4b show the change in LPAML as a result of a number of
+policy updates in an epoch (i.e. an epoch refers to each iteration kin 1), while keeping the model
+xed in that epoch. For the HalfCheetah experiments (the setup for which is described later),
+timestep refers to step taken in the environment. The Bottom Figures of 4a and 4b show the policy
+performance over the same epochs. We observe in the 3-State MDP experiments that the change in
+LPAML decreases as the policy performance improves. This is expected as the policy, and therefore
+model, converge. We also observe that for higher numbers of policy updates, the performance of
+29
+
+==== Page 30 ====
+0 1 2 3 4 5
+Norm of Model Params1012
+1010
+108
+106
+104
+102
+100L_PAMLMinimizer of KL
+Minimizer of PAML
+0 1 2 3 4 5
+Norm of Model Params103
+102
+101
+100KL-divergence
+0 50 100 150 200 250
+Policy updates0.75
+0.50
+0.25
+0.000.250.500.751.00Policy Performance (Expected Return)KL, Norm of model params = 5.00
+KL, Norm of model params = 2.50
+KL, Norm of model params = 0.10
+PAML, Norm = 5.00
+PAML, Norm = 2.50
+PAML, Norm = 0.10Figure 3: Results for nite 2-state MDP dened in Appendix C. (Top) Comparison of the minimizers
+of the PAML loss and the KL-divergence as a function of the maximum allowable norm of model
+parameters. The true model's parameter norm would be close to 5 :0 as measured by minimizing
+theKLwithout constraints. (Bottom) Policy performance as a function of model loss and norm of
+model parameters. Note that there is no estimation error in this setting.
+the PAML agent does not always show consistent improvement over the KLagent, especially at the
+beginning of training. This is also expected as the PAML model is only accurate for policies similar
+to the policy it was trained on. We observe a similar trend for the HalfCheetah experiments. We see
+that the change in LPAML for more virtual episodes is higher. This is expected as the gradients in
+this case cannot be exactly computed and so the policy is not necessarily converging to the optimal
+policy at each timestep, which can also be seen in the performance plots. Thus, the optimal number
+of policy updates should be tuned according to the dynamics. Another option is to use an objective
+closer to KLat the beginning of training and ne-tune with PAML as the policy improves. We
+leave exploration of this option to future work.
+We next test PAML on several continuous control environments. We use the REINFORCE
+algorithm (Williams, 1992) as well as the actor-critic Deep Deterministic Policy Gradient (DDPG)
+(Lillicrap et al., 2015) as the planner for models learned with PAML and MLE. We also evaluate
+the performance of the model-free method (REINFORCE or DDPG) for reference. Our goal with
+these experiments is not to show state-of-the-art results but rather to demonstrate the feasibility
+of PAML on high-dimensional problems, and show an example of how the loss in (8) could be
+formulated.
+To simulate the eect of having more dimensions in the observations than the underlying state,
+we concatenate to the state a vector of irrelevant or redundant information. For an environment
+that has underlying state xtat timet, wherext2Rd, the agent's observation is given in one of the
+following ways :
+1.Random irrelevant dimensions: (xt;)2Rd+n;whereNn(0;1)
+2.Correlated irrelevant dimensions: (xt;t)2Rd+n;wheret=t
+0and0Unif(0;1).n
+can be chosen by the user. We show results for a few cases.
+3.Linear redundant dimensions: (xt;WTxt)2R2d;whereWUnifdd(0;1)
+4.Non-linear redundant dimensions: (xt;cos(xt);sin(xt))2R3d
+5.Non-linear and linear redundant dimensions: (xt;cos(xt);sin(xt);WTxt)2R4d;where
+WUnifdd(0;1)
+In this way, the agent's observation vector is higher-dimensional than the underlying state, and it
+contains information that would not be useful for a model to learn. In the most general case, this
+30
+
+==== Page 31 ====
+0123456789101112131415161718192010−810−510−2101LPAML (πT)−LPAML (π0)3-State MDP
+01234567891011121314151617181920
+Epochs0.751.001.251.501.752.00Policy PerformanceKL model, 1 policy updates
+KL model, 10 policy updates
+KL model, 50 policy updates
+PAML model, 1 policy updates
+PAML model, 10 policy updates
+PAML model, 50 policy updates(a) (Top) The model is updated for 200 steps after
+each set of policy updates (with learning rates de-
+scribed in Appendix C.2). (Bottom) The lines for 1
+policy update (black) correspond to the plots in Fig-
+ure 2. Note that there is no source of randomness
+in these experiments.
+0 25 50 75 100 125 150 175 20010−210−1100101102103LPAML (πT)−LPAML (π0)HalfCheetah-v0
+0 25 50 75 100 125 150 175 200
+1000 Timesteps−0.50.00.51.01.52.02.53.0True Rewards×103
+PAML, 2 virtual episodes
+PAML, 10 virtual episodes
+PAML, 20 virtual episodes(b) (Top) The number of policy updates in this en-
+vironment is measured in terms of number of vir-
+tual episodes used during planning. (Bottom) The
+lines for 10 virtual episodes (black) correspond to
+the HalfCheetah plots in Figure 7. For both gures,
+the solid lines represent the mean of 5 runs and the
+shaded areas the standard error.
+Figure 4: (Top) Dierence in PAML loss after a number of policy updates for a xed model. Note
+that in this case 0would be the policy the model is trained for, and Twould be the policy
+with the most number of updates. (Bottom) The true policy performance corresponding to each
+timestep in the Top diagram.
+31
+
+==== Page 32 ====
+may be replaced by the full-pixel observations, which contain more information than is necessary
+for solving the problem. To illustrate the dierences between model learning methods, we choose to
+forgo evaluations over pixel inputs for the scope of this work. Although dierentiating between use-
+ful state variables and irrelevant variables generated by concatenating noise may be overly simplistic
+(for example, a certain set of pixels could convey both useful and unnecessary information that the
+model may not know are unnecessary), it is an approximation that can highlight the weakness of
+purely predictive model learning.
+To train the model using MLE, we minimize the squared `2distance between predicted and true
+next states for time-steps 1 tT, whereTis the length of each trajectory. The point-wise loss
+for time-step tand episode 1inwould then be
+c(Xt:t+h;^Xt:t+h;w) =1
+NNX
+i=1HX
+h=1(^X(i)
+t+h ^X(i)
+t+h 1) (X(i)
+t+h X(i)
+t+h 1)2
+2; (52)
+where ^Xare the states predicted by the model, i.e. ^Xt+1^P(jXt;At) and similarly Xare the
+states given by the true environment, P. This is a multi-step prediction loss with horizon H. Our
+model in all experiments is deterministic and directly predicts  ^X=^X(i)
+t+h ^X(i)
+t+h 1. Moreover,
+for the REINFORCE experiments, we set Hto be the length of the trajectory, and for the DDPG
+ones we set it to 1.
+Since PAML is planner-aware, the formulation of the loss changes depending on the planner
+used. To form the PAML loss compatible with REINFORCE as the planner, the model gradient is
+obtained according to case (10b). Namely, the model returns are calculated by unrolling ^P(and
+the true returns from data collected for every episode). The PG for the model is calculated on
+states from the real environment, which, since REINFORCE calculates full-episode returns, come
+only from the rst states of each episode. Thus, the model and true PG's are calculated over the
+starting state distribution , whereas the returns are calculated over ^PandPrespectively. In
+practice, we nd that calculating the `2distance between the true PG and model PG separately for
+each starting state gives better results than rst averaging the PGs over all starting states and then
+calculating the `2distances.During planning, we use the mean returns as a baseline for reducing
+the variance of the REINFORCE gradients. We evaluate this formulation of the algorithm on a
+simple LQR problem, the details of which can be found in Appendix C. The extra dimensions used
+for these experiments were random noise, dened as type 1 above.
+The results for this formulation are shown in Figure 5 for the LQR problem with trajectories of
+200 steps. The performance of agents trained with PAML, MLE, and REINFORCE (model-free)
+are shown over 200,000 steps. It can be seen that both model-based methods learn more slowly
+as irrelevant dimensions are added (the model-free method learns slowly for all cases). For no
+irrelevant dimensions, MLE learns faster than PAML. This is expected as in this case, an MLE
+model should be able to recover the underlying dynamics easily, making it a good model-learning
+strategy. However, as the number of irrelevant dimensions are increased, PAML shows better
+performance than MLE. This is encouraging as it shows that PAML is not as aected by irrelevant
+information.
+We now describe formulating PAML to use the DDPG algorithm as the planner. This algorithm
+uses a deterministic policy and explores using correlated noise (Lillicrap et al., 2015). It is possible
+to use PAML with other actor-critic algorithms and we use DDPG due to its simplicity. We leave
+experiments with other actor-critic policies to future work. In our MBRL loop, after every iteration
+of data collection from the environment, the critic is trained on true data by minimizing the mean-
+32
+
+==== Page 33 ====
+0 50 100 150 200500
+400
+300
+200
+100
+0True Rewards0 irrelevant dims
+0 50 100 150 200500
+400
+300
+200
+100
+08 irrelevant dims
+0 50 100 150 200
+1000 Timesteps500
+400
+300
+200
+100
+0True Rewards28 irrelevant dims
+PAML MLE Model-free
+0 50 100 150 200
+1000 Timesteps500
+400
+300
+200
+100
+048 irrelevant dimsFigure 5: Performance of policies trained model-based with REINFORCE as the planner for dier-
+ent numbers of irrelevant dimensions added to the state observations. The solid lines indicate the
+mean of 10 runs and the shaded regions depict the standard error.
+squared temporal dierence error, using a target critic and policy that are soft-updated as shown
+in Lillicrap et al. (2015). In contrast to the REINFORCE formulation, we calculate the `2-distance
+between the model PG and true PG averaged over all states, rather than separately for each starting
+state. In addition, for this formulation, we present experiments for no extra dimensions added to
+the observations, and also for extra dimensions of types 2, 3, 4 and 5 added.
+The results for no added dimensions are shown in Figure 7. For one of the environments we
+also show the eect of added noise dimensions in Figure 6. In general, PAML performs similarly to
+MLE in these domains. It seems that the gains that were observed in the tabular domain do not
+transfer to these domains. This could be due to several factors. For example, it is not clear how
+to limit the capacity of neural networks as we did for the experiments in Figures 2 and 3. Another
+reason could be that for the planning horizon used (1), the MLE model performs suciently well
+to hide any dierences between the models.
+6 Discussion and Future Work
+We introduced Policy-Aware Model Learning, a decision-aware MBRL framework that incorporates
+the policy in the way the model is learned. PAML encourages the model to learn about aspects
+33
+
+==== Page 34 ====
+0 20 40 60 80 100
+1000 Timesteps1500
+1000
+500
+True Rewards0  irrelevant dims
+0 20 40 60 80 100
+1000 Timesteps1500
+1000
+500
+True Rewards10 indep. irrelevant dims
+0 20 40 60 80 100
+1000 Timesteps1500
+1000
+500
+True Rewards30 indep. irrelevant dims
+0 20 40 60 80 100
+1000 Timesteps1500
+1000
+500
+True Rewards6 Nonlin. redundant irrelevant dims
+0 20 40 60 80 100
+1000 Timesteps1500
+1000
+500
+True Rewards9 Lin. & nonlin. redundant irrelevant dims
+mle
+model_free
+pamlFigure 6: Performance of policies for dierent numbers of irrelevant and redundant dimensions
+added to the state observations for the locomotion problem Pendulum-v0, the details of which can
+be found in the Appendix
+of the environment that are relevant to planning by a PG method, instead of trying to build an
+accurate predictive model. We proved a convergence guarantee for a generic model-based PG
+algorithm, and introduced a new notion of policy approximation error. We empirically evaluated
+PAML and compared it with MLE on some benchmark domains. A fruitful direction is deriving
+PAML loss for other PG methods, especially the state of the art ones.
+A Theoretical Background and Proofs
+A.1 Background Results
+We report some background results in this section. These results are quoted from elsewhere, with
+possibly minor modication, as shall be discussed.
+Lemma 8 (Lemma E.5 of Agarwal et al. 2019) .Suppose that Assumption A1 holds, the action
+space is nite with jAjelements, and the action-value functions are all Qmax=Rmax
+1 -bounded. For
+anyx2X, we then have
+krV1(x) rV2(x)k2k1 2k2;
+with
+=Qmax"
+22
+1jAj2
+(1 )2+2jAj
+1 #
+:
+The dierence of this result with the original Lemma E.5 of Agarwal et al. (2019) is that here
+we assume that the rewards are Rmax-bounded, whereas their paper is based on the assumption
+that the reward is between 0 and 1. As such, their Qmaxis1
+1 , and their is22
+1jAj2
+(1 )3+2jAj
+(1 )2.
+34
+
+==== Page 35 ====
+0 25 50 75 100 125 150 175 200
+1000 Timesteps50
+050100150200250300350Rewards from true dynamicsSwimmer
+paml model_free mle
+0 25 50 75 100 125 150 175 200
+1000 Timesteps2500
+2000
+1500
+1000
+500
+0Rewards from true dynamicsHopper
+paml model_free mle
+0 25 50 75 100 125 150 175 200
+1000 Timesteps1000
+010002000300040005000Rewards from true dynamicsHalfCheetah
+mle paml model_free
+0 25 50 75 100 125 150 175 200
+1000 Timesteps0255075100125150175Rewards from true dynamicsAnt
+paml model_free mleFigure 7: Comparison of policies trained using a model-free method (DDPG, Lillicrap et al. 2015),
+or by planning using a model learned by PAML, or MLE. Experimental details in the supplementary.
+Solid lines indicate mean of 5 runs and shaded regions the standard error.
+35
+
+==== Page 36 ====
+The change in the proof of Lemma E.5 stems from the change in Lemma E.2 of Agarwal et al.
+(2019). The upper bound in Lemma E.2 changes from
+max
+kuk2=1;+u2d2~V()
+d2
+=02C2
+1
+(1 )3+C2
+(1 )2
+toQmaxh
+2C2
+1
+(1 )2+C2
+1 i
+.
+Proposition 9 (Proposition D.1 of Agarwal et al. (2019)) .Let^J() =J(;^P;^Q)be-
+smooth in. Dene the gradient mapping as
+G() =1
+
+Projh
++r^Ji
+ 
+:
+Let0=+Gfor some>0. We have
+max
++2;kk21>r^J(0)(+ 1)kG()k2:
+The following lemma is a multivariate form of the mean value theorem. It is not a new result,
+but for the sake of completeness, we report it here.3This statement and proof is quoted from the
+extended version of Huang et al. (2015).
+Lemma 10. Letf:Rm!Rmbe a continuously dierentiable function and J:Rm!Rmmbe
+its Jacobian matrix, that is Jij=@fi(x)
+@xj. We then have for any x;x2Rm,
+kf(x+ x) f(x)k2sup
+x0kJ(x0)k2kxk2;
+kf(x+ x) f(x)k1sup
+x0kJ(x0)k1kxk1:
+Anl1andl2matrix norms in this lemma are vector-induced norms on Rm, and have the property
+that for an mmmatrixA,kAk2=max(A) andkAk1= maxjP
+ijAijj.
+Proof. Consider a continuously dierentiable function g:R!R. By the fundamental theorem
+of calculus, g(1) g(0) =R1
+0g0(t)dt. For each component fioff, denegi(u) =fi(x+ux),
+sofi(x+ x) fi(x) =gi(1) gi(0) =R1
+0g0
+i(t)dt=R1
+0hPd
+j=1@fi
+@xj(x+tx):xji
+dt:For the
+vector-valued function f, we getf(x+ x) f(x) =R1
+0J(x+tx)xdt, therefore,
+kf(x+ x) f(x)k2=Z1
+0J(x+tx)xdt
+2Z1
+0kJ(x+tx)k2kxk2dt
+sup
+x0kJ(x0)k2kxk2Z1
+0dt:
+Thel1-norm result is obtained using the l1-norm instead of the l2-norm in the last step.
+3One can nd its proof on Wikipedia page on the Mean value theorem.
+36
+
+==== Page 37 ====
+The following is a restatement of Theorem 10.15 part (c) of (Beck, 2017), with a slight mod-
+ication to allow reporting convergence results with an expectation over iterates rather than a
+min.
+Lemma 11 (Slight modication of Theorem 10.15 of Beck (2017) { Part (c)) .LetF(x)be a-
+smooth function for all x2Rd, andGthe projected gradient mapping with step-size 2(
+2;1).
+Letfxngn0be the sequence generated by the projected gradient method for minimizing F(x), whose
+optimum point is at Fopt. We then have
+EnUnif(0;1;:::;k)[kG(xn)k2]s
+F(x0) Fopt
+M(k+ 1):
+with
+M= 
+2
+2:
+Proof. By Lemma 10.14 of (Beck, 2017) we have that
+F(xn) F(xn+1)MkG(xn)k2: (53)
+We sum (53) over n= 0;1;:::;k to obtain
+F(x0) F(xk+1)MkX
+n=0kG(xn)k2M(k+ 1)EnUnif(0;1;:::;k)h
+kGd(xn)k2
+2i
+By Jensen's inequality, we have that
+EnUnif(0;1;:::;k)
+kG(xn)k2
+2
+(EnUnif(0;1;:::;k)[kG(xn)k]2)2:
+Using this and the fact that F(xk+1)Fopt;we obtain the desired result.
+A.2 Auxiliary Results
+Lemma 12 (Exponential Policy { Boundedness) .Consider the policy parametrization (19). For
+p2f2;1g, letBp= sup(x;a)2XAk(ajx)kp, and assume that Bp<1. It holds that for any
+x2X,
+Z
+kr(ajx)k2da=EA(jx)h
+krlog(Ajx)kpi
+(
+B2; p = 2
+2B1: p=1
+Proof. For the policy parameterization (19), one can show that
+rlog(ajx) =(ajx) EA(jx)[(Ajx)] =(ajx) (x);
+with (x) = (x) =EA(jx)[(Ajx)] being the expected value of the feature (Ajx) w.r.t.
+(jx).
+37
+
+==== Page 38 ====
+Let us focus on p= 2. We have
+EA(jx)(Ajx) (x)
+2
+r
+EA(jx)h(Ajx) (x)2
+2i
+=vuutEA(jx)"dX
+i=1i(Ajx) i(x)2#
+=vuutdX
+i=1VarA(jx)[i(Ajx)]
+vuutdX
+i=1EA(jx)[2
+i(Ajx)]
+=vuutEA(jx)"dX
+i=12
+i(Ajx)#
+=r
+EA(jx)h
+k(Ajx)k2
+2i
+B2:
+That is,
+EA(jx)[krlog(ajx)k2]B2: (54)
+Forp=1, we have
+EA(jx)(Ajx) (x)
+1
+EA(jx)
+k(Ajx)k1+(x)
+1
+B1+(x)
+1:
+We also have(x)
+1=EA(jx)[(Ajx)]
+1EA(jx)[k(Ajx)k1]B1. Therefore,
+EA(jx)[krlog(ajx)k1]2B1: (55)
+Lemma 13 (Exponential Policy { Smoothness) .Consider a policy with the policy parameter-
+ization (19) and a discrete action space A. Assume that B2= sup(x;a)2XAk(ajx)k2<1. For
+any2and for any (x;a)2XA , we have that
+kr(ajx)k22B2;
+@2(ajx)
+@2
+26B2
+2;
+in which the matrix norm is the `2-induced norm. For any 1;22and for any (x;a)2XA ,
+we also have
+j2(ajx) 1(ajx)j2B2k2 1k2;
+kr1(ajx) r1(ajx)k26B2
+2k2 1k2:
+38
+
+==== Page 39 ====
+Proof. We use Taylor series expansion of and the mean value theorem in order to nd the
+Lipschitz and smoothness constants. We start by computing the gradient and the Hessian of the
+policy. We can x ( x;a)2XA in the rest. For the policy
+=(ajx) =exp 
+>(ajx)
+P
+a02Aexp (>(a0jx));
+the gradient is
+@
+@=(ajx) 
+(ajx) E(jx)[(Ajx)]
+=(ajx) 
+(ajx) 
+=(ajx); (56)
+where we use =(x) =E(jx)[(Ajx)] and =(ajx) as more compact notations.
+Likewise, the Hessian Hofis
+H=@2(ajx)
+@2=@
+@>
++@>
+
+@=
+>
++@>
+
+@
+:
+We compute@>
+
+@as follows:
+@>
+
+@= @E(jx)
+(Ajx)>
+@= Z@
+@(a)>da= Z
+(ajx) 
+(ajx) 
+(a)>da
+=(x)>
+(x) E
+(Ajx)(Ajx)>
+= Cov(jx)((Ajx)):
+Therefore,
+H=
+>
++>
+ E
+(Ajx)(Ajx)>
+=
+>
+ Cov(jx)((Ajx))
+: (57)
+Consider two points 1;22. By the mean value theorem, there exists a 0on the line segment
+connecting 1and2(that is,0= (1 )1+2with2(0;1)) such that
+2(ajx) 1(ajx) =r>
+0(ajx)
+102(2 1):
+Therefore,
+j2(ajx) 1(ajx)jsup
+0kr0(ajx)k2k2 1k2:
+By (56), we have that for any 0,
+kr0(ajx)k20(ajx)(ajx) 0(x)
+20(ajx) (k(ajx)k2+E[k0(Ajx)k2])
+2B0(ajx)2B: (58)
+Here we used that 0(ajx) is a probability of an action, so its value is not larger than 1. This shows
+that
+j2(ajx) 1(ajx)j2Bk2 1k2:
+39
+
+==== Page 40 ====
+Lemma 10 in Appendix A.2, which can be thought of as the vector-valued version of the mean
+value theorem (though it is only an inequality), shows that for any 1;2, we have
+kr1(ajx) r1(ajx)k2sup
+0kH0k2k1 2k2;
+wherekH0k2is the`2-induced matrix norm. From (57), we have that for any , including 0,
+kHk2>
+
+2+>
+
+2+E
+(Ajx)(Ajx)>
+2
+(ajx)h
+kk2
+2+2
+2+Eh
+k(Ajx)k2
+2ii
+6B2; (59)
+where we used the fact that for a vector u2Rd, the`2-induced matrix norm of uu>iskuk2
+2, in
+addition to the the convexity of norm along with the Jensen inequality. This shows that
+kr1(ajx) r1(ajx)k26B2k2 1k2:
+This result shows that the exponential policy class with an `2-bounded features satises As-
+sumption A1 (Section 4.2) with 1= 2B2and2= 6B2
+2.
+We remark that the only step of this proof that we used the discreteness of the action space
+is (58). Other steps would be valid without such a requirement. When we have a continuous action
+space,(ajx) is not a probability of an action, but is its density. The density is not bounded by
+1. To extend this result for such a space, we need to upper bound the density. This extension is a
+topic of future work.
+Proposition 14. Consider any distribution 2M(X)and the space of exponential policies (19)
+parameterized by 2with a nite action space jAj<1. Assume that B= sup(x;a)2XAk(ajx)k2<
+1. Suppose that the inexact critic ^Qsatises Assumption A2 for any 2, and isQmax-bounded.
+Furthermore, assume that the discount factor 0 <1. The performance (32) is-smooth, i.e.,
+for any1;22, it satises
+rJ(1;^P1;^Q1) rJ(2;^P2;^Q2)
+2k1 2k2; (60)
+with
+=B
+1 p
+2jAjL+BQ max
+1 
+:
+Proof. Letf(x;) =P
+a2Ar(ajx)^Q(x;a) =P
+a2A(ajx)rlog(ajx)^Q(x;a). For any
+policy, we have (cf. (32))
+rJ(;^P;^Q) =1
+1 EX(;P)[f(X;)]:
+We decompose the dierence between the (1  )-scaled PGs at 1;2into two parts as
+(1 )
+rJ(1;^P1;^Q1) rJ(2;^P2;^Q2)
+=
+E(;^P1)[f(X;1) f(X;2)]
+| {z }
+,(A)+EX(;^P1)[f(X;2)] EX(;^P2)[f(X;2)]
+| {z }
+,(B)(61)
+40
+
+==== Page 41 ====
+We upper bound the `2-norm of terms (A) and (B).
+For term (A), we rst benet from the convexity of the norm to apply the Jensen's inequality,
+and then use the Cauchy-Schwarz inequality to get
+k(A)k2=Z
+(dx;^P1)X
+a2Ar1(ajx)
+^Q1(x;a) ^Q2(x;a)
+2
+ZX
+a2A(dx;^P1)kr1(ajx)k2^Q1(x;a) ^Q2(x;a)
+sZX
+a2A(dx;^P1)kr1(ajx)k2
+2sZX
+a2A(dx;^P1)^Q1(x;a) ^Q2(x;a)2
+:
+Ask(ajx)k2is bounded by Bby assumption, we can evoke Lemmas 12 and 13 to get that for
+anyx2X,
+X
+a2Akr1(ajx)k2
+2max
+a02Akr1(a0jx)k2X
+a2Akr1(ajx)k2(2B)B= 2B2:
+So the rst term is bounded byp
+2B. By theL-smoothness assumption of the inexact critic,
+sX
+a2A^Q1(x;a) ^Q2(x;a)2
+=p
+jAj^Q1(x;) ^Q2(x;)
+2Lp
+jAjk1 2k2;
+for anyx. Therefore, the second term in the RHS is bounded by Lp
+jAjk1 2k2. Therefore,
+k(A)k2p
+2jAjBLk1 2k: (62)
+Let us turn to term (B). Lemma 1 shows that
+k(B)k2
+1 kf(;2)k2;1^P1!2
+1;1; (63)
+where
+^P1!2
+1;1= sup
+x2XX
+a2A^P(jx;a) (1(ajx) 2(ajx))
+1: (64)
+We relate1(ajx) 2(ajx) to the dierence between 1and2as follows. For any x, we have
+that
+1(ajx) 2(ajx) =r0(ajx)>(2 1)
+for a0on the line segment between 1and2, i.e.,0=1+ (1 )2for a2(0;1). We use
+this inequality along with the denition of TV (12) and Lemma 12 to upper bound the term inside
+41
+
+==== Page 42 ====
+the norm of the RHS of (64) as
+X
+a2A^P(jx;a) (1(ajx) 2(ajx))
+1= sup
+kgk11ZX
+a2A^P(dyjx;a) (1(ajx) 2(ajx))g(y)
+X
+a2Aj1(ajx) 2(ajx)jsup
+kgk11Z
+^P(dyjx;a)g(y)
+=X
+a2Aj1(ajx) 2(ajx)j
+=X
+a2Ar0(ajx)>(2 1)
+k2 1k2X
+a2Akr0(ajx)k2Bk2 1k2:
+As this holds for any x2X, it shows that (64) can be upper bounded by
+^P1!2
+1;1Bk2 1k2: (65)
+To upper boundkf(;2)k2;1= supx2Xkf(x;2)k2(15), we use Lemma 12 again to get that
+kf(x;2)k2=X
+a2Ar(ajx)^Q(x;a)
+2X
+a2Ar(ajx)^Q(x;a)
+2
+QmaxX
+a2Akr(ajx)k2QmaxB: (66)
+This holds uniformly over x, so it provides an upper bound on kf(;2)k2;1too.
+Plugging (65) and (66) into (63) leads to
+k(B)k2B2Qmax
+1 k2 1k2: (67)
+This latest result along with (62) shows that we can upper bound the `2-norm of the dierence in
+PG (61) as
+rJ(1;^P1;^Q1) rJ(2;^P2;^Q2)
+2B
+1 p
+2jAjL+BQ max
+1 
+k1 2k2:
+This concludes the proof.
+B Further Detail on VAML and Comparison with PAML
+This section provides more detail on Value-Aware Model Learning (VAML) and Iterative VAML
+(IterVAML) (Farahmand et al., 2016a, 2017; Farahmand, 2018), and complements the discussion
+in Section 2. For more detail and the results on the properties of VAML and IterVAML, refer to
+the original papers.
+42
+
+==== Page 43 ====
+Recall that VAML attempts to nd ^Psuch that applying the Bellman operator T
+^Paccording
+to the model ^Pon a value function Qhas a similar eect as applying the true Bellman operator
+T
+Pon the same function, i.e.,
+T
+^PQT
+PQ:
+This ensures that one can replace the true dynamics with the model without (much) aecting the
+internal mechanism of a Bellman operator-based Planner . This goal can be realized by dening the
+loss function as follows: Assuming that V(orQ) is known, the pointwise loss between ^PandPis
+c(^P;P;V)(x;a) =D
+P(jx;a) ^P(jx;a); VE=Zh
+P(dx0jx;a) ^P(dx0jx;a)i
+V(x0);(68)
+in which we substituted max aQ(;a) in the denition of the Bellman optimality operator (2) with
+Vto simplify the presentation.
+By taking the expectation over state-action space according to the probability distribution
+2M(XA ), which can be the same distribution as the data generating one, VAML denes the
+expected loss function
+c2
+2;(^P;P;V) =Z
+d(x;a)Zh
+P(dx0jx;a) ^P(dx0jx;a)i
+V(x0)2
+: (69)
+As the value function Vis unknown, we cannot readily minimize this loss function, or its
+empirical version. Handling this unknown Vdierentiates the original formulation introduced
+by Farahmand et al. (2017) with the iterative one (Farahmand, 2018). Briey speaking, the original
+formulation of VAML considers that Planner represents the value function within a known function
+spaceF, and it then tries to nd a model that no matter what value function V2Fis selected by
+the planner, the loss function (69) is still small. This leads to a robust formulation of the loss in
+the form of
+c2
+2;(^P;P) =Z
+d(x;a) sup
+V2FZh
+P(dx0jx;a) ^P(dx0jx;a)i
+V(x0)2
+: (70)
+Even though taking the supremum over Fmakes this loss function conservative compared
+to (69), where the value function Vis assumed to be known, it is still a tighter objective to
+minimize than the KLdivergence. Consider a xed z= (x;a), and notice that we have
+sup
+V2FjhP(jx;a) ^P(jx;a);VijP
+z ^Pz
+1sup
+V2FkVk1q
+2KL(Pzjj^Pz) sup
+V2FkVk1;(71)
+where we used Pinsker's inequality in the second inequality. MLE is the minimizer of the KL-
+divergence based on the empirical distribution (i.e., data), so these upper bounds suggest that if
+we nd a good MLE (with a small KL-divergence), we also have a model that has a small total
+variation error too. This in turn implies the accuracy of the Bellman operator according to the
+learned model.
+Nonetheless, these sequences of upper bounding might be quite loose. As an extreme, but
+instructive, example, consider that the value function space consisting of bounded constant functions
+(F=fx7!c:jcj<1g). For this function space, supV2FjhP(jx;a) ^P(jx;a);Vijis always
+zero, irrespective of the the total variation and the KL-divergence of two distributions. MLE does
+43
+
+==== Page 44 ====
+not explicitly benet from these interaction of the value function and the model. For more detail
+and discussion, refer to Farahmand et al. (2017).
+The Iterative VAML (IterVAML) formulation of Farahmand (2018) exploits some extra knowl-
+edge about how Planner works. Instead of only assuming that Planner uses the Bellman optimality
+operator without assuming any extra knowledge about its inner working (as the original formula-
+tion does), IterVAML considers that Planner is in fact an (Approximate) Value Iteration algorithm.
+Recall that (the exact) value iteration (VI) is an iterative procedure that performs
+Qk+1 T
+PQk,r+PVk; k = 0;1;::: :
+IterVAML benets from the fact that if we have a model ^Psuch that
+^PVkPVk;
+the true dynamics Pcan be replaced by the learned dynamics ^Pwithout much aecting the
+working of VI. IterVAML learns a new model at each iteration, based on data sampled from P
+and the current approximation of the value function Vk. The learned model can then be used to
+perform one iteration of (A)VI.
+It might be instructive to briey compare the objective of VAML and PAML. VAML tries to
+minimize the error between the Bellman operator w.r.t. the model ^Pand the Bellman operator
+w.r.t. the true transition model P. PAML, on the other hand, focuses on minimizing the error
+between the PG computed according to the model vs. the true transition model. Furthermore, (71),
+Theorem 2, and (21) show that the TV distance and the KLdivergence provide an upper bound on
+the loss function of both VAML and PAML.
+We may come up with a helpful perspective about these objectives by interpreting them as
+integral probability metrics (IPM) (M uller, 1997). Recall that given two probability distributions
+1;22M(X) dened over the set Xand a space of functions G:X !R, the IPM distance is
+dened as
+dG(1;2) = sup
+g2GZ
+g(x) (d1(x) d2(x)):
+This distance is the maximal dierence in expectation of a function gaccording to 1and2when
+the test function gis allowed to be any function in G. The TV distance is an IPM with Gbeing the
+set of bounded measurable function, cf. (12). This set is quite large. The original formulation of
+VAML limits the test functions to the space of value functions F, see (71). If we choose Gto be the
+space of 1-Lipschitz functions, we obtain 1-Wasserstein distance. Therefore, if the space of value
+functionsFis the space of Lipschitz functions, VAML minimizes the Wasserstein distance between
+the true dynamics and the model, as observed by Asadi et al. (2018). But the space of value functions
+often has more structure and regularities than being Lipschitz (e.g., its functions have some kind of
+higher-order smoothness properties), in which case VAML's loss becomes smaller than Wasserstein
+distance. IterVAML further constrains the space of test function by choosing a particular test
+functionVkat each iteration, that is G=fVkg. The test function for PAML is a single function
+too, dierent from IterVAML's, and is dened as g(x) =EA(jx)[rlog(Ajx)Q(x;A)]. The
+compared distributions, however, are not Pand ^P, but their discounted future-state distribution
+(;P) and(;^P), cf. (11).
+44
+
+==== Page 45 ====
+C Experimental Details
+C.1 Environments
+1.Finite 2-state MDP. We will use the following convention for this and the 3-state MDP
+dened next:
+r(xi;aj) =r[ijAj +j]
+P(xkjxi;aj) =P[ijAj +j][k];
+where P;rare given below.
+jAj= 2;jXj= 2;= 0:9
+P= [[0:7;0:3];[0:2;0:8];[0:99;0:01];[0:99;0:01]]
+r= [ 0:45; 0:1;0:5;0:5]
+2.Finite 3-state MDP. Following the convention above:
+jAj= 2;jXj= 3;= 0:9
+P=[[[0:6;0:399999;0:000001];[0:1;0:8;0:1];[0:899999;0:000001;0:1]];
+[[0:98;0:01;0:01];[0:2;0:000001;0:799999];[0:000001;0:3;0:699999]]]
+r= [[0:1; 0:15];[0:1;0:8];[ 0:2; 0:1]]
+3.LQR is dened as follows:
+x0=Ax+Bu;r(x;u) =xTx+uTu;u(ajx); (72)
+wherex;u2R2andAis designed so that the system would be stable over time (i.e. if
+u= 0;x  !0). Specically,
+A=0:9 0:4
+ 0:4 0:9
+:
+The trajectory length is 201 steps (200 actions taken).
+4.Pendulum (OpenAI Gym) state dimensions: 3, action dimensions: 1, trajectory length: 201
+5.HalfCheetah (OpenAI Gym) state dimensions: 17, action dimensions: 6, trajectory length:
+1001
+6.Ant (Modied version of OpenAI Gym) state dimensions: 111, action dimensions: 8, trajec-
+tory length: 101
+7.Swimmer (Modied version of OpenAI Gym) state dimensions: 9, action dimensions: 2,
+trajectory length: 1001. We used a version of this environment that was modied according
+to Wang et al. (2019b), so that it would be solvable with DDPG.
+8.Hopper (Modied version of OpenAI Gym) state dimensions: 11, action dimensions: 3,
+trajectory length: 101
+45
+
+==== Page 46 ====
+Env Hidden size
+Ant 1024
+HalfCheetah 512
+Swimmer 128
+Hopper 512
+Table 1: Hidden sizes for the model NN
+C.2 Engineering details
+For the nite-state MDP experiments, the policy is parameterized by jXjjAj parameters with
+Softmax applied row-wise (over actions for each state). The model is parameterized by jAjjXjjXj
+parameters with Softmax applied to the last dimension (over states for each state, action pair).
+Calculation of policy gradients is done by solving for the exact value function and taking gradients
+with respect to the policy parameters using backpropagation. Hyperparameters for performance
+plots are as follows, model learning rate : 0.001, policy learning rate: 0.1, training iterations for
+model (per outer loop iteration): 200, training iterations for policy (per outer loop iteration):
+1. Since there are no sources of randomness in these experiments (all gradients were calculated
+exactly), only 1 run is done per experiment. As well, all parameters for the models and policies
+were initialized at 0.
+For the REINFORCE experiments, the policy is a 2-layer neural network (NN) with hidden size
+64 and Rectied Linear Unit (ReLU) activations for the hidden layer. The second layer is separated
+for predicting the mean and log standard deviation (std) of a Gaussian policy (i.e. the rst layer
+is shared for the mean and std but the second layer has separate weights for each). The output
+layer activations are Tanh for the mean and Softplus for the log std. The policy is trained with the
+Adam optimizer (Kingma and Ba, 2014) with learning rate 0.0001.
+For the actor-critic formulation, the critic network is a 2-layer NN with hidden size 64 and ReLU
+activations for the hidden layer. The output layer has no nonlinearities. The policy is a 2-layer
+NN with hidden size 30 and ReLU activations for the hidden layer. The output layer has Tanh
+activations. Both the policy and actor are trained with the Adam optimizer with learning rates
+0.0001 and 0.001, respectively. The soft update parameter (Lillicrap et al., 2015) for the target
+networks is 0.001.
+The model architectures are as follows:
+•LQR: Linear connection from input to output with no nonlinearities.
+•Pendulum: two linear layers with hidden size 2. This is a linear model with a bottleneck as
+the states of the Pendulum environment are represented with 3 dimensions.
+•For all other environments: 3-layer NN with ReLU activations. The output layer has no
+nonlinearities. The hidden sizes are provided in Table 1
+For all the approximate experiments, the number of replications, unless stated otherwise in
+the captions, is 10 and shaded areas indicate standard error. The parameters of the networks in
+these cases were initialized using Xavier initialization (Glorot and Bengio, 2010). The models in all
+experiments are optimized using stochastic gradient descent with no momentum and initial learning
+rates given in Table 2. The learning rates are reduced by an order of magnitude according to a
+46
+
+==== Page 47 ====
+schedule also given in Table 2. For each iteration of Alg. 1, the model is used to generate virtual
+samples for planning. Recalling that the model requires a starting state and action in order to
+predict the next state, the starting states used in our experiments are as follows: a fraction come
+directly from the replay buer, of the rest, half are sampled from the starting state distribution of
+the environment (i.e. ), and half are uniformly randomly sampled from a neighbourhood of states
+from the replay buer. For additional implementation details refer to the code.
+The hyperparameters are chosen to have optimal performance for each of the methods separately.
+We nd the optimal hyperparameters for 0 irrelevant dimensions and use those hyperparameters
+for the rest of the experiments in order to be fair to all methods. Comparing to the performances
+of other model-based methods in works such as (Wang et al., 2019b) and Fujimoto et al. (2018)),
+we have reasonable condence that our implementations of the MLE and model-free baselines have
+representative performances for these methods.
+Regarding the model learning rate in the stochastic experiments, the search for the PAML and
+MLE experiments was done over all the orders of magnitude from 1e-8 to 1e-2, with the optimal
+value being chosen for each method separately. For the policy and critic, we used the learning rates
+found to be optimal for model-free DDPG, as stated in the original paper [Lillicrap, 2015].
+For the exact experiments, the search for model learning rates was over 0.1, 0.01, 1e-3, 1e-4 for
+both MLE and PAML. In the end, it was decided to increase the number of update steps for the
+model (numbers tried were 1, 50, and 200) and keep the learning rate relatively small to ensure
+convergence in each iteration (see Table 2).
+47
+
+==== Page 48 ====
+LQR (REIN-
+FORCE)Pendulum-
+v0(DDPG)HalfCheetah-
+v0(DDPG)
+Initial model
+learning rateMLE: 1e-5,
+PAML: 1e-4MLE: 1e-4,
+PAML: 1e-3MLE: 1e-5,
+PAML: 1e-3
+LR schedule [500,1200,1800]
+(training steps)MLE: [10,1000,20000000], PAML: [10,500,1000]
+(iterations of Alg. 1)
+Number of
+transitions
+from real
+environment
+per iteration of
+Alg. 1MLE: 1000,
+PAML: 1000MLE: 1000,
+PAML: 1000MLE: 200,
+PAML: 200
+Number of
+virtual samples
+per iteration of
+Alg. 1MLE: 2000
+(episodes),
+PAML: 2000
+episodes for
+irrelevant
+dimensions,
+500 episodes
+for no
+irrelevant
+dimensionsMLE: 500,
+PAML: 500MLE: 20,
+PAML: 20
+Planning
+horizonMLE: 200,
+PAML: 200MLE: 10,
+PAML: 10MLE: 10,
+PAML: 10
+Fraction of
+planning data
+coming from
+replay buerMLE: 1.0,
+PAML: 1.0MLE: 0.25,
+PAML: 0.25MLE: 0.5,
+PAML: 0.5
+Table 2: Experimental details for the results shown in this work.
+48
+
+==== Page 49 ====
+References
+Alekh Agarwal, Sham M. Kakade, Jason D. Lee, and Gaurav Mahajan. Optimality and approxi-
+mation with policy gradient methods in Markov Decision Processes. arXiv:1908.00261v2 , August
+2019. 3, 13, 14, 15, 16, 17, 18, 19, 20, 21, 24, 34, 36
+Andr as Antos, Csaba Szepesv ari, and R emi Munos. Learning near-optimal policies with Bellman-
+residual minimization based tted policy iteration and a single sample path. Machine Learning ,
+71:89{129, 2008. 4
+Kavosh Asadi, Evan Cater, Dipendra Misra, and Michael L. Littman. Equivalence between wasser-
+stein and value-aware model-based reinforcement learning. In FAIM Workshop on Prediction and
+Generative Modeling in Reinforcement Learning , 2018. 44
+Alex Ayoub, Zeyu Jia, Csaba Szepesvari, Mengdi Wang, and Lin F Yang. Model-based reinforce-
+ment learning with value-targeted regression. In International Conference on Machine Learning
+(ICML) , 2020. 2
+J. Andrew Bagnell, Sham Kakade, Andrew Y. Ng, and Je Schneider. Policy search by dynamic
+programming. In Sebastian Thrun, Lawrence Saul, and Bernhard Sch olkopf, editors, Advances
+in Neural Information Processing Systems (NIPS - 16) . MIT Press, Cambridge, MA, 2004. 18
+Jonathan Baxter and Peter L. Bartlett. Innite-horizon policy-gradient estimation. Journal of
+Articial Intelligence Research (JAIR) , 15:319{350, 2001. 5, 13
+Amir Beck. First-Order Methods in Optimization . Society for Industrial and Applied Mathematics,
+2017. 15, 19, 23, 37
+Dimitri P. Bertsekas. Approximate policy iteration: A survey and some new methods. Journal of
+Control Theory and Applications , 9(3):310{335, 2011. 4
+Jalaj Bhandari and Daniel Russo. Global optimality guarantees for policy gradient methods. CoRR ,
+abs/1906.01786, 2019. 14
+Shalabh Bhatnagar, Richard S. Sutton, Mohammad Ghavamzadeh, and Mark Lee. Natural actor{
+critic algorithms. Automatica , 45(11):2471{2482, 2009. 5, 13
+Xi-Ren Cao. A basic formula for online policy gradient algorithms. Automatic Control, IEEE
+Transactions on , 50(5):696{699, 2005. 5
+Jinglin Chen and Nan Jiang. Information-theoretic considerations in batch reinforcement learning.
+InProceedings of the 36th International Conference on Machine Learning (ICML) , 2019. 4
+Marc Peter Deisenroth, Gerhard Neumann, and Jan Peters. A survey on policy search for robotics.
+Foundations and Trends in Robotics , 2(1-2):1{142, 2013. 5
+Marc Peter Deisenroth, Dieter Fox, and Carl Edward Rasmussen. Gaussian processes for data-
+ecient learning in robotics and control. IEEE Transactions on Pattern Analysis and Machine
+Intelligence , 37(2):408{423, 2015. 1
+49
+
+==== Page 50 ====
+Pierluca D'Oro, Alberto Maria Metelli, Andrea Tirinzoni, Matteo Papini, and Marcello Restelli.
+Gradient-aware model-based policy search. In Thirty-Fourth AAAI Conference on Articial
+Intelligence (AAAI) , 2020. 2, 7
+Damien Ernst, Pierre Geurts, and Louis Wehenkel. Tree-based batch mode reinforcement learning.
+Journal of Machine Learning Research (JMLR) , 6:503{556, 2005. 4
+Amir-massoud Farahmand. Iterative value-aware model learning. In Advances in Neural Informa-
+tion Processing Systems (NeurIPS - 31) , pages 9072{9083, 2018. 2, 4, 42, 43, 44
+Amir-massoud Farahmand and Doina Precup. Value pursuit iteration. In F. Pereira, C.J.C. Burges,
+L. Bottou, and K.Q. Weinberger, editors, Advances in Neural Information Processing Systems
+(NIPS - 25) , pages 1349{1357. Curran Associates, Inc., 2012. 4
+Amir-massoud Farahmand, Mohammad Ghavamzadeh, Csaba Szepesv ari, and Shie Mannor. Reg-
+ularized tted Q-iteration for planning in continuous-space Markovian Decision Problems. In
+Proceedings of American Control Conference (ACC) , pages 725{730, June 2009. 4
+Amir-massoud Farahmand, Doina Precup, Mohammad Ghavamzadeh, and Andr e M.S. Barreto.
+Classication-based approximate policy iteration. IEEE Transactions on Automatic Control , 60
+(11):2989{2993, November 2015. 18
+Amir-massoud Farahmand, Andr e M.S. Barreto, and Daniel N. Nikovski. Value-aware loss function
+for model learning in reinforcement learning. In 13th European Workshop on Reinforcement
+Learning (EWRL) , December 2016a. 4, 42
+Amir-massoud Farahmand, Mohammad Ghavamzadeh, Csaba Szepesv ari, and Shie Mannor. Reg-
+ularized policy iteration with nonparametric function spaces. Journal of Machine Learning Re-
+search (JMLR) , 17(139):1{66, 2016b. 4
+Amir-massoud Farahmand, Andr e M.S. Barreto, and Daniel N. Nikovski. Value-aware loss function
+for model-based reinforcement learning. In Proceedings of the 20th International Conference on
+Articial Intelligence and Statistics (AISTATS) , pages 1486{1494, April 2017. 2, 4, 42, 43, 44
+Gregory Farquhar, Tim Rocktaeschel, Maximilian Igl, and Shimon Whiteson. TreeQN and ATreeC:
+Dierentiable tree planning for deep reinforcement learning. In International Conference on
+Learning Representations (ICLR) , 2018. 2
+Scott Fujimoto, Herke Van Hoof, and David Meger. Addressing function approximation error in
+actor-critic methods. arXiv preprint arXiv:1802.09477 , 2018. 47
+Mohammad Ghavamzadeh and Yaakov Engel. Bayesian policy gradient algorithms. In B. Sch olkopf,
+J. Platt, and T. Homan, editors, Advances in Neural Information Processing Systems (NIPS -
+19), pages 457{464. MIT Press, Cambridge, MA, 2007. 5
+Xavier Glorot and Yoshua Bengio. Understanding the diculty of training deep feedforward neural
+networks. In Proceedings of the thirteenth international conference on articial intelligence and
+statistics , pages 249{256, 2010. 46
+Georey Gordon. Stable function approximation in dynamic programming. In International Con-
+ference on Machine Learning (ICML) , 1995. 4
+50
+
+==== Page 51 ====
+David Ha and J urgen Schmidhuber. Recurrent world models facilitate policy evolution. In Advances
+in Neural Information Processing Systems (NeurIPS - 31) , pages 2455{2467, 2018. 1
+De-An Huang, Amir-massoud Farahmand, Kris M Kitani, and J. Andrew Bagnell. Approximate
+MaxEnt inverse optimal control and its application for mental simulation of human interactions.
+InAAAI Conference on Articial Intelligence , January 2015. 36
+Joshua Joseph, Alborz Geramifard, John W. Roberts, Jonathan P. How, and Nicholas Roy. Rein-
+forcement learning with misspecied model classes. In Proceedings of IEEE International Con-
+ference on Robotics and Automation (ICRA) , pages 939{946. IEEE, 2013. 2
+Sham Kakade. A natural policy gradient. In Advances in Neural Information Processing Systems
+(NIPS) , pages 1531{1538, 2001. 5
+Sham Kakade and John Langford. Approximately optimal approximate reinforcement learning.
+InProceedings of the Nineteenth International Conference on Machine Learning (ICML) , pages
+267{274, 2002. 16, 18
+Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. arXiv preprint
+arXiv:1412.6980 , 2014. 46
+Vijay R. Konda and John N. Tsitsiklis. On actor-critic algorithms. SIAM Journal on Control and
+Optimization , pages 1143{1166, 2001. 13
+Michail G. Lagoudakis and Ronald Parr. Least-squares policy iteration. Journal of Machine Learn-
+ing Research (JMLR) , 4:1107{1149, 2003a. 4
+Michail G. Lagoudakis and Ronald Parr. Reinforcement learning as classication: Leveraging
+modern classiers. In Proceedings of the 20th International Conference on Machine Learning
+(ICML) , pages 424{431, 2003b. 18
+Alessandro Lazaric, Mohammad Ghavamzadeh, and R emi Munos. Analysis of a classication-
+based policy iteration algorithm. In Proceedings of the 27th International Conference on Machine
+Learning (ICML) , pages 607{614. Omnipress, 2010. 18
+Alessandro Lazaric, Mohammad Ghavamzadeh, and R emi Munos. Finite-sample analysis of least-
+squares policy iteration. Journal of Machine Learning Research (JMLR) , 13:3041{3074, October
+2012. 4
+Alessandro Lazaric, Mohammad Ghavamzadeh, and R emi Munos. Analysis of classication-based
+policy iteration algorithms. Journal of Machine Learning Research (JMLR) , 17(19), 2016. 18
+Timothy P. Lillicrap, Jonathan J. Hunt, Alexander Pritzel, Nicolas Heess, Tom Erez, Yuval Tassa,
+David Silver, and Daan Wierstra. Continuous control with deep reinforcement learning. arXiv
+preprint arXiv:1509.02971 , 2015. 29, 30, 32, 33, 35, 46
+Boyi Liu, Qi Cai, Zhuoran Yang, and Zhaoran Wang. Neural proximal/trust region policy opti-
+mization attains globally optimal policy. In Advances in Neural Information Processing Systems
+(NeurIPS - 33) , pages 10564{10575. 2019. 14
+51
+
+==== Page 52 ====
+Yuping Luo, Huazhe Xu, Yuanzhi Li, Yuandong Tian, Trevor Darrell, and Tengyu Ma. Algo-
+rithmic framework for model-based deep reinforcement learning with theoretical guarantees. In
+International Conference on Learning Representations (ICLR) , 2019. 2
+Peter Marbach and John N. Tsitsiklis. Simulation-based optimization of Markov reward processes.
+Automatic Control, IEEE Transactions on , 46(2):191{209, February 2001. 5, 13
+Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel Veness, Marc G. Belle-
+mare, Alex Graves, Martin Riedmiller, Andreas K. Fidjeland, Georg Ostrovski, Stig Petersen,
+Charles Beattie, Amir Sadik, Ioannis Antonoglou, Helen King, Dharshan Kumaran, Daan Wier-
+stra, Shane Legg, and Demis Hassabis. Human-level control through deep reinforcement learning.
+Nature , 518(7540):529{533, February 2015. 4
+Shakir Mohamed, Mihaela Rosca, Michael Figurnov, and Andriy Mnih. Monte carlo gradient
+estimation in machine learning. arXiv preprint arXiv:1906.10652 , 2019. 6
+Alfred M uller. Integral probability metrics and their generating classes of functions. Advances in
+Applied Probability , 29(2):429{443, 1997. 44
+R emi Munos and Csaba Szepesv ari. Finite-time bounds for tted value iteration. Journal of
+Machine Learning Research (JMLR) , 9:815{857, 2008. 4
+Junhyuk Oh, Satinder Singh, and Honglak Lee. Value prediction network. In Advances in Neural
+Information Processing Systems (NIPS - 30) , pages 6118{6128. Curran Associates, Inc., 2017. 2
+Jing Peng and Ronald J. Williams. Ecient learning and planning within the Dyna framework.
+Adaptive Behavior , 1(4):437{454, 1993. 1
+Jan Peters and Stefan Schaal. Natural actor-critic. Neurocomputing , 71(7):1180{1190, 2008. 5
+Jan Peters, Vijayakumar Sethu, and Stefan Schaal. Reinforcement learning for humanoid robotics.
+InHumanoids2003, Third IEEE-RAS International Conference on Humanoid Robots , 2003. 5
+Bruno Scherrer, Mohammad Ghavamzadeh, Victor Gabillon, and Matthieu Geist. Approximate
+modied policy iteration. In Proceedings of the 29th International Conference on Machine Learn-
+ing (ICML) , 2012. 4
+Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert, Karen Simonyan, Laurent Sifre, Simon
+Schmitt, Arthur Guez, Edward Lockhart, Demis Hassabis, Thore Graepel, et al. Mastering atari,
+go, chess and shogi by planning with a learned model. arXiv preprint arXiv:1911.08265 , 2019. 2
+John Schulman, Sergey Levine, Pieter Abbeel, Michael Jordan, and Philipp Moritz. Trust region
+policy optimization. In International Conference on Machine Learning (ICML) , 2015. 5
+Lior Shani, Yonathan Efroni, and Shie Mannor. Adaptive trust region policy optimization: Global
+convergence and faster rates for regularized MDPs. In AAAI Conference on Articial Intelligence ,
+2020. 14
+David Silver, Guy Lever, Nicolas Heess, Thomas Degris, Daan Wierstra, and Martin Riedmiller.
+Deterministic policy gradient algorithms. In International Conference on Machine Learning
+(ICML) , 2014. 7
+52
+
+==== Page 53 ====
+David Silver, Julian Schrittwieser, Karen Simonyan, Ioannis Antonoglou, Aja Huang, Arthur Guez,
+Thomas Hubert, Lucas Baker, Matthew Lai, Adrian Bolton, Yutian Chen, Timothy Lillicrap, Fan
+Hui, Laurent Sifre, George van den Driessche, Thore Graepel, and Demis Hassabis. Mastering
+the game of go without human knowledge. Nature , 550(7676):354{359, 10 2017a. 18
+David Silver, Hado van Hasselt, Matteo Hessel, Tom Schaul, Arthur Guez, Tim Harley, Gabriel
+Dulac-Arnold, David Reichert, Neil Rabinowitz, Andr e M.S. Barreto, and Thomas Degris. The
+predictron: End-to-end learning and planning. In Proceedings of the 34th International Confer-
+ence on Machine Learning (ICML) , pages 3191{3199, 2017b. 2
+Richard S. Sutton. Integrated architectures for learning, planning, and reacting based on approx-
+imating dynamic programming. In Proceedings of the 7th International Conference on Machine
+Learning (ICML) , 1990. 1, 3
+Richard S. Sutton, David McAllester, Satinder Singh, and Yishay Mansour. Policy gradient methods
+for reinforcement learning with function approximation. In Advances in Neural Information
+Processing Systems (NIPS - 12) , 2000. 5, 13, 28
+Richard S. Sutton, Csaba Szepesv ari, Alborz Geramifard, and Michael Bowling. Dyna-style plan-
+ning with linear function approximation and prioritized sweeping. In Proceedings of the 24th
+Conference on Uncertainty in Articial Intelligence (UAI) , 2008. 1
+Csaba Szepesv ari. Algorithms for Reinforcement Learning . Morgan Claypool Publishers, 2010. 3
+Csaba Szepesv ari and William D. Smart. Interpolation-based Q-learning. In Proceedings of the
+twenty-rst International Conference on Machine learning (ICML) , 2004. 4
+Vladislav B Tadi c, Arnaud Doucet, et al. Asymptotic bias of stochastic gradient search. The Annals
+of Applied Probability , 27(6):3255{3304, 2017. 13
+Erik Talvitie. Self-correcting models for model-based reinforcement learning. In Proceedings of the
+Thirty-First AAAI Conference on Articial Intelligence , pages 2597{2603, 2017. 1
+Samuele Tosatto, Matteo Pirotta, Carlo D'Eramo, and Marcello Restelli. Boosted tted Q-iteration.
+InProceedings of the 34th International Conference on Machine Learning (ICML) , 2017. 4
+Lingxiao Wang, Qi Cai, Zhuoran Yang, and Zhaoran Wang. Neural policy gradient methods: Global
+optimality and rates of convergence. arXiv preprint arXiv:1909.01150 , 2019a. 14
+Tingwu Wang, Xuchan Bao, Ignasi Clavera, Jerrick Hoang, Yeming Wen, Eric Langlois, Shunshi
+Zhang, Guodong Zhang, Pieter Abbeel, and Jimmy Ba. Benchmarking model-based reinforcement
+learning. arXiv preprint arXiv:1907.02057 , 2019b. 45, 47
+Ronald J. Williams. Simple statistical gradient-following algorithms for connectionist reinforcement
+learning. Machine Learning , 8(3-4):229{256, 1992. 5, 29, 30
+Tengyu Xu, Zhe Wang, and Yingbin Liang. Improving sample complexity bounds for actor-critic
+algorithms. April 2020. 14
+53
+

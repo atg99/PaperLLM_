@@ -1,0 +1,994 @@
+==== Page 1 ====
+L2-GCN: Layer-Wise and Learned Efﬁcient Training of
+Graph Convolutional Networks
+Yuning You∗, Tianlong Chen∗, Zhangyang Wang, Yang Shen
+Texas A&M University
+{yuning.you,wiwjp619,atlaswang,yshen }@tamu.edu
+Abstract
+Graph convolution networks (GCN) are increasingly pop-
+ular in many applications, yet remain notoriously hard to
+train over large graph datasets. They need to compute
+node representations recursively from their neighbors. Cur-
+rent GCN training algorithms suffer from either high com-
+putational costs that grow exponentially with the number
+of layers, or high memory usage for loading the entire
+graph and node embeddings. In this paper, we propose
+a novel efﬁcient layer-wise training framework for GCN
+(L-GCN), that disentangles feature aggregation and feature
+transformation during training, hence greatly reducing time
+and memory complexities. We present theoretical analy-
+sis for L-GCN under the graph isomorphism framework,
+that L-GCN leads to as powerful GCNs as the more costly
+conventional training algorithm does, under mild condi-
+tions. We further propose L2-GCN, which learns a controller
+for each layer that can automatically adjust the training
+epochs per layer in L-GCN. Experiments show that L-GCN
+is faster than state-of-the-arts by at least an order of mag-
+nitude, with a consistent of memory usage not dependent
+on dataset size, while maintaining comparable prediction
+performance. With the learned controller, L2-GCN can fur-
+ther cut the training time in half. Our codes are available at
+https://github.com/Shen-Lab/L2-GCN .
+1. Introduction
+Graph convolution networks (GCN) [ 13] generalize con-
+volutional neural networks (CNN) [ 14] to graph data. Given
+a node in a graph, a GCN ﬁrst aggregates the node embed-
+ding with its neighbor node embeddings, and then trans-
+forms the embedding through (hierarchical) feed-forward
+propagation. The two core operations, i.e., aggregating
+and transforming node embeddings, take advantage of the
+graph structure and outperform structure-unaware alterna-
+tives [ 17,18,9]. GCNs hence demonstrate prevailing success
+in many graph-based applications, including node classiﬁca-
+∗Equal Contribution.
+3
+ 4
+ 5
+ 6
+ 7
+Log(Time)
+0
+1000
+2000
+3000
+4000Memory
+L-GCNVRGCNFastGCN GraphSAGE
+L2-GCNFigure 1: Summary of our achieved performance and efﬁciency
+on Reddit. The lower left corner indicates the desired lowest
+complexity in time (training time) and memory consumption
+(GPU memory usage). The size of markers represents F1 scores.
+Blue circles ( •) are state-of-the-art mini-batch training algorithms,
+red circle ( •) is L-GCN, and red star ( ★) is L2-GCN. The corre-
+sponding F1 scores are: GraphSAGE ( •, 93.4), FastGCN ( •, 92.6),
+VRGCN ( •, 96.0), L-GCN ( •, 94.2) and L2-GCN( ★, 94.0).
+tion [ 13], link prediction [ 26] and graph classiﬁcation [ 24].
+However, the training of GCNs has been a headache, and
+a hurdle to scale up GCNs further. How to train CNNs more
+efﬁciently has recently become a popular topic of explosive
+interest, by bypassing unnecessary data or reducing expen-
+sive operations [ 19,25,12]. For GCNs, as the graph dataset
+grows, the large number of nodes and the potentially dense
+adjacency matrix prohibit ﬁtting them all into the memory,
+thus putting full-batch training algorithms ( i.e., those requir-
+ing the full data and holistic adjacency matrix to perform)
+in jeopardy. That motivates the development of mini-batch
+training algorithms, i.e., treating each node as a data point
+and updating locally. In each mini-batch, the embedding of
+a node at the lth layer is computed from the neighborhood
+node embeddings at the ( l−1)-th layer through the graph
+convolution operation. As the computation is performed re-
+cursively through all layers, the mini-batch complexity will
+increase exponentially with respect to the layer number. To
+mitigate the complexity explosion, several sampling-based
+strategies have been adopted, e.g. GraphSAGE [ 10] and Fast-
+2127
+
+
+==== Page 2 ====
+Table 1: Time and memory complexities: we consider time complexity for the feature propagation in the network, and memory complexity
+for storing node embeddings in each layer (since given the same network architecture, the weight storage costs the same memory for all
+compared algorithms c). Lis the layer number, Dthe feature dimension, Nthe node number, SNEIthe neighborhood size, Bthe minibatch
+size,Sthe training sample size, SVRthe reduced sample size, and NBAT the minibatch number.
+GCN [ 13] Vanilla Mini-Batch GraphSAGE [ 10] FastGCN [ 4] VRGCN [ 5] L-GCN
+Time O(L||ˆA||0D+LND2)O(SL
+NEIBD2)O(SLBD2)> O(SLBD2)> O(SL
+VRBD2)O(L||ˆA||0
+NBATD+BD2)
+Memory O(LND) O(SL
+NEIBD) O(SLBD)> O(SLBD)O(LND) O(BD)
+GCN [ 4], yet with few performance guarantees. VRGCN
+[5] reduces the sample size through variance reduction, and
+guarantees its performance convergence to the full-sample
+approach, but it requires to store the full-batch node embed-
+dings of each layer in the memory, limiting its efﬁciency
+gain. Cluster-GCN [ 7] used graph clustering to partition
+the large graph into subgraphs, and performs subgraph-level
+mini-batch training, yet again being only empirical.
+In this paper, we propose a novel layer-wise training
+algorithm for GCNs, called ( L-GCN ). The key idea is to
+decouple the two key operations in the per-layer feedforward
+graph convolution: feature aggregation (FA) and feature
+transformation (FT), whose concatenation and cascade re-
+sult in the exponentially growing complexity. Surprisingly,
+the resulting greedy algorithm will not necessarily compro-
+mise the network representation capability, as shown by our
+theoretical analysis inspired by [ 23] using a graph isomor-
+phism framework. To bypass extra hyper-parameter tuning,
+we then introduce layer-wise and learned GCN training ( L2-
+GCN ), which learns a controller for each layer that can
+automatically adjust the training epochs per layer in L-GCN.
+Table 1compares the training complexity between L-GCN,
+L2-GCN and existing competitive algorithms, demonstrating
+our approaches’ remarkable advantage in reducing both time
+and memory complexities. More experiments show that our
+proposed algorithms are signiﬁcantly faster than state-of-the-
+arts, with a consistent usage of GPU memory not dependent
+on dataset size, while maintaining comparable prediction
+performance. Our contributions can be summarized below:
+•A layer-wise training algorithm for GCNs with much
+lower time and memory complexities;
+•Theoretical justiﬁcation that under some sufﬁcient con-
+ditions the greedy algorithm does not compromise in
+the graph-representative power;
+•Learned controllers that automatically conﬁgure layer-
+wise training epoch numbers, in place of manual hyper-
+parameter tuning;
+•State-of-the-art performance achieved in addition to the
+light weight, on extensive applications.
+2. Related Work
+We follow [ 7] to categorize existing GCN training algo-
+rithms into full-batch andmini-batch (stochastic) algorithms,and compare their pros and cons.
+2.1. Full­Batch GCN Training
+The original GCN [ 13] adopted the full-batch gradient
+descent algorithm. Let’s deﬁne an undirected graph as
+G= (V,E), whereV={v1,...,vN}represents the vertex
+set withNnodes, and E={e1,...,eNE}represents the
+edge set with NEedges:en= (vi,vj)indicates an edge
+between vertices viandvj.F∈RN×Dis the feature ma-
+trix with the feature dimension D, andA∈RN×Nis the
+adjacency matrix where aij=aji={1,if(vi,vj)or(vj,vi)∈E
+0,otherwise.
+By constructing an L-layer GCN, we express the output
+X(l)∈RN×D(l)of thelth layer and the network loss as:
+X(l)=σ(ˆAX(l−1)W(l)),Loss=Loss(X(L),Θ,Y),
+(1)
+whereˆAis the regularized adjacency matrix, X(0)=F,
+W(l)∈RD(l−1)×D(l)is the weight matrix, D(0)=D,σ(·)
+is a nonlinear function, Θ∈RD(L)×DCLA is the linear clas-
+siﬁcation matrix, Ythe training labels, and Loss(·)the loss
+function. For simplicity and without affecting the analysis,
+we setD(1)=...=D(L)=D.
+For the time complexity of the network propagation
+in(1),ˆX(l)=ˆAX(l−1)costsO(||ˆA||0D)in time and
+ˆX(l)W(l)costsO(ND2)in time, which in total leads to
+O(L||ˆA||0D+LND2)time consumed for the entire net-
+work. For the memory complexity, storing the L-layer em-
+beddings X(l),l= 1,...,L requiresO(LND)in memory.
+Both time and memory complexities are proportional to N,
+which cannot scale up well for large graphs.
+2.2. Mini­Batch SGD Algorithms
+The vanilla mini-batch SGD algorithm propagates the
+vertex representations in a minibatch, rather than for all
+nodes. We rewrite the network propagation (1)for theith
+node in the lth layer as:
+x(l)
+i=σ((ˆaiix(l−1)
+i+/summationdisplay
+j=1,...,N, s.t.ˆaij/negationslash=0aijx(l−1)
+j),W(l)),
+Loss=1
+NN/summationdisplay
+i=1Loss(x(L)
+i,Θ,Y),
+(2)
+2128
+
+
+==== Page 3 ====
+Input
+FAFT
+W(1)FA FT
+W(2)Linear
+Classier
+Θ
+Input
+FAFT
+W(1)Linear
+Classier
+ΘOptimize: Θ∗
+Optimize: W(1)*,Θ∗Input
+FAFT FA FT
+W(2)Linear
+Classier
+Θ
+Optimize: W(2)*,Θ∗
+Stage 1 Stage 2(a) Conventional Training
+(b) Layerwise TrainingFeature Aggregation (FA) Feature Transformation (FT)
+W(1)*W(1)*,W(2)*,
+Figure 2: Conventional training vs layer-wise training for a two-layer GCN. (a) In conventional training, the optimizer jointly optimizes
+the weight matrix W(1),W(2)asW(1)∗,W(2)∗and the linear classiﬁer ΘasΘ∗, savingW(1)∗,W(2)∗,Θ∗for the network. (b) In
+layer-wise training, two layers are trained in two sequential stages: in the ﬁrst stage the optimizer optimizes the weight matrix W(1)
+asW(1)∗and the linear classiﬁer Θ(1)asΘ(1)∗, savingW(1)∗for the second stage and dropping Θ(1)∗; then in the second stage the
+optimizer optimizes the weight matrix W(2)asW(2)∗and the linear classiﬁer Θ(2)asΘ∗, savingW(2)∗,Θ∗for the network.
+wherex(0)
+i=F[i,:]. With (2), we can feed the feature ma-
+trixFin a mini-batch dataloader and run the stocastic gradi-
+ent descent (SGD) optimizer. Suppose Bis the minibatch
+size andSNEIthe neighborhood size, the time complexity
+for the propagation per mini-batch is O(SL
+NEIBD2)and the
+memory complexity is O(SL
+NEIBD). We next discuss a few
+variants on top of the vanilla minim-batch algorithm:
+•GraphSAGE & FastGCN. [10,4] Both adopted sam-
+pling scheme to reduce complexities. GraphSAGE
+proposes to use ﬁxed-size sampling for the neighbor-
+hood in each layer. It yet suffers from the “neighbor-
+hood expansion” problem, making its time and memory
+complexities grow exponentially with the layer num-
+ber. FastGCN proposes global importance sampling
+rather than local neighborhood sampling, alleviating
+the complexity growth issue. Suppose S≤SNEI
+is the sample size, the time and memory complexi-
+ties areO(SLBD2)andO(SLBD)for GraphSAGE,
+andO(SLBD2)andO(SLBD)for FastGCN, respec-
+tively. Besides, for FastGCN, there is extra complexity
+requirement for importance weight computation.
+•VRGCN. [5] proposes to use variance reduction to re-
+duce the sample size in each layer, which managed to
+achieve good performance with smaller graphs. Unfor-
+tunately, it requires to store all the vertex intermediate
+embeddings during training, which leads to its mem-
+ory complexity coming close to the full-batch training.
+SupposeSVR≤Sis the reduced sample size, the time
+and memory complexities of VRGCN are O(SL
+VRBD2)andO(LND), respectively (plus some overhead for
+computing variance reduction).
+•Cluster-GCN. [7] Instead of feeding nodes and their
+neighbors directly, [ 7] ﬁrst uses a graph clustering al-
+gorithm to partition subgraphs, and then runs the SGD
+optimizer over each subgraph. The performance of this
+approach heavily hinges on the chosen graph cluster-
+ing algorithm. It is further difﬁcult to ensure training
+stability, e.g., w.r.t different clustering settings.
+3. Proposed Algorithm
+To discuss the bottleneck of graph convolutional network
+(GCN) training algorithms, we ﬁrst analyze the propagation
+of GCN following [ 22] and factorize the propagation (1)into
+feature aggregation (FA) andfeature transformation (FT) .
+Feature aggregation. To learn the node representation
+X(l)of thelth layer, in the ﬁrst step GCN follows the neigh-
+borhood aggregation strategy, where in the lth layer it up-
+dates the representation of each node by aggregating the
+representations of its neighbors, and at the same time the
+representation of itself is aggregated by the representations
+of its neighbors, which is written as:
+ˆX(l)=ˆAX(l−1). (3)
+With (3), the time and memory complexity is highly de-
+pendent on the edge number, and in the mini-batch SGD
+algorithm it is highly dependent on the sample size. Since
+during mini-batch SGD training for an L-layer network, L
+2129
+
+
+==== Page 4 ====
+times of FA for each node requires its L-th order neighbor
+nodes’ representations, which results in sampling a large
+number of neighbor nodes. FA is the main barrier for re-
+ducing the time and memory complexity of GCN in the
+mini-batch SGD algorithm.
+Feature transformation. After FA, in the second step
+GCN conducts FT in the lth layer, which consists of linear
+and nonlinear transformations:
+X(l)=σ(ˆX(l)W(l)). (4)
+With (4), the complexity is mainly relevant to the feature
+dimension. Ltimes FT for a node only requires its own
+representation in each layer. Given the supervised node
+labelsY, the conventional training process for a GCN is
+formulated as:
+(W(1)∗,...,W(L)∗,Θ∗) =
+min
+W(1),...,W(L),ΘLoss(X(L),Θ,Y), s.t. (3),(4).(5)
+For the entire propagation of a mini-batch SGD over an
+L-layer GCN, there are Ltimes of FA and FT in each batch
+as shown in Figure 2(a) . Without FT, Ltimes of FA can ag-
+gregate the structure information, which lacks representation
+learning and is still time- and memory-consuming. Without
+FA,Ltimes of FT is no more than a multi-layer perceptron
+(MLP), which efﬁciently learns the representation but lacks
+structure information.
+3.1. L­GCN: Layer­wise GCN Training
+As described earlier, the one-batch propagation of the
+conventional training for an L-layer GCN consists of Ltimes
+of feature aggregation (FA) and feature transformation (FT).
+Both FA and FT are necessary for capturing graph structures
+and learning data representations but the coupling between
+the two leads to inefﬁcient training. We therefore propose a
+layer-wise training algorithm (L-GCN) to properly separate
+the FA and FT processes while training GCN layer by layer.
+We illustrate the L-GCN algorithm in Figure 2(b). For
+training the lth layer, we do FA once for all the (l−1)th
+vertex representations, aggregating its lth order structure in-
+formation, and then feed the vertex embeddings into a single
+layer perceptron and run the mini-batch SGD optimizer for
+batches. The lth layer is trained by solving
+(W(l)∗,Θ∗) =
+min
+W(l),ΘLoss/parenleftBig
+σ(ˆAX(l−1)W(l)),Θ,Y/parenrightBig
+.(6)
+Note that X(l−1)depends on (W(1)∗,...,W(l−1)∗).
+After ﬁnishing the lth layer training, we save the weight
+matrixW(l)∗between the current input layer and hidden
+layer as the weight matrix of the lth layer, drop the weightmatrices between hidden layer and output layer unless l=L,
+and calculate the lth-layer representations. This process is
+repeated until all layers are trained.
+The time and memory complexities are signiﬁcantly lower
+compared to the conventional training and the state of the
+arts, as shown in Table 1. For the time complexity, L-GCN
+only conducts FA Ltimes in the entire training process and
+FT does once per batch, whereas the conventional mini-batch
+training conducts FA Ltimes and FT Ltimes in each batch.
+Suppose that the total training batch number is NBAT, the
+time complexity of L-GCN is O(L||ˆA||0
+NBATD+BD2). The
+memory complexity is O(BD)since L-GCN only trains a
+single layer perceptron in each batch.
+3.2. Theoretical Justiﬁcation of L­GCN
+We set out to answer the following question theoretically
+for L-GCN: How close could the performance of layer-wise
+trained GCN be compared with conventionally trained GCN?
+To establish the theoretical background of our layer-wise
+training algorithm, we follow Xu and coworker’s work [ 23]
+and show that a layer-wise trained GCN can be as powerful
+as a conventionally trained GCN under certain conditions.
+In [23], the representation power of an aggregation-based
+graph neural network (GNN) is evaluated, when input fea-
+ture space is countable, as the ability to map any two differ-
+ent nodes into different embeddings. The evaluation of the
+representation power is extended to the ability to map any
+two non-isomorphic graphs into non-isomophic embeddings,
+where the graphs are generated as the rooted subtrees of
+the corresponding nodes. An L-layer GNN A:G→RD
+(excluding the linear classiﬁer described earlier) can be rep-
+resented [ 23] as:
+A=R◦L(L)◦...◦L(1), (7)
+whereL(l):RD×MD→RD,(l= 1,...,L)is the vertex-
+wise aggregating mapping , MDis the multiset of dimension
+D, andR:MD→RDis the readout mapping as:
+x(l)
+i=L(l)(x(l−1)
+i,{x(l−1)
+j:j∈ N(i)}),l∈L,
+Output=R({x(L)
+i:i∈N}),(8)
+whereN(i)is the set of node neighbors for the ithnode.
+Since GCN belongs to aggregation-based GNN, we use
+the same graph isomorphism framework for our analysis.
+Xu et al. [ 23] provided the upper-bound power of GNN as
+Weisfeiler-Lehman graph isomorphism test (WL test) [ 20],
+and proved sufﬁcient conditions for GNN to be as powerful
+as the WL test, which is described in the following lemma
+and theorem.
+Lemma 1. [23] LetG1andG2be any two non-
+isomorphic graphs, i.e. G1≇G2. If a GNN AmapsG1and
+G2into different embeddings, the WL test also decide G1
+andG2are not isomorphic.
+2130
+
+
+==== Page 5 ====
+Theorem 2. [23] LetA=R ◦ L(L)◦...◦ L(1)be a
+GNN with sufﬁcient number of GNN layers, Amaps any
+graphsG1andG2that the WL test of isomorphism decides
+as non-isomorphic, to different embeddings if the following
+conditions hold: a) The mappings L(l),l∈Lare injective.
+b) The readout mapping Ris injective.
+We further propose to use the graph isomorphism frame-
+work to characterize the “power” of a GNN. In this frame-
+work, we observe the fact that for an aggregation-based
+GNNA(such as GCN), with any pair of isomorphic graphs
+G1andG2, we always have A(G1) =A(G2)due to the
+identical input and aggregation-based mapping. In contrast,
+for any pair of non-isomorphic graphs G1andG2, there
+exists certain probability ǫthatAwrongly maps them into
+identical embeddings, i.e. A(G1) =A(G2), as shown in
+Table 2. Therefore, to further analyze our algorithm, we ﬁrst
+deﬁne a speciﬁc metric to evaluate the capacity of a GNN,
+as the probability of mapping any non-isomorphic graphs
+into different embeddings.
+Table 2: Conditional probabilities of GNN Aidentifying two
+graphsG1andG2given their (non)isomorphism.
+G1∼=G2G1≇G2
+A(G1) =A(G2) 1 ǫ
+A(G1)/ne}ationslash=A(G2) 0 1−ǫ
+Deﬁnition 3. LetAbe a GNN; G1andG2are i.i.d.
+The capacity of A,CA, is deﬁned as the probability to
+mapG1andG2into different embeddings if they are non-
+isomorphic:
+CA≡Prob{A(G1)/ne}ationslash=A(G2)|G1≇G2}. (9)
+Higher capacity of a GNN indicates its stronger distinguish-
+ing capability between non-isomorphic graphs, which cor-
+responds to more power in graph isomorphism framework.
+In other words, not so powerful network will have a higher
+probability to map non-isomorphic graphs into the same em-
+beddings and fail to distinguish them. With Theorem 2 and
+Deﬁnition 3, we have CA≤CWL, i.e. the capacity of WL
+test is the upper bound of the capacity of any aggregation-
+based GNN. Intuitively, with the metric to evaluate the net-
+work power, we further deﬁne the training process as the
+problem of optimizing the network capacity.
+Deﬁnition 4. Let a GNN A=R◦L(L)◦...◦L(1)with a
+ﬁxed injective readout function R,G1andG2are i.i.d. The
+training process for Ais formulated as:
+L(L)∗,...,L(1)∗=
+max
+L(L),...,L(1)Prob{R◦L(L)◦...◦L(1)(G1)
+/ne}ationslash=R◦L(L)◦...◦L(1)(G2)|G1≇G2}.(10)Therefore, when training the network, the optimizer tries to
+ﬁnd the best layer mapping for GNN to map non-isomorphic
+graphs into different embeddings as much as possible. With
+training process in Deﬁnition 4, we formulate the greedy
+layer-wise training for Aas:
+L(1)∗= max
+L(1)Prob{R◦L(1)(G1)/ne}ationslash=R◦L(1)(G2)|G1≇G2},
+L(2)∗= max
+L(2)Prob{R◦L(2)◦L(1)∗(G1)
+/ne}ationslash=R◦L(2)◦L(1)∗(G2)|G1≇G2},
+...
+L(L)∗= max
+L(L)Prob{R◦L(L)◦L(L−1)∗◦...◦L(1)∗(G1)
+/ne}ationslash=R◦L(L)◦L(L−1)∗◦...◦L(1)∗(G2)|G1≇G2},
+(11)
+In the following theorem, we provide a sufﬁcient con-
+dition for a network trained layer-wise (11)to achieve the
+same capacity, as one trained from end to end ( 10).
+Theorem 5. LetA=R◦L(L)◦...◦L(1)be a GNN with
+a ﬁxed injective readout function R. IfAcan be convention-
+ally trained by solving the optimization problem (10)and
+the resulting ACon=R◦L(L)
+Con◦...◦L(1)
+Conis as powerful
+as the WL test given the conditions in Theorem 2, then A
+can also be layer-wise trained by solving the optimization
+problem (11)with the resulting ALay=R◦L(L)
+Lay◦...◦L(1)
+Lay
+achieving the same capacity.
+We provide the proof in the appendix. For the network
+architecture which is originally powerful enough through
+conventional training, we can train it to achieve the same
+capacity through layer-wise training. The idea of the proof
+is that: if there exists the injective mapping for each layer as
+the conditions in Theorem 2 satisﬁed, we can prove to ﬁnd
+the injective mapping with layer-wise optimization problem
+as(11). Otherwise, when the network architecture can not be
+powerful enough through conventional training, the follow-
+ing theorem establishes that the layer-wise trained network
+has non-decreasing capacity as the layer number increases.
+Theorem 6. Let GNN A=R ◦ L(L)◦...◦ L(1)
+with a ﬁxed injective readout function R,G1andG2are
+i.i.d., and x(l)
+i=L(l)(x(l−1)
+i,{x(l−1)
+j:j∈ Ni}) :
+RD×MD→RD. With layer-wise training, if L(l)
+Layis
+not guaranteed to be injective for (x(l−1)
+i,{x(l−1)
+j:j∈
+Ni}), but it still can distinguish different x(l−1)
+i , i.e. if
+x(l−1)
+i/ne}ationslash=x(l−1)
+k , thenL(l)
+Lay(x(l−1)
+i,{x(l−1)
+j:j∈ Ni})/ne}ationslash=
+L(l)
+Lay(x(l−1)
+k,{x(l−1)
+j:j∈ Nk}), then we have that the
+capacity of the network is monotonically non-decreasing
+2131
+
+
+==== Page 6 ====
+Input
+FAFT
+W(1)Linear 
+Classier
+ΘInput
+FAFTFAFeature Aggregation (FA) Feature Transformation (FT)
+W(1)*𝐵(1,𝜌)RNN
+No
+train another epochYesStage2RNN ControllerReward for RNN Controller
+FT
+W(2)Linear 
+Classier
+ΘRNN
+No
+train another epochYesEnd 
+TrainingRNN ControllerStage1 Stage2
+Time Complexity Loss Loss Time Complexity𝐵(1,𝜌)
+Figure 3: Learning to optimize in layerwise training algorithm for a two-layer GCN. Two layers are trained in two stage: in each stage the
+layer-wise trained network generates the training loss, the later index as the input for the RNN controller, and the RNN controller outputs the
+hidden stage for the next epoch, and the stopping probability ρfor the current epoch, and sees whether the stopping probability ρis greater
+than the threshold probability ρThres . Ifρ > ρThres then the layer-wise training ﬁnishes, entering the next stage or ending the whole train (if
+it is the last layer), otherwise ρ≤ρThres then training for another epoch. When one iteration of training process ﬁnishes, the reward of
+performance and efﬁciency will be fed back to the RNN controller, updating the weight and starting a new round of training.
+with deeper layers:
+Prob{R◦L(l−1)
+Lay◦...◦L(1)
+Lay(G1)
+/ne}ationslash=R◦L(l−1)
+Lay◦...◦L(1)
+Lay(G2)|G1≇G2}
+≤Prob{R◦L(l)
+Lay◦L(l−1)
+Lay◦...◦L(1)
+Lay(G1)
+/ne}ationslash=R◦L(l)
+Lay◦L(l−1)
+Lay◦...◦L(1)
+Lay(G2)|G1≇G2}.(12)
+We again direct readers to the appendix for the proof. The
+theorem indicates that, if the network architecture is not
+powerful enough through conventional training , we can try
+to increase its capacity through training a deeper network.
+Layer-wise training can also train deeper GCNs more efﬁ-
+ciently compared to state-of-the-arts.
+What remains challenging is that the network capacity
+CAis not available in an analytical form with regards to
+network parameters. In this study, we use the cross entropy
+as the loss function in classiﬁcation tasks. More development
+in loss functions would be needed in future.
+3.3. L2­GCN: Training with Learn Controllers
+One challenge to apply the layerwise training algorithm
+to graph convolutional networks (L-GCN) is that one may
+need to manually adjust the training epochs for each layer.
+A possible solution is early stopping, nevertheless it does
+not intuitively work well in L-GCN since the training loss
+in each layer is not comparable with the ﬁnal validation
+loss. Motivated by learning to optimize [ 2,6,15,3], we
+propose L2-GCN, training a learned RNN controller to de-
+cide when to stop in each layer’s training via policy-based
+REINFORCE [ 21]. The algorithm is illustrated in Figure 3.
+Speciﬁcally, we model the training process for L-GCN
+as a Markov Decision Process (MDP) deﬁned as follows: i)
+Action. The action atat timetfor the RNN controller ismaking the decision on whether to stop at the current-layer
+training or not. ii) State. The state stat timetis the loss in
+the current epoch, the layer index, and the hidden state of
+the RNN controller at time t−1. iii) Reward. The purpose
+of the RNN controller is to train the network efﬁciently with
+competitive performance, and therefore the non-zero reward
+is only received at the end of the MDP as the weighted sum
+of ﬁnal loss and total training epochs (Time Complexity). iv)
+Terminal. Once the L-GCN ﬁnishes the L-layer training,
+the process terminates.
+Given the above settings, a sample trajectory from MDP
+will be:(s1,a1,r1,...,st,at,rt). The detailed architechture
+of RNN controller is shown in Figure 4. For each time step,
+the RNN will output a hidden vector, which will be decoded
+and classied by its corresponding softmax classier. The RNN
+controller works in an autogressive way, where the output
+of the last step will be fed into the next step. L-GCN will
+be sampled for each time step’s output to decide whether to
+stop or not. When terminated, a ﬁnal reward will be fed to
+the controller to update the weight.
+4. Experiments
+In this section, we evaluate predictive performance, train-
+ing time, and GPU memory usages of our proposed L-GCN
+and L2-GCN on single- and multi-class classiﬁcation tasks
+for six increasingly larger datasets: Cora & PubMed [ 13],
+PPI & Reddit [ 10], and Amazon-670K & Amazon-3M [ 7],
+as summarized in appendix. For Amazon-670K & Amazon-
+3M, we use principal component analysis [ 11] to reduce
+the feature dimension down to 100, and use the top-level
+categories as the class labels. The train/validate/test split
+is following the conventional setting for the inductive su-
+pervised learning scenario. We implemented our proposed
+2132
+
+
+==== Page 7 ====
+Figure 4: For each time step t, the RNN controller will ﬁrst take the
+previous hidden vector htand the generated embedding xtas input
+. Embedding xtis a concatenation of action embeddings, loss in
+the current epoch and the layer index. (Following [ 8], we generate
+embeddings randomly from a multinomial distribution for each
+action.) Then the RNN will output a hidden vector ht+1, which will
+be decoded and classiﬁed by its corresponding softmax classiﬁer.
+After obtaining probability vector ρ(t), it performs multinomial
+sampling to pick the action jt+1according to ρ(t). The relative
+probability ρ(t)
+t+1will be further concatenated and recorded for
+reward calculation. When terminal, a ﬁnal reward which is the dot
+product between picked actions probability vector and ˆR(ˆRis the
+weighted sum of the ﬁnal loss and total training epochs), will be
+generated for the controller to update its weights.
+algorithm in PyTorch [ 16]: for layer-wise training, we use
+the Adam optimizer with learning rate of 0.001 for Cora &
+PubMed, and 0.0001 for PPI, Reddit, Amazon-670K and
+Amazon-3M; for RNN controller, we set the controller to
+make a stopping-or-not decision each 10 epochs (5 for Cora
+and 50 for PPI), use the controller architecture as in [ 8] and
+the Adam optimizer with the learning rate of 0.05. All the
+experiments are conducted on a machine with GeForce GTX
+1080 Ti GPU (11 GB memory), 8-core Intel i7-9800X CPU
+(3.80 GHz) and 16 GB of RAM.
+4.1. Comparison with State of the Arts
+To demonstrate the efﬁciency and performance of our pro-
+posed algorithms, we compare them with state-of-the-arts in
+Table 3. We compare L-GCN and L2-GCN to the state-of-
+the-art GCN mini-batch training algorithms as GraphSAGE
+[10], FastGCN [ 4] and VRGCN [ 5], using their originally re-
+leased codes and published settings, except that the batchsize
+and the embedding dimension of hidden layers are kept the
+same in all methods to ensure fair comparisons. Speciﬁcally,
+we set the batchsize at 256 for Cora and 1024 for others; and
+we did the embedding dimension of hidden layers at 16 for
+Cora & PubMed, 512 for PPI and 128 for others. We do not
+compare the controller with other hyper-parameter tuning
+methods since the controller is widely used in many ﬁelds
+such as neural architecture search [ 8].On four common datasets Cora, PubMed, PPI and Reddit,
+we demonstrate that our proposed algorithm L-GCN is signif-
+icantly faster than state-of-the-arts, with a consistent usage
+of GPU memory not dependent on dataset size, while main-
+taining comparable prediction performance. With a learned
+controller to make the stopping decision, L2-GCN can fur-
+ther reduce the training time (here we do not include search
+time) by half with tiny performance loss compared to L-GCN.
+For super large datasets, GraphSAGE and FastGCN fail to
+converge on Amazon-670K, and exceed the time limit on
+Amazon-3M in our experiment, whereas VRGCN achieves
+good performances after long training. Our proposed al-
+gorithms still stably achieve comparable performances efﬁ-
+ciently on both Amazon-670K and Amazon-3M.
+We did not include in Table 1the time spent on hyper-
+parameter tuning (search) for any algorithm. Such a com-
+parison was impossible as search time was not accessible
+for pre-trained state-of-the-arts. Although a typical con-
+troller learning can be expensive (as reported in Table 4),
+RNN controllers in L2-GCN learned over (especially large)
+datasets can be transferrable (shown next); and L2-GCN
+without controller retraining actually saves time compared
+to dataset-speciﬁc manual tuning. As to the memory usage,
+the trends in practical GPU memory usages during training
+did not entirely agree with those in the theoretical analyses
+(Table 1). We contemplate that it is more likely in implemen-
+tation: other models were implemented on TensorFlow and
+ours on PyTorch; and possible CPU memory usage of some
+models was unclear.
+4.2. Ablation Study
+Transferability. We explore the transferability of the
+learned controller. Results in Table 4show that the controller
+learned from larger datasets could be reused for smaller ones
+(with similar loss functions) and thus save search time.
+Epoch conﬁguration. We consider the inﬂuence of dif-
+ferent epoch conﬁgurations in layer-wise training on perfor-
+mance on six datasets. Table 5shows that training under
+different epoch numbers in different layers will affect the
+ﬁnal performance. For layer-wise training (L-GCN), we
+conﬁgure different numbers of epochs for the two layers of
+our GCN as reported in Table 5. For layer-wise training with
+learning to optimize (L2-GCN), we let the RNN controller to
+learn the epoch conﬁguration from randomly sampled sub-
+graphs as training data and report the automatically learned
+epoch numbers. Experimental results show that, trained with
+more epochs for each layer, L-GCN improves perfoemance
+except for Cora. Moreover, with learning to optimize, the
+RNN controller in L2-GCN automatically learns epoch con-
+ﬁgurations with tiny performance loss but much less epochs.
+Figure 5compares the loss curves of layer-wise training
+under various conﬁgurations and over various datasets.
+Deeper networks. We evaluate the necessity of train-
+2133
+
+
+==== Page 8 ====
+Table 3: Comparison with state-of-the-art on performance, training time and GPU memory usage (GPU memory usage during training).
+The best results for each row / dataset are highlighted in red.
+GraphSAGE [ 10] FastGCN [ 4] VRGCN [ 5] L-GCN L2-GCN
+F1 (%) Time Memory F1 (%) Time Memory F1 (%) Time Memory F1 (%) Time Memory F1 (%) Time Memory
+Cora 85.0 18s 655M 85.5 6.02s 659M 85.4 5.47s 253M 84.7 0.45s 619M 84.1 0.38s 619M
+PubMed 86.5 483s 675M 87.4 32s 851M 86.4 118s 375M 86.8 2.93s 619M 85.8 1.50s 631M
+PPI 68.8 402s 849M - - - 98.6 63s 759M 97.2 49s 629M 96.8 26s 631M
+Reddit 93.4 998s 4343M 92.6 761s 4429M 96.0 201s 1271M 94.2 44s 621M 94.0 34s 635M
+Amazon-670K 83.1 2153s 849M 76.1 548s 1621M 92.7 534s 625M 91.6 54s 601M 91.2 30s 613M
+Amazon-3M - - - - - - 88.3 2165s 625M 88.4 203s 601M 88.4 125s 613M
+Table 4: The transferability of the learned contorllers.
+Cora PubMed
+F1 (%) Train Search F1 (%) Train Search
+Controller-Cora 84.1 0.38s 16s - - -
+Controller-PubMed 84.3 0.36s 0s 85.8 1.50s 125s
+Controller-Amazon-3M 84.8 0.43s 0s 86.3 2.43s 0s
+Table 5: The inﬂuence of epoch conﬁguration.
+Cora PubMed PPI
+F1 (%) Epoch F1 (%) Epoch F1 (%) Epoch
+L-GCN-Conﬁg1 83.2 60+60 86.8 100+100 93.7 400+400
+L-GCN-Conﬁg2 84.7 80+80 86.3 120+120 94.1 500+500
+L-GCN-Conﬁg3 83.0 100+100 86.4 140+140 94.9 600+600
+L2-GCN 84.1 75+75 85.8 30+60 94.1 300+350
+Reddit Amazon-670K Amazon-3M
+F1 (%) Epoch F1 (%) Epoch F1 (%) Epoch
+L-GCN-Conﬁg1 93.0 60+60 91.4 60+60 88.2 60+60
+L-GCN-Conﬁg2 93.5 80+80 91.6 80+80 88.4 80+80
+L-GCN-Conﬁg3 93.8 100+100 91.7 100+100 88.3 100+100
+L2-GCN 92.2 30+60 91.2 70+30 88.0 20+80
+0
+25
+ 50
+ 75
+100
+ 125
+ 150
+ 175
+ 200
+Epochs
+0.4
+0.6
+0.8
+1.0LossAmazon 3M
+Config1
+Config2
+Config3
+L2O
+0
+25
+ 50
+ 75
+100
+ 125
+ 150
+ 175
+ 200
+Epochs
+0.5
+1.0
+1.5LossAmazon 670K
+Config1
+Config2
+Config3
+L2O
+0
+25
+ 50
+ 75
+100
+ 125
+ 150
+ 175
+ 200
+Epochs
+0
+1
+2
+3
+4LossCora
+Config1
+Config2
+Config3
+L2O
+0
+ 50
+ 100
+ 150
+ 200
+ 250
+Epochs
+0.2
+0.4
+0.6
+0.8
+1.0LossPubmed
+Config1
+Config2
+Config3
+L2O
+0
+ 200
+ 400
+ 600
+ 800
+ 1000
+ 1200
+Epochs
+0.1
+0.2
+0.3
+0.4
+0.5LossPPI
+Config1
+Config2
+Config3
+L2O
+0
+25
+ 50
+ 75
+100
+ 125
+ 150
+ 175
+ 200
+Epochs
+1
+2
+3LossReddit
+Config1
+Config2
+Config3
+L2O
+Figure 5: The loss curves for manual epoch conﬁgurations and the
+learning-to-optimize conﬁguration.
+ing a deeper network using layer-wise training. Previous
+attempts seem to suggest the usefulness of training deeper
+GCN [ 13]. However, the datasets used in the experiments
+there are not large enough to draw a deﬁnite conclusion.
+Here we conduct experiments on 3 large datasets PPI, Reddit
+and Amazon-3M, with monotonically increasing layer num-
+ber and total training epochs (each layer is trained for the
+same number of epochs) as shown in Table 6. Experimental
+results show that, with more network layers, the prediction
+performance of layer-wise training gets better. Compared
+with 2-layer network, 4-layer L-GCN gains performance
+increase of 4.0, 0.7, and 0.8 (%) on PPI, Reddit and Amazon-
+3M, respectively. When it comes to learn to optimize, the
+RNN controller learns a more efﬁcient epoch conﬁguration,
+while still achieving comparable performances as manually
+set epoch conﬁgurations.
+Therefore, in layer-wise training, we have shown thatTable 6: The inﬂuence of layer number on ﬁnal performance.
+PPI Reddit Amazon-3M
+F1 (%) Epoch F1 (%) Epoch F1 (%) Epoch
+2-layerL-GCN 93.7 800 93.8 200 88.4 160
+L2-GCN 94.1 750 92.2 90 88.0 100
+3-layerL-GCN 97.2 1200 94.2 300 89.0 240
+L2-GCN 96.8 650 94.0 210 88.7 120
+4-layerL-GCN 97.7 1600 94.5 400 89.2 320
+L2-GCN 97.3 1100 94.3 250 89.0 170
+deeper layer networks can have better empirical perfor-
+mances, consistent with the theoretical, non-decreasing net-
+work capacity of deeper networks shown in Theorem 6.
+Applying layer-wise training to N-GCN. We also apply
+layer-wise training to N-GCN [ 1], a recent GCN extension.
+It consists of several GCNs over multiple scales so layer-
+wise training is applied to each GCN individually. Results
+in Table 7show that with layer-wise training, N-GCN is
+signiﬁcantly faster with comparable performance.
+Table 7: N-GCN with layer-wise training on Cora.
+Conventional Training Layer-Wise Training
+F1 (%) Time F1 (%) Time
+N-GCN 83.6 62s 83.1 4s
+5. Conclusions
+In this paper, we propose novel and efﬁcient layerwise
+training algorithms for GCN (L-GCN) which separate fea-
+ture aggregation and feature transformation during training
+and greatly reduce the complexity. Besides, we analyze the-
+oretical grounds to rationalize the power of L-GCN in the
+graph isomorphism framework, provide a sufﬁcient condi-
+tion that L-GCN can be as powerful as conventional training,
+and prove that L-GCN is increasingly powerful as networks
+get deeper with more layers. Numerical results further sup-
+port our theoretical analysis: our proposed algorithm L-GCN
+is signiﬁcantly faster than state-of-the-arts, with a consistent
+usage of GPU memory not dependent on dataset size, while
+maintaining comparable prediction performance. Finally,
+motivated by learning to optimize, we propose L2-GCN, de-
+signing an RNN controller to make the stopping decision
+for each-layer training and training it to learn to make the
+decision rather than manually conﬁgure the training epochs.
+With the learned controller to make the stopping decision,
+L2-GCN on average further reduces the training time by half
+with tiny performance loss, compared to L-GCN.
+2134
+
+
+==== Page 9 ====
+References
+[1]Sami Abu-El-Haija, Amol Kapoor, Bryan Perozzi, and
+Joonseok Lee. N-GCN: Multi-scale graph convolution
+for semi-supervised node classiﬁcation. arXiv preprint
+arXiv:1802.08888 , 2018. 8
+[2]Marcin Andrychowicz, Misha Denil, Sergio Gomez,
+Matthew W Hoffman, David Pfau, Tom Schaul, Brendan
+Shillingford, and Nando De Freitas. Learning to learn by
+gradient descent by gradient descent. In Advances in neural
+information processing systems , pages 3981–3989, 2016. 6
+[3]Yue Cao, Tianlong Chen, Zhangyang Wang, and Yang Shen.
+Learning to optimize in swarms. In Advances in Neural
+Information Processing Systems , pages 15018–15028, 2019.
+6
+[4]Jie Chen, Tengfei Ma, and Cao Xiao. FastGCN: fast learning
+with graph convolutional networks via importance sampling.
+arXiv preprint arXiv:1801.10247 , 2018. 2,3,7,8
+[5]Jianfei Chen, Jun Zhu, and Le Song. Stochastic training of
+graph convolutional networks with variance reduction. arXiv
+preprint arXiv:1710.10568 , 2017. 2,3,7,8
+[6]Yutian Chen, Matthew W Hoffman, Sergio G ´omez Col-
+menarejo, Misha Denil, Timothy P Lillicrap, Matt Botvinick,
+and Nando de Freitas. Learning to learn without gradient
+descent by gradient descent. In Proceedings of the 34th Inter-
+national Conference on Machine Learning-Volume 70 , pages
+748–756. JMLR. org, 2017. 6
+[7]Wei-Lin Chiang, Xuanqing Liu, Si Si, Yang Li, Samy Bengio,
+and Cho-Jui Hsieh. Cluster-gcn: An efﬁcient algorithm for
+training deep and large graph convolutional networks. arXiv
+preprint arXiv:1905.07953 , 2019. 2,3,6
+[8]Xinyu Gong, Shiyu Chang, Yifan Jiang, and Zhangyang
+Wang. AutoGAN: Neural architecture search for generative
+adversarial networks. In Proceedings of the IEEE Interna-
+tional Conference on Computer Vision , pages 3224–3234,
+2019. 7
+[9]Aditya Grover and Jure Leskovec. node2vec: Scalable feature
+learning for networks. In Proceedings of the 22nd ACM
+SIGKDD international conference on Knowledge discovery
+and data mining , pages 855–864. ACM, 2016. 1
+[10] Will Hamilton, Zhitao Ying, and Jure Leskovec. Inductive
+representation learning on large graphs. In Advances in Neu-
+ral Information Processing Systems , pages 1024–1034, 2017.
+1,2,3,6,7,8
+[11] Harold Hotelling. Analysis of a complex of statistical vari-
+ables into principal components. Journal of educational psy-
+chology , 24(6):417, 1933. 6
+[12] Angela H Jiang, Daniel L-K Wong, Giulio Zhou, David G An-
+dersen, Jeffrey Dean, Gregory R Ganger, Gauri Joshi, Michael
+Kaminksy, Michael Kozuch, Zachary C Lipton, et al. Accel-
+erating deep learning by focusing on the biggest losers. arXiv
+preprint arXiv:1910.00762 , 2019. 1
+[13] Thomas N Kipf and Max Welling. Semi-supervised classi-
+ﬁcation with graph convolutional networks. arXiv preprint
+arXiv:1609.02907 , 2016. 1,2,6,8
+[14] Yann LeCun, Yoshua Bengio, et al. Convolutional networks
+for images, speech, and time series. The handbook of brain
+theory and neural networks , 3361(10):1995, 1995. 1[15] Ke Li and Jitendra Malik. Learning to optimize. arXiv
+preprint arXiv:1606.01885 , 2016. 6
+[16] Adam Paszke, Sam Gross, Soumith Chintala, Gregory
+Chanan, Edward Yang, Zachary DeVito, Zeming Lin, Al-
+ban Desmaison, Luca Antiga, and Adam Lerer. Automatic
+differentiation in pytorch. 2017. 7
+[17] Bryan Perozzi, Rami Al-Rfou, and Steven Skiena. Deepwalk:
+Online learning of social representations. In Proceedings of
+the 20th ACM SIGKDD international conference on Knowl-
+edge discovery and data mining , pages 701–710. ACM, 2014.
+1
+[18] Jian Tang, Meng Qu, Mingzhe Wang, Ming Zhang, Jun Yan,
+and Qiaozhu Mei. Line: Large-scale information network em-
+bedding. In Proceedings of the 24th international conference
+on world wide web , pages 1067–1077. International World
+Wide Web Conferences Steering Committee, 2015. 1
+[19] Yue Wang, Ziyu Jiang, Xiaohan Chen, Pengfei Xu, Yang
+Zhao, Yingyan Lin, and Zhangyang Wang. E2-train: Train-
+ing state-of-the-art cnns with over 80% energy savings. In
+Advances in Neural Information Processing Systems , pages
+5139–5151, 2019. 1
+[20] Boris Weisfeiler and Andrei A Lehman. A reduction of a
+graph to a canonical form and an algebra arising during this
+reduction. Nauchno-Technicheskaya Informatsia , 2(9):12–16,
+1968. 4
+[21] Ronald J Williams. Simple statistical gradient-following al-
+gorithms for connectionist reinforcement learning. Machine
+learning , 8(3-4):229–256, 1992. 6
+[22] Felix Wu, Tianyi Zhang, Amauri Holanda de Souza Jr,
+Christopher Fifty, Tao Yu, and Kilian Q Weinberger. Sim-
+plifying graph convolutional networks. arXiv preprint
+arXiv:1902.07153 , 2019. 3
+[23] Keyulu Xu, Weihua Hu, Jure Leskovec, and Stefanie Jegelka.
+How powerful are graph neural networks? arXiv preprint
+arXiv:1810.00826 , 2018. 2,4,5
+[24] Rex Ying, Ruining He, Kaifeng Chen, Pong Eksombatchai,
+William L Hamilton, and Jure Leskovec. Graph convolutional
+neural networks for web-scale recommender systems. In Pro-
+ceedings of the 24th ACM SIGKDD International Conference
+on Knowledge Discovery & Data Mining , pages 974–983.
+ACM, 2018. 1
+[25] Haoran You, Chaojian Li, Pengfei Xu, Yonggan Fu, Yue
+Wang, Xiaohan Chen, Yingyan Lin, Zhangyang Wang, and
+Richard G Baraniuk. Drawing early-bird tickets: Towards
+more efﬁcient training of deep networks. arXiv preprint
+arXiv:1909.11957 , 2019. 1
+[26] Muhan Zhang and Yixin Chen. Link prediction based on
+graph neural networks. In Advances in Neural Information
+Processing Systems , pages 5165–5175, 2018. 1
+2135
+
+

@@ -1,0 +1,975 @@
+==== Page 1 ====
+Bi-GCN: Binary Graph Convolutional Network
+Junfu Wang1,2, Yunhong Wang2, Zhen Yang1,2, Liang Yang3, Yuanfang Guo1,2*
+1State Key Laboratory of Software Development Environment, Beihang University, China
+2School of Computer Science and Engineering, Beihang University, China
+3School of Artiﬁcial Intelligence, Hebei University of Technology, China
+{wangjunfu,yhwang,yangzhen7,andyguo }@buaa.edu.cn,yangliang@vip.qq.com
+Abstract
+Graph Neural Networks (GNNs) have achieved tremen-
+dous success in graph representation learning. Unfortu-
+nately, current GNNs usually rely on loading the entire at-
+tributed graph into network for processing. This implicit
+assumption may not be satisﬁed with limited memory re-
+sources, especially when the attributed graph is large. In
+this paper, we pioneer to propose a Binary Graph Convo-
+lutional Network (Bi-GCN), which binarizes both the net-
+work parameters and input node features. Besides, the orig-
+inal matrix multiplications are revised to binary operations
+for accelerations. According to the theoretical analysis, our
+Bi-GCN can reduce the memory consumption by an aver-
+age of∼30x for both the network parameters and input
+data, and accelerate the inference speed by an average of
+∼47x, on the citation networks. Meanwhile, we also de-
+sign a new gradient approximation based back-propagation
+method to train our Bi-GCN well. Extensive experiments
+have demonstrated that our Bi-GCN can give a compara-
+ble performance compared to the full-precision baselines.
+Besides, our binarization approach can be easily applied to
+other GNNs, which has been veriﬁed in the experiments.
+1. Introduction
+In the past few years, Graph Neural Networks (GNNs),
+which can learn effective representations from irregular
+data, have given excellent performances in various graph-
+based tasks [ 18,28,31,30]. Considering the superior rep-
+resentation abilities of these newly developed GNNs, re-
+searchers have also applied them to many tasks, including
+natural language processing [ 33], computer vision [ 24], etc.
+Unfortunately, the current success of GNNs is attributed
+to an implicit assumption that the input of GNNs contains
+the entire attributed graph. If the entire graph is too large to
+be fed into GNNs due to limited memory resources, in both
+*Corresponding author.
+(a)
+ (b)
+Figure 1. Performances on the Cora dataset. Note that the model
+size is measured in bits and the number of cycle operations, which
+will be introduced in Sec. 5, is employed to reﬂect the inference
+speed. Bi-GCN gives the fastest inference speed and the lowest
+memory consumption with comparable accuracy.
+the training and inference process, which is highly likely
+when the scale of the graph increases, the performances of
+GNNs may degrade drastically.
+To tackle this problem, an intuitive solution is sampling,
+e.g., sampling a subgraph with a suitable size to be entirely
+loaded into GNNs. The sampling based methods can be
+classiﬁed into two categories, neighbor sampling [ 12,5]
+and graph sampling [ 4,6,34]. Neighbor sampling selects a
+ﬁxed number of neighbors for each node in the next layer
+to ensure that every node can be sampled. Thus, it can be
+utilized in both the training and inference process. Unfor-
+tunately, when the number of layers increases, the problem
+ofneighbor explosion [34] arises, such that both the train-
+ing and inference time will increase exponentially. Differ-
+ent from neighbor sampling, graph sampling samples a set
+of subgraphs in the training process, which can avoid the
+problem of neighbor explosion . However, it cannot guar-
+antee that every node can be at least sampled once in the
+whole training/inference process. Thus it is only feasible
+for the training process, because the testing process usually
+requires GNNs to process each node in the graph.
+Another feasible solution is compressing the size of the
+input graph data and the GNN model to better utilize the
+limited memory and computational resources. Several ap-
+proaches have been proposed to compress the convolutional
+1561
+
+
+==== Page 2 ====
+neural networks (CNNs), such as designing shallow net-
+works [ 2], pruning [ 9], designing compact layers [ 27] and
+quantizing the parameters [ 15]. In quantization-based meth-
+ods, binarization [ 15,22,21] has achieved a great success in
+many CNN-based practical vision tasks when a faster speed
+and a lower memory consumption is desired.
+However, compared to the CNN compression methods,
+the compression of GNNs possesses unique challenges.
+Firstly, since the input graph data is usually much larger
+than the GNN models, the compression of the loaded data
+demands more attention. Secondly, the GNNs are usually
+shallow, e.g., the standard GCN [ 18] only has 2 layers,
+which contain less redundancies, thus the compression will
+be more difﬁcult to be achieved. At last, the nodes tend to
+be similar to its neighbors in the high-level semantic space,
+while they tend to be different in the low-level feature space,
+which is different from the grid-like data, such as images,
+videos, etc. This characteristic requires the compressed
+GNNs to possess sufﬁcient parameters for representations.
+In general, the tradeoff between the compression ratio and
+accuracy in the compressed GNNs requires careful designs.
+To tackle the memory and complexity issues, SGC [ 29],
+which is a 1-layered GNN, compresses GCN [ 18] by re-
+moving nonlinearities and collapsing weight matrices be-
+tween consecutive layers. This shallow GNN can accelerate
+both the training and inference processes with comparable
+performance. Although SGC compresses the network pa-
+rameters, it does not compress the loaded data, which is the
+major memory consumption when processing the graphs
+with GNNs.
+In this paper, to alleviate the memory and complexity is-
+sue, we pioneer to propose a binarized GCN, named Binary
+Graph Convolutional Network (Bi-GCN), which is a sim-
+ple yet efﬁcient approximation of GCN [ 18], by binarizing
+the parameters and node attribute representations. Speciﬁ-
+cally, the binarization of the weights is performed by split-
+ting them into multiple feature selectors and maintaining
+a scalar per selector to further reduce the quantization er-
+rors. Similarly, the binarization of the node features can
+be carried out by splitting the node features and assigning
+an attention weight to each node. By employing those ad-
+ditional scalars, more efﬁcient information can be learned
+and retained efﬁciently. After binarizing the weights and
+node features, the computational complexity and the mem-
+ory consumptions induced by the network parameters and
+input data can be largely reduced. Since the existing binary
+back propagation method [ 22] has not considered the rela-
+tionships among the binary weights, we also design a new
+back propagation method by tackling this issue. An intuitive
+comparison between our Bi-GCN and the baseline methods
+is shown in Figure 1, which demonstrates that our Bi-GCN
+can achieve the fastest inference speed and lowest memory
+consumption with a comparable accuracy compared to thestandard full-precision GNNs.
+Our proposed Bi-GCN can reduce the redundancies in
+the node representations while maintain the principle infor-
+mation. When the number of layers increases, Bi-GCN also
+gives a more obvious reductions of the memory consump-
+tions of the parameters and effectively alleviates the over-
+ﬁtting problem. Besides, our binarization approach can be
+easily applied to other GNNs.
+The contributions are summarized as follows:
+• We pioneer to propose a binarized GCN, named Bi-
+nary Graph Convolutional Network (Bi-GCN), which
+can signiﬁcantly reduce the memory consumptions by
+∼30x for both the network parameters and input node
+attributes, and accelerate the inference by an average
+of∼47x, on the citation networks, theoretically.
+• We design a new back propagation method to effec-
+tively train our Bi-GCN, by considering the relation-
+ships among the binary weights in the back propaga-
+tion process.
+• With respect to the signiﬁcant memory reductions and
+accelerations, our Bi-GCN can also give a comparable
+performance compared to the standard GCN on four
+benchmark datasets.
+2. Related Work
+2.1. Sampling Based GNNs
+Sampling is an effective method that allows GNNs to
+process larger graphs with limited memory. Current sam-
+pling methods can be categorized into two categories,
+neighbor sampling [ 12,5] and graph sampling [ 4,6,34].
+GraphSAGE [ 12] gives an empirical number of the sam-
+pled neighbors and extends the GNNs to inductive learning.
+VRGCN [ 5] reduces the sampling size by maintaining the
+embedding of each node from the previous iteration, which
+requires a doubled memory consumption. Meanwhile, Fast-
+GCN [ 4] samples a subgraph in each layer to accelerate
+the training process, which sacriﬁces the classiﬁcation ac-
+curacy. ClusterGCN [ 6] groups the nodes by graph clust-
+ing methods, which demands additional complexity for the
+clustering. GraphSAINT [ 34] proposes an edge sampling
+method with low variance and apply GCN [ 18] to the sam-
+pled subgraphs. Besides, DropEdge [ 23] generates the sub-
+graphs randomly and DropConnection [ 13] adaptively sam-
+ples the subgraphs, to alleviate the overﬁtting problem.
+2.2. CNN Binarization Methods
+Convolutional Neural Networks (CNNs) suffer from cer-
+tain issues, such as high computational costs and etc. Bina-
+rization, as a promising type of techniques in network com-
+pression, has been widely utilized to reduce the memory and
+1562
+
+
+==== Page 3 ====
+computation costs for CNNs. BinaryConnect [ 7] binarizes
+the network parameters and replaces most of the ﬂoating-
+point multiplications with ﬂoating-point additions. Bina-
+rynet [ 8] further binarizes the activation function and uses
+the XNOR (not-exclusive-OR) operations to accelerate the
+inference process. XNOR-Net [ 22] proposes a scalar based
+binarization approach and successfully applies it to the pop-
+ular CNNs, such as ResNet [ 14] and GoogLeNet [ 26].
+3. Preliminaries
+3.1. Notations
+Here, we deﬁne the notations utilized throughout this
+paper. We denote an undirected attributed graph as G=
+{V,E,X}with the vertex set V={vi}N
+i=1and edge set
+E={ei}E
+i=1. Each node vicontains a feature Xi∈Rd.
+X∈RN×dis the collection of all the features in all the
+nodes.A= [aij]∈RN×Nis the adjacency matrix which
+reveals the relationships between each pair of vertices, i.e.,
+the topology information of G.di=/summationtext
+jaijstands for the
+degree of node viandD=diag(d1,d2,...,d n)represents
+the degree matrix corresponding to the adjacency matrix A.
+Then,ˆA=A+Iis the adjacency matrix of the original
+topology with self-loops and ˆDis its corresponding degree
+matrix with ˆDii=/summationtext
+jˆaij. Note that we employ the super-
+script ”(l)” to represent the l-th layer, e.g., H(l)is the input
+node features to the l-th layer.
+3.2. Graph Convolutional Network
+Graph Convolutional Network (GCN) [ 18] has become
+the most popular graph neural network in the past few years.
+Since our binarization approach takes GCN as the basis
+GNN, we give a brief review of GCN here.
+Given an undirected graph G, the graph convolution op-
+eration can be described as
+H(l+1)=σ(˜AH(l)W(l)), (1)
+where˜A=ˆD−1
+2ˆAˆD−1
+2is a sparse matrix, and W(l)∈
+Rd(l)
+in×d(l)
+outcontains the learnable parameters. Note that
+H(l+1)is the output of the l-th layer and the input of the
+(l+1) -th layer, and H(0)=X.σis the non-linear activa-
+tion function, e.g., ReLU.
+From the perspective of spatial methods, the graph con-
+volution layer in GCN can be decomposed into two steps,
+where˜AH(l)is the aggregation step and H(l)W(l)is the
+feature extraction step. The aggregation step tends to con-
+strain the node attributes in the local neighborhood to be
+similar. After that, the feature extraction step can easily ex-
+tract the commonalities between the neighboring nodes.
+GCN typically utilizes a task-dependent loss function,
+e.g., the cross-entropy loss for the node classiﬁcation tasks,which is deﬁned as
+L=−/summationdisplay
+vi∈VlabelC/summationdisplay
+c=1Yi,clog(˜Yi,c), (2)
+whereVlabelstands for the set of the labelled nodes, Cde-
+notes the number of classes, Yrepresents the ground truth
+labels, and ˜Y=softmax (H(L))are the predictions of the
+L-layered GCN.
+4. Binary Graph Convolutional Network
+In this section, we propose our Binary Graph Convolu-
+tion Network (Bi-GCN), a binarized version of the standard
+GCN. As mentioned in previous section, a graph convolu-
+tion layer can be decomposed into two steps, aggregation
+and feature extraction. In Bi-GCN, we only focus on bina-
+rizing the feature extraction step, because the aggregation
+step possesses no learnable parameters (which yields negli-
+gible memory consumption) and it only requires a few cal-
+culations (which can be neglected compared to the feature
+extraction step). Therefore, the aggregation step of the orig-
+inal GCN is maintained. For the feature extraction step, we
+binarize both the network parameters and node features to
+reduce the memory consumptions. To reduce the compu-
+tational complexities and accelerate the inference process,
+the XNOR (not-exclusive-OR) and bit count operations are
+utilized, instead of the traditional ﬂoating-point multiplica-
+tions. Finally, we design an effective back-propagation al-
+gorithm for training our binarized graph convolution layer.
+4.1. Binarization of the Feature Extraction Step
+Based on the vector binarization algorithm [ 22], we
+can perform the binarization to the feature extraction step
+Z(l)=H(l)W(l)in the graph convolution shown in Eq. 1.
+Note that for this feature extraction (matrix multiplication),
+we adopt the bucketing [ 1] method to generalize the binary
+inner product operation to the binary matrix multiplication
+operation. Speciﬁcally, we split the matrix into multiple
+buckets of consecutive values with a ﬁxed size and perform
+the scaling operation separately.
+4.1.1. Binarization of the Parameters
+Since each column of the parameter matrix of the l-th
+layerW(l)serves as a feature selector in the computation of
+Z(l), each column of W(l)is splitted as a bucket, i.e., a vec-
+tor. Letα(l)= (α(l)
+1,α(l)
+2,...,α(l)
+d(l)
+out), which are the scalars
+for each bucket. Let B(l)= (B(l)
+1,B(l)
+2,...,B(l)
+d(l)
+out)∈
+{−1,1}d(l)
+in×d(l)
+outbe the binarized buckets of W(l). Then,
+based on the vector binarization algorithm, the optimal B(l)
+andα(l)can be easily calculated by
+B(l)
+j=sign(W(l)
+:,j), (3)
+1563
+
+
+==== Page 4 ====
+Figure 2. An example of binary feature extraction step. Both the input features and parameters will be binarized to binary matrices. ⊗
+denotes the binary matrix multiplication deﬁned in Sec. 4 and ⊙represents the element-wise multiplication.
+α(l)
+j=1
+d(l)
+out||W(l)
+:,j||1, (4)
+whereW(l)
+:,jrepresents the j-th column of W(l). It can be
+approximated via
+W(l)
+:,j≈˜W(l)
+:,j=α(l)
+jB(l)
+j. (5)
+Based on Eq. 5, the graph convolution operation with bina-
+rized weights can then be described as
+H(l+1)≈H(l+1)
+p=σ(˜AH(l)˜W(l)), (6)
+whereH(l+1)
+p is the binary approximation of H(l+1)with
+the binarized parameters ˜W(l). The binarization of the pa-
+rameters can reduce the memory consumption by a factor
+of∼30x, compared to the parameters with full precision,
+which will be proven in Sec. 5.
+4.1.2. Binarization of the Node Features
+Due to the over-smoothing issue [ 20] induced by the cur-
+rent graph convolution operation, current GNNs are usu-
+ally shallow, e.g., the vanilla GCN only contains 2 graph
+convolution layers. Although the future GNNs may pos-
+sess a larger model, the data sizes of commonly employed
+attributed graphs are usually much larger than the current
+model size. To reduce the memory consumption of the in-
+put data, which is mostly induced by the node features, we
+also perform binarization to the node features which will be
+processed by the graph convolutional layers.
+To binarize the node features, we split H(l)into row
+buckets based on the constraints of the matrix multiplica-
+tion to compute Z(l), i.e., each row of H(l)will conduct
+an inner product with each column of W(l). Letβ(l)=
+(β(l)
+1,β(l)
+2,...,β(l)
+N)denote the scalars for each bucket inH(l). LetF(l)= (F(l)
+1;F(l)
+2;...;F(l)
+N)∈ {−1,1}N×d(l)
+in
+be the binarized buckets. Then, with the vector binarization
+algorithm, the optimal βandFcan be computed by
+β(l)
+i=1
+N||H(l)
+i,:||1, (7)
+F(l)
+i=sign(H(l)
+i,:), (8)
+whereH(l)
+i,:represents the i-th row of H(l). Then, the binary
+approximation of H(l)can be obtained via
+H(l)
+i,:≈˜H(l)
+i,:=β(l)
+iF(l)
+i. (9)
+Intuitively, βcan be considered as the node-weights for the
+feature representations. At last, the graph convolution oper-
+ation with binarized weights and node features can be for-
+mulated as
+H(l+1)≈H(l+1)
+ip=˜A˜H(l)˜W(l). (10)
+Note that this binarization of the node features, i.e., the
+input of the graph convolutional layer, also possesses the
+ability of activation, thus we do not employ speciﬁc acti-
+vation functions (such as ReLU). Similar to the binariza-
+tion of the weights, the memory consumption of the loaded
+attributed graph data can be reduced by a factor of ∼30x
+compared to the vanilla GCN.
+4.1.3. Binary Operations
+With the binarized graph convolutional layers, we can
+accelerate the calculations by employing the XNOR and
+bit-count operations instead of the ﬂoating-point additions
+and multiplications. Let ζ(l)represent the approximation of
+Z(l). Then,
+Z(l)
+ij≈ζ(l)
+ij=β(l)
+iα(l)
+jF(l)
+i,:·B(l)
+:,j. (11)
+1564
+
+
+==== Page 5 ====
+Algorithm 1 Back propagation process for training a bina-
+rized graph convolutional layer
+Input: Gradient of the layer above∂L
+∂H(l+1)
+Output: Gradient of the current layer∂L
+∂H(l)
+1:Calculate the gradients of ˜W(l)and˜H(l)
+∂L
+∂ζ(l)=˜AT·∂L
+∂H(l+1)
+∂L
+∂˜W(l)= (˜H(l))T·∂L
+∂ζ(l)
+∂L
+∂˜H(l)=∂L
+∂ζ(l)·˜W(l)
+2:Calculate∂L
+∂H(l)via Eq. 14
+3:Calculate∂L
+∂W(l)via Eq. 15
+4:Update˜W(l)with the gradient∂L
+∂W(l)
+5:return∂L
+∂H(l)
+Since each element of F(l)andB(l)is either -1 or 1, the
+inner product between these two binary vectors can be re-
+placed by the binary operations, i.e., XNOR and bit count
+operations. Then, Eq. 11can be re-written as
+ζ(l)
+ij=β(l)
+iα(l)
+jF(l)
+i,:⊛B(l)
+:,j, (12)
+where⊛denotes a binary multiplication operation using the
+XNOR and a bit count operations. The detailed process is
+illustrated in Figure 2. Therefore, the graph convolution
+operation in the vanilla GCN can be approximated by
+H(l+1)≈H(l+1)
+b=˜Aζ(l), (13)
+whereζ(l)is calculated via Eq. 12andH(l+1)
+bis the ﬁ-
+nal output of the l-th layer with the binarized parameters
+and inputs. By employing this binary multiplication opera-
+tion, the original ﬂoating point calculations can be replaced
+with identical number of binary operations and a few extra
+ﬂoating-point calculations. It will signiﬁcantly accelerate
+the processing speed of the graph convolutional layers.
+4.2. Binary Gradient Approximation Based Back
+Propagation
+The key parts of our training process include the choice
+of the loss function and the back-propagation method for
+training the binarized graph convolutional layer. The loss
+function employed in our Bi-GCN is the same as the vanilla
+GCN, as shown in Eq. 2. Since the existing back prop-
+agation method [ 22] has not considered the relationships
+among the binary weights, to perform the back-propagation
+for the binarized graph convolutional layer, the gradient cal-
+culation is desired to be newly designed.
+To calculate the actual propagated gradient for the l-th
+layer, the binary approximated gradient∂L
+∂˜H(l)is employed
+to approximate the gradient of the original one as [ 15,22],
+∂L
+∂H(l)≈∂L
+∂˜H(l)✶|∂L
+∂˜H(l)|<1. (14)Note that ✶|r|<1is the indicator function, whose value is 1
+when|r|<1, and vice versa. This indicator function serves
+as a hard tanh function which preserves the gradient infor-
+mation. If the absolute value of the gradients becomes too
+large, the performance will be degraded. Thus, the indicator
+function also serves to kill certain gradients whose absolute
+value becomes too large.
+The gradient of network parameters is computed via an-
+other gradient calculation approach. Here, a full-precision
+gradient is employed to preserve more gradient information.
+If the gradient of the binarized weights∂L
+∂˜W(l)is obtained,
+∂L
+∂W(l)
+ijcan then be calculated as
+∂L
+∂W(l)
+ij=∂L
+∂˜W(l)
+:,j·∂˜W(l)
+:,j
+∂W(l)
+ij
+=1
+d(l)
+inB(l)
+ij/summationdisplay
+k∂L
+∂˜W(l)
+kj·B(l)
+kj+α(l)
+j·∂L
+∂˜W(l)
+ij·∂B(l)
+ij
+∂W(l)
+ij.
+(15)
+To compute the gradient for the sign function sign(·),
+the straight-through estimator (STE) function [ 3] is em-
+ployed, where∂sign(r)
+∂r= ✶|r|<1. The back-propagation
+process is summarized in Algorithm 1.
+5. Analysis
+In this section, we theoretically analyze the performance
+of our Bi-GCN, i.e., the compression ratio of the model size
+and the loaded data size, as well as the acceleration ratio,
+respectively, compared to the full-precision (32-bit ﬂoating-
+point representation) GCN.
+5.1. Model Size Compression
+Let the parameters of each layer in the full-precision
+GCN be denoted as W(l)∈Rd(l)
+in×d(l)
+out, which contains
+(d(l)
+in×d(l)
+out)ﬂoating-point parameters. On the contrary, the
+l-th layer in our Bi-GCN only contains (d(l)
+in×d(l)
+out)binary
+parameters and d(l)
+outﬂoating-point parameters. Therefore,
+the size of the parameters can be reduced by a factor of
+PC(l)=32d(l)
+ind(l)
+out
+d(l)
+ind(l)
+out+32d(l)
+out=32d(l)
+in
+d(l)
+in+32. (16)
+According to Eq. 16, the compression ratio of the pa-
+rameters for the l-th layer is depending on the dimension
+of input node features. For example, a 2-layered Bi-GCN,
+whose hidden layer contains 64 neurons, can achieve a
+∼31x model size compression ratio compared to the full-
+precision GCN on Cora dataset. Although the memory
+consumption of the network parameters is smaller than the
+input data for the vanilla GCN, our binarization approach
+still contributes. Currently, many efforts have already been
+1565
+
+
+==== Page 6 ====
+made to construct deeper GNNs [ 19,23,10]. As the num-
+ber of layers increases, the reductions on the memory con-
+sumptions will become much larger and this contribution
+will become more signiﬁcant.
+5.2. Data Size Compression
+Currently, the loaded data tends to contribute the major-
+ity of the memory consumptions. In the commonly em-
+ployed datasets, the node features tends to contribute the
+majority of the loaded data. Thus, a binarization of the
+loaded node features can largely reduce the memory con-
+sumptions when GNNs process the datasets. Note that the
+data size of the node features is employed as an approxi-
+mation of the entire loaded data size in this paper, because
+the edges in commonly processed attribute graph is usually
+sparse and the size of the division mask is also small.
+Let the loaded node features be denoted as X∈RN×d,
+whereNis the number of nodes and dis the number of
+features per node. Then, the full-precision XcontainsN×d
+ﬂoating-point values. In our Bi-GCN, the loaded data Xcan
+be binarized, and N×dbinary values and Nﬂoating-point
+values can be obtained. Thus, the size of the loaded data X
+can be reduced by a factor of
+DC=32Nd
+Nd+32N=32d
+d+32. (17)
+According to Eq. 17, the compression ratio of the loaded
+data size is depending on the dimension of the node fea-
+tures. In practical, Bi-GCN can achieve an average reduc-
+tion of memory consumption with a factor of ∼30x, which
+indicates that a much bigger attributed graph can be en-
+tirely loaded with identical memory consumption. For some
+inductive datasets, we can then successfully load the en-
+tire graph or use a bigger sub-graph than that in the full-
+precision GCN. The results of data size compression can be
+found in Tables 2and3.
+5.3. Acceleration
+After the analysis of memory consumptions, the analy-
+sis of acceleration of our Bi-GCN, compared to GCN, is
+performed. Let the input matrix and the parameters of the
+l-th layer possess the dimensions N×d(l)
+inandd(l)
+in×d(l)
+out,
+respectively. The original feature extraction step in GCN
+requiresNd(l)
+ind(l)
+outaddition and Nd(l)
+ind(l)
+outmultiplication
+operations. On the contrary, the binarized feature extraction
+step in our Bi-GCN only requires Nd(l)
+ind(l)
+outbinary opera-
+tions and 2Ndoutﬂoating-point multiplication operations.
+According to [ 22], the processing time of performing one
+cycle operation, which contains one multiplication and one
+addition, can be utilized to perform 64 binary operations.
+Then, the acceleration ratio for the feature extraction stepof thel-th layer can be calculated as
+S(l)
+fe=Nd(l)
+ind(l)
+out
+1
+64Nd(l)
+ind(l)
+out+2Nd(l)
+out=64d(l)
+in
+d(l)
+in+128. (18)
+As can be observed from Eq. 18, the dimension of the node
+featuresd(l)
+indetermines the acceleration efﬁciency for the
+feature extraction step.
+For the aggregation step, the sparse matrix multiplica-
+tion contains |E|d(l)
+outﬂoating-point addition and |E|d(l)
+out
+ﬂoating-point multiplication operations. If we let the av-
+erage degree of the nodes be deg, then|E|=Ndeg/2.
+Then, the complete acceleration ratio of the l-th graph
+convolutional layer can be approximately computed via
+S(l)
+full=Nd(l)
+ind(l)
+out+|E|d(l)
+out
+1
+64Nd(l)
+ind(l)
+out+2Nd(l)
+out+|E|d(l)
+out
+=64d(l)
+in+32deg
+d(l)
+in+128+32 deg.(19)
+Note that the average degree deg is usually small in the
+benchmark datasets, e.g., deg≈2.0in the Cora dataset.
+When processing a graph with a low average node degree,
+the computational cost for the aggregation step, i.e., 32deg,
+usually possesses negligible effect on the acceleration ratio.
+Thus, the acceleration ratio of the l-th layer can be approx-
+imately computed via
+S(l)
+full≈S(l)
+fe. (20)
+Therefore, when degis small, the acceleration ratio mainly
+depends on the input dimension of the binarized graph con-
+volutional layers, according to Eqs. 18and20. The input di-
+mension of the ﬁrst graph convolutional layer equals to the
+dimension of the node features in the input graph. The input
+dimensions of the other graph convolutional layers equal to
+the dimensions of the hidden layers. Since the dimension of
+the input node features is usually large, the acceleration ra-
+tio tends to be high for the ﬁrst layer, e.g., ∼59x on the Cora
+dataset. In general, the layer with a larger input dimension
+tends to require more calculations and can thus save more
+calculations with our binarization. For example, the accel-
+eration ratio of a 2-layered Bi-GCN on the Cora dataset can
+achieve∼59x acceleration ratio for the ﬁrst layer and ∼21x
+for the second layer. In total, our 2-layered Bi-GCN can
+achieve∼53x acceleration ratio on the Cora dataset.
+6. Evaluations
+In this section, we evaluate the proposed binarization ap-
+proach and our Bi-GCN on benchmark datasets for the node
+classiﬁcation task1. Note that the memory consumptions
+1More experiments can be found in the supplimentary material.
+1566
+
+
+==== Page 7 ====
+Table 1. Datasets
+Dataset Nodes Edges Classes Features
+Cora 2,708 5,429 7 1,433
+PubMed 19,711 44,338 3 500
+Flickr 89,250 899,756 7 500
+Reddit 232,965 11,606,919 41 602
+(a)
+ (b)
+Figure 3. Comparisons of accuracy and validation loss on Cora.
+(a)
+ (b)
+Figure 4. Comparisons of memory consumption and inference
+speed on Cora.
+and the number of cycle operations are ideally estimated
+based on the speciﬁc settings of the methods and datasets.
+6.1. Datasets
+We conduct our experiments on four commonly em-
+ployed datasets. For the transductive learning task,
+two commonly utilized citation networks, i.e., Cora and
+PubMed [ 25], which are also employed by GCN [ 18], are
+utilized. We adopt the same data division strategy as [ 32].
+For the inductive learning task, Flickr and Reddit are em-
+ployed. We adopt the same data division strategy as Graph-
+SAINT [ 32] for Flickr and GraphSAGE [ 12] for Reddit.
+The datasets are summarized in Table 1.
+6.2. Setups
+For the transductive learning task, we select a 2-layered
+GCN [ 18] with 64 neurons in the hidden layer as the base-
+line. Our Bi-GCN is obtained by binarizing this GCN. The
+evaluation protocol in [ 18] is applied. In the training pro-
+cess, GCN and Bi-GCN are both trained for a maximum of
+1000 epochs with an early stopping condition at 100 epochs,
+by using the Adam [ 17] optimizer with a learning rate of
+0.001. The dropout layers are utilized in the training pro-
+cess with a dropout rate of 0.4, after binarizing the input
+of the intermediate layer. We initialize the full-precision
+weights by Xavier initialization [ 11]. A standard batch nor-malization [ 16] (with zero mean and variance being one) is
+applied to the input feature vectors in Bi-GCN. Note that
+we also investigate the inﬂuences of different model depths
+on classiﬁcation performance. All the hyperparameters are
+set to be identical to the 2-layered case.
+For the inductive learning task, we select the inductive
+GCN [ 12], GraphSAGE [ 12] and GraphSAINT [ 34] as our
+baselines. Note that a 2-layered GraphSAINT model is em-
+ployed for fair comparisons. The settings from their own
+literatures are employed. We will binarize all the feature
+extraction steps to generalize their corresponding binarized
+version. The hyper-parameters in our binarized models are
+set to be identical to their full-precision version.
+6.3. Results
+6.3.1. Comparisons
+The results of the transductive learning tasks are shown
+in Table 2. As can be observed, our Bi-GCN gives a com-
+parable performance compared to the full-precision GCN
+and other baselines. Meanwhile, our Bi-GCN can achieve
+an average of ∼47x faster inference speed and ∼30x lower
+memory consumption than the vanilla GCN, FastGCN, and
+GAT. Besides, the proposed Bi-GCN is more effective than
+SGC, especially on the size of the loaded data.
+For the inductive learning tasks, our binarized GNNs can
+signiﬁcantly save the memory consumptions of both the
+loaded data and models, and reduce the amount of calcu-
+lations with comparable performance, as shown in Table 3.
+The original data size of Reddit is 534.99M, while our bi-
+narized GNNs only demand 17.61M to load the data, which
+proves the signiﬁcance of our binarization approach. Note
+that the acceleration ratios of binarized GNNs on Reddit
+dataset are only ∼10x, because the average node degree is
+large, as discussed in Sec 5.3. In general, these results indi-
+cate that our binarization approach is efﬁcient and it can be
+successfully generalized to different GNNs.
+6.3.2. Ablation Study
+Here, an ablation study is performed to verify the ef-
+fectiveness of the binarizations applied to the parameters
+and node features. As can be observed from Table 2, the
+prediction performances tend to vary less when the bina-
+rization is performed only to the node features. This phe-
+nomenon indicates that there exists many redundancies in
+the full-precision features and our binarization can maintain
+the majority portion of effective information for node classi-
+ﬁcation. Meanwhile, the prediction results of binarizing the
+network parameters indicate that the binarized parameters
+cannot represent as much information as the full-precision
+parameters. However, if both the node attributes and pa-
+rameters are binarized, a comparable performance can be
+achieved, compared to GCN. It reveals that the binarized
+network parameters can be effectively trained by the bina-
+1567
+
+
+==== Page 8 ====
+Table 2. Transductive learning results.(M.S., D.S., and C.O. are the abbreviations of Model Size, Data Size and Cycle Operations.)
+NetworksCora PubMed
+Accuracy M.S. D.S. C.O. Accuracy M.S. D.S. C.O.
+GCN 81.4 ± 0.4 360K 14.8M 2.50e8 79.0 ± 0.3 125.75K 37.6M 6.38e8
+Bi-GCN(binarize features only) 81.1 ± 0.4 360K 0.47M 2.50e8 79.4 ± 1.0 125.75K 1.25M 6.38e8
+Bi-GCN(binarize weights only) 78.3 ± 1.5 11.53K 14.8M 2.50e8 75.5 ± 1.4 4.19K 37.6M 6.38e8
+Bi-GCN 81.2 ± 0.8 11.53K 0.47M 4.67e6 78.2 ± 1.0 4.19K 1.25M 1.55e7
+GAT 83.0 ± 0.7 360.55K 14.8M 2.51e8 79.0 ± 0.3 126.27K 37.6M 6.44e8
+FastGCN 79.8 ± 0.3 360K 14.8M 2.50e8 79.1 ± 0.2 125.75K 37.6M 6.38e8
+SGC 81.0 ± 0.0 39.18K 14.8M 2.72e7 78.9 ± 0.0 5.86K 37.6M 2.98e7
+Table 3. Inductive learning results. (M.S., D.S., and C.O. are the abbreviations of Model Size, Data Size and Cycle Operations.)
+NetworksReddit Flickr
+F1-micro M.S. D.S. C.O. F1-micro M.S. D.S. C.O.
+inductiveGCN 93.8 ± 0.1 643.00K 534.99M 4.18e10 50.9 ± 0.3 507.00K 170.23M 1.18e10
+Bi-inductiveGCN 93.1 ± 0.2 21.25K 17.61M 4.18e9 50.2 ± 0.4 16.87K 5.66M 4.65e8
+GraphSAGE 95.2 ± 0.1 1286.00K 534.99M 8.01e10 50.9 ± 1.0 1014.00K 170.23M 2.34e10
+Bi-GraphSAGE 95.3 ± 0.1 42.51K 17.61M 4.92e9 50.2 ± 0.4 33.74K 5.66M 6.93e8
+GraphSAINT 95.9 ± 0.1 1798.00K 534.99M 1.13e11 52.1 ± 0.1 1526.00K 170.23M 3.53e10
+Bi-GraphSAINT 95.7 ± 0.1 139.62K 17.61M 1.04e10 50.8 ± 0.2 65.25K 5.66M 1.28e9
+rized features, i.e., Bi-GCN can successfully reduce the re-
+dundancies in the node representations, such that the useful
+cues can be learned well by a light-weighted binarized net-
+work. For the memory and computational costs, binarizing
+the weights and features separately will reduce the mem-
+ory consumption. If the binarization is performed to both of
+them, the inference process can also be accelerated.
+6.3.3. Effects of Different Model Depths
+Figure 3(a) shows the transductive results of GCN and
+Bi-GCN on Cora with different model depths. As can be ob-
+served, Bi-GCN is more suitable for constructing a deeper
+GNN than the original GCN. The accuracy of GCN has
+dropped sharply when it consists of three or more graph
+convolutional layers. On the contrary, the performance of
+our Bi-GCN declines slowly. According to Figure 3(b),
+GCN will quickly be bothered by the overﬁtting issue, as
+the number of layers increases. However, our Bi-GCN can
+effectively alleviate this overﬁtting problem. Figure 4illus-
+trates the comparisons of memory consumption and infer-
+ence speed. Since SGC contains only one layer, its memory
+consumption will not change with the increase of the num-
+ber of aggregations. When the number of layers increases,
+Bi-GCN can save more memories. For the acceleration re-
+sults, the ratio between GCN and Bi-GCN tends to decrease
+slightly when the number of layers increases, while the ac-
+tual reduced computational costs increases. Note that the
+required operations in SGC do not increase obviously be-
+cause it only contains one feature extraction layer.7. Conclusion
+In this paper, we propose a binarized version of GCN,
+named Bi-GCN, by binarizing the network parameters and
+the node attributes (input data). The ﬂoating-point opera-
+tions have been replaced by binary operations for inference
+acceleration. Besides, we design a new gradient approxima-
+tion based back-propagation method to train the binarized
+graph convolutional layers. Based on our theoretical anal-
+ysis, Bi-GCN can reduce the memory consumptions by an
+average of ∼30x for both the network parameters and node
+attributes, and accelerate the inference speed by an average
+of∼47x, on the citation networks. Experiments on sev-
+eral datasets have demonstrated that our Bi-GCN can give
+a comparable performance to GCN in both the transductive
+and inductive tasks. Besides, Our binarization approach can
+be easily applied to other GNNs and achieve comparable re-
+sults to their full-precision version.
+Acknowledgment
+This work was supported in part by the National Natural
+Science Foundation of China under Grant 61802391, Grant
+U20B2069 and Grant 61972442, in part by the Natural Sci-
+ence Foundation of Tianjin of China under Grant 20JCY-
+BJC00650, in part by the Natural Science Foundation of
+Hebei Province of China under Grant F2020202040, in part
+by State Key Laboratory of Software Development Envi-
+ronment (SKLSDE-2020ZX-18), and in part by the Funda-
+mental Research Funds for Central Universities.
+1568
+
+
+==== Page 9 ====
+References
+[1] Dan Alistarh, Demjan Grubic, Jerry Li, Ry-
+ota Tomioka, and Milan V ojnovic. QSGD:
+communication-efﬁcient SGD via gradient quantiza-
+tion and encoding. In NIPS , pages 1709–1720, 2017.
+[2] Jimmy Ba and Rich Caruana. Do deep nets really need
+to be deep? In NIPS , pages 2654–2662, 2014.
+[3] Yoshua Bengio, Nicholas L ´eonard, and Aaron
+Courville. Estimating or propagating gradients
+through stochastic neurons for conditional computa-
+tion. arXiv preprint arXiv:1308.3432 , 2013.
+[4] Jie Chen, Tengfei Ma, and Cao Xiao. Fastgcn: Fast
+learning with graph convolutional networks via impor-
+tance sampling. In ICLR , 2018.
+[5] Jianfei Chen, Jun Zhu, and Le Song. Stochastic train-
+ing of graph convolutional networks with variance re-
+duction. In ICML , pages 941–949, 2018.
+[6] Wei-Lin Chiang, Xuanqing Liu, Si Si, Yang Li, Samy
+Bengio, and Cho-Jui Hsieh. Cluster-gcn: An efﬁcient
+algorithm for training deep and large graph convolu-
+tional networks. In ACM SIGKDD , pages 257–266,
+2019.
+[7] Matthieu Courbariaux, Yoshua Bengio, and Jean-
+Pierre David. Binaryconnect: Training deep neural
+networks with binary weights during propagations. In
+NIPS , pages 3123–3131, 2015.
+[8] Matthieu Courbariaux, Itay Hubara, Daniel Soudry,
+Ran El-Yaniv, and Yoshua Bengio. Binarized neural
+networks: Training deep neural networks with weights
+and activations constrained to+ 1 or-1. arXiv preprint
+arXiv:1602.02830 , 2016.
+[9] Emily L. Denton, Wojciech Zaremba, Joan Bruna,
+Yann LeCun, and Rob Fergus. Exploiting linear struc-
+ture within convolutional networks for efﬁcient evalu-
+ation. In NIPS , pages 1269–1277, 2014.
+[10] Claudio Gallicchio and Alessio Micheli. Fast and deep
+graph neural networks. In AAAI , pages 3898–3905,
+2020.
+[11] Xavier Glorot and Yoshua Bengio. Understanding
+the difﬁculty of training deep feedforward neural net-
+works. In AISTATS , pages 249–256, 2010.
+[12] William L. Hamilton, Zhitao Ying, and Jure Leskovec.
+Inductive representation learning on large graphs. In
+NIPS , pages 1024–1034, 2017.
+[13] Arman Hasanzadeh, Ehsan Hajiramezanali, Shahin
+Boluki, Mingyuan Zhou, Nick Dufﬁeld, Krishna
+Narayanan, and Xiaoning Qian. Bayesian graph neu-
+ral networks with adaptive connection sampling. arXiv
+preprint arXiv:2006.04064 , 2020.[14] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian
+Sun. Deep residual learning for image recognition. In
+IEEE CVPR , pages 770–778, 2016.
+[15] Itay Hubara, Matthieu Courbariaux, Daniel Soudry,
+Ran El-Yaniv, and Yoshua Bengio. Binarized neural
+networks. In NIPS , pages 4107–4115, 2016.
+[16] Sergey Ioffe and Christian Szegedy. Batch normal-
+ization: Accelerating deep network training by reduc-
+ing internal covariate shift. In ICML , pages 448–456,
+2015.
+[17] Diederik P. Kingma and Jimmy Ba. Adam: A method
+for stochastic optimization. In ICLR , 2015.
+[18] Thomas N. Kipf and Max Welling. Semi-supervised
+classiﬁcation with graph convolutional networks. In
+ICLR , 2017.
+[19] Guohao Li, Matthias M ¨uller, Ali K. Thabet, and
+Bernard Ghanem. Deepgcns: Can gcns go as deep
+as cnns? In IEEE ICCV , pages 9266–9275, 2019.
+[20] Qimai Li, Zhichao Han, and Xiao-Ming Wu. Deeper
+insights into graph convolutional networks for semi-
+supervised learning. In AAAI , pages 3538–3545, 2018.
+[21] Zechun Liu, Baoyuan Wu, Wenhan Luo, Xin Yang,
+Wei Liu, and Kwang-Ting Cheng. Bi-real net: En-
+hancing the performance of 1-bit cnns with improved
+representational capability and advanced training al-
+gorithm. In ECCV , pages 747–763, 2018.
+[22] Mohammad Rastegari, Vicente Ordonez, Joseph Red-
+mon, and Ali Farhadi. Xnor-net: Imagenet classiﬁ-
+cation using binary convolutional neural networks. In
+ECCV , pages 525–542, 2016.
+[23] Yu Rong, Wenbing Huang, Tingyang Xu, and Junzhou
+Huang. Dropedge: Towards deep graph convolutional
+networks on node classiﬁcation. In ICLR , 2020.
+[24] Victor Garcia Satorras and Joan Bruna Estrach. Few-
+shot learning with graph neural networks. In ICLR ,
+2018.
+[25] Prithviraj Sen, Galileo Namata, Mustafa Bilgic, Lise
+Getoor, Brian Galligher, and Tina Eliassi-Rad. Col-
+lective classiﬁcation in network data. AI magazine ,
+29(3):93–93, 2008.
+[26] Christian Szegedy, Wei Liu, Yangqing Jia, Pierre Ser-
+manet, Scott Reed, Dragomir Anguelov, Dumitru Er-
+han, Vincent Vanhoucke, and Andrew Rabinovich.
+Going deeper with convolutions. In IEEE CVPR ,
+pages 1–9, 2015.
+[27] Christian Szegedy, Wei Liu, Yangqing Jia, Pierre Ser-
+manet, Scott E. Reed, Dragomir Anguelov, Dumitru
+Erhan, Vincent Vanhoucke, and Andrew Rabinovich.
+Going deeper with convolutions. In IEEE CVPR ,
+pages 1–9, 2015.
+1569
+
+
+==== Page 10 ====
+[28] Petar Velickovic, Guillem Cucurull, Arantxa
+Casanova, Adriana Romero, Pietro Li `o, and Yoshua
+Bengio. Graph attention networks. In ICLR , 2018.
+[29] Felix Wu, Amauri H. Souza Jr., Tianyi Zhang, Christo-
+pher Fifty, Tao Yu, and Kilian Q. Weinberger. Simpli-
+fying graph convolutional networks. In ICML , pages
+6861–6871, 2019.
+[30] Keyulu Xu, Weihua Hu, Jure Leskovec, and Stefanie
+Jegelka. How powerful are graph neural networks? In
+ICLR , 2019.
+[31] Liang Yang, Zesheng Kang, Xiaochun Cao, Di Jin,
+Bo Yang, and Yuanfang Guo. Topology optimization
+based graph convolutional network. In IJCAI , pages
+4054–4061, 2019.
+[32] Zhilin Yang, William W. Cohen, and Ruslan Salakhut-
+dinov. Revisiting semi-supervised learning with graph
+embeddings. In ICML , pages 40–48, 2016.
+[33] Liang Yao, Chengsheng Mao, and Yuan Luo. Graph
+convolutional networks for text classiﬁcation. In
+AAAI , pages 7370–7377, 2019.
+[34] Hanqing Zeng, Hongkuan Zhou, Ajitesh Srivastava,
+Rajgopal Kannan, and Viktor K. Prasanna. Graph-
+saint: Graph sampling based inductive learning
+method. In ICLR , 2020.
+1570
+
+

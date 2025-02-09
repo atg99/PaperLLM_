@@ -1,0 +1,2257 @@
+==== Page 1 ====
+DriveLM:
+Driving with Graph Visual Question Answering
+Chonghao Sima4,1∗Katrin Renz2,3∗Kashyap Chitta2,3Li Chen4,1
+Hanxue Zhang1Chengen Xie1Jens Beißwenger2,3Ping Luo4
+Andreas Geiger2,3†Hongyang Li1†
+1OpenDriveLab, Shanghai AI Lab, China
+2University of Tübingen, Germany
+3Tübingen AI Center, Germany
+4University of Hong Kong, China
+simachonghao@pjlab.org.cn katrin.renz@uni-tuebingen.de
+DriveLM-MetricsDisplacement Error
+Vision Language ModelsDriveLM-Agent
+•Answer •Behavior •MotionQuestion with ContextGraph Visual Question Answering𝑷𝟏-Perception
+Q:Whataretheobjectsworthnotinginthecurrentscenario?A:Thereisavan,asedanandapedestrianinfrontoftheegocar.
+Q:Wheremightthevan,thesedanandthepedestrianmoveinthefuture?A:Thoseobjectsmaymovetotherightlane,crosstheped-crossing,etc..
+𝑷𝟑-Planning
+Q:Whatarethesafeactionsoftheegocarconsideringthoseobjects?A:Theegocarshouldwaitforthepedestrianandthesedan,thenturnright.Q –Question; A –Answer; 
+𝑷𝟐	-Prediction
+TaskLevel
+𝑷𝟏	-Perception𝑷𝟐	-Prediction𝑷𝟑	-Planning𝑩	-Behavior𝑴	-MotionObjectLevel𝑪: Context
+𝑪:	𝑷𝟏
+𝑪:	𝑷𝟐𝑪:	𝑷𝟏
+𝑪:	𝑷𝟐QA pairs
+Unseen objectsQ: What are the important objects in the current scene?Prompt: Predictthe motion of the ego vehicle.Predicted TrajectoryGround Truth TrajectoryUnseen scenes&sensor settingnuScenesWaymow/o pedestrianw/ pedestrianTrajectory PredictionGraph Visual QAGeneralizationPredictedAnswerGround TruthAnswerGPTScoreThere is a stopped pickupto the front of the ego car.There is one moving truckto the front of the ego car.DriveLM-Data
+Fig.1:We present DriveLM : A new task, dataset, metrics, and baseline for end-to-
+end autonomous driving. Inspired by [10], DriveLM considers Graph Visual Ques-
+tion Answering (GVQA) , where QA pairs are interconnected via logical depen-
+dencies at the object-level, i.e., interactions between object pairs, and the task-level,
+e.g., perception →prediction →planning →behavior (discretized action described in
+natural language) →motion (continuous trajectory). We propose DriveLM-Data for
+trainingDriveLM-Agent , a baseline for GVQA. We validate its effectiveness using
+theDriveLM-Metrics on challenging settings requiring zero-shot generalization.
+Abstract. We study how vision-language models (VLMs) trained on
+web-scale data can be integrated into end-to-end driving systems to
+∗Equal contribution.†Project lead.arXiv:2312.14150v3  [cs.CV]  16 Jan 2025
+
+==== Page 2 ====
+2 C. Sima et al.
+boost generalization and enable interactivity with human users. While
+recent approaches adapt VLMs to driving via single-round visual ques-
+tion answering (VQA), human drivers reason about decisions in multiple
+steps. Starting from the localization of key objects, humans estimate ob-
+ject interactions before taking actions. The key insight is that with our
+proposed task, Graph VQA, where we model graph-structured reason-
+ing through perception, prediction and planning question-answer pairs,
+we obtain a suitable proxy task to mimic the human reasoning pro-
+cess. We instantiate datasets (DriveLM-Data) built upon nuScenes and
+CARLA, and propose a VLM-based baseline approach (DriveLM-Agent)
+for jointly performing Graph VQA and end-to-end driving. The experi-
+mentsdemonstratethatGraphVQAprovidesasimple,principledframe-
+work for reasoning about a driving scene, and DriveLM-Data provides a
+challenging benchmark for this task. Our DriveLM-Agent baseline per-
+forms end-to-end autonomous driving competitively in comparison to
+state-of-the-art driving-specific architectures. Notably, its benefits are
+pronounced when it is evaluated zero-shot on unseen sensor configura-
+tions. Our question-wise ablation study shows that the performance gain
+comes from the rich annotation of prediction and planning QA pairs in
+the graph structure. All data, models and an official evaluation server
+are available at https://github.com/OpenDriveLab/DriveLM.
+Keywords: Vision Language Model ·End-to-end Autonomous Driving
+1 Introduction
+CurrentAutonomousDriving(AD)stacksarestilllackingcrucialcapabilities[10,
+15]. One key requirement is generalization, which involves the ability to handle
+unseen scenarios or unfamiliar sensor configurations. A secondary requirement
+pertains to the interaction of these models with humans, highlighted for example
+by EU regulations that mandate explainability in deployment [3]. Furthermore,
+unlike today’s AD models, humans do not navigate based on geometrically pre-
+cise bird’s-eye view (BEV) representations [17,32,46]. Instead, humans implicitly
+perform object-centric perception, prediction, and planning (which we refer to
+asP1−3): a rough identification and localization of key objects, followed by rea-
+soning about their possible movement and aggregation of this information into
+a driving action [60,76].
+Simultaneously, another field has been forging ahead: Vision-Language Mod-
+els (VLMs) [47,54,90,106]. These models have several strengths. First, they hold
+a base understanding of the world from internet-scale data that could potentially
+facilitate generalization for planning in AD. In fact, this sort of generalization
+has already been achieved by VLMs for simpler robotics tasks [23,108]. Sec-
+ond, the use of language representations as an input and output offers a plat-
+form for human-friendly interaction with these models, unlike bounding boxes
+or trajectories that are more common to current methods [19,31,49,70]. Fi-
+nally, VLMs are able to make decisions in multiple steps linked by logical rea-
+
+==== Page 3 ====
+DriveLM: Driving with Graph Visual Question Answering 3
+soning [5,21,93,95,103,108]. Importantly, even though they reason in multiple
+separate steps, VLMs are end-to-end differentiable architectures, a characteristic
+that is highly desirable for autonomous driving [10].
+Recent work towards enabling the application of VLMs to AD systems falls
+into two categories: scene-level or single object-level Visual Question Answering
+(VQA). Scene-level VQA refers to the task of describing the driving behavior by
+oneortwosupportingreasons, e.g.,“Thecarismovingintotherightlanebecause
+it is safe to do so.” [41,42]. Single object-level VQA formulates the understanding
+of the ego vehicle’s response to a single object by a chain of QAs in the form
+of “what-which-where-how-why”, e.g., “The ego vehicle stops because there is a
+pedestrian in a white shirt crossing the intersection in front of the ego vehicle
+and it does not want to crash into the pedestrian.” [56,67,71]. Unfortunately,
+neither of these paradigms provides a suitable proxy task to mimic the P1−3
+reasoning process in humans, who consider multiple objects and reason about
+each in multiple steps. Therefore, in this paper, we propose a new task, along
+with corresponding datasets and a baseline model architecture (Fig. 1).
+Task. Graph Visual Question Answering (GVQA) involves formulating
+P1−3reasoning as a series of question-answer pairs (QAs) in a directed graph.
+Its key difference to the aforementioned VQA tasks for AD is the availability
+of logical dependencies between QAs which can be used to guide the answer-
+ing process. GVQA also encompasses questions regarding behavior and motion
+planning, with dedicated metrics (details in Section 2).
+Datasets. DriveLM-nuScenes andDriveLM-CARLA consist of annotated
+QAs, arranged in a graph, linking images with driving behavior through logical
+reasoning.Incomparisontoexistingbenchmarks,theyprovidesignificantlymore
+text annotations per frame (Table 1 and Fig. 2). Furthermore, as an integral
+component of DriveLM-CARLA, we build PDM-Lite [4], the first working rule-
+based expert algorithm for CARLA Leaderboard 2.0. We pair these training
+datasets with challenging test data for evaluating zero-shot generalization.
+Baseline.DriveLM-Agent employs a trajectory tokenizer that can be applied
+to any general VLM [47,54,65,106], coupled with a graph prompting scheme that
+models logical dependencies as context inputs for VLMs. The result is a simple
+methodology to effectively repurpose VLMs for end-to-end AD (Section 3).
+Our experiments provide encouraging results. We find that GVQA on Driv-
+eLM is a challenging task, where current methods obtain moderate scores and
+better modeling of logical dependencies is likely necessary to achieve strong
+QA performance. Even so, DriveLM-Agent already performs competitively to
+state-of-the-art driving-specific models [32] when tested in the open-loop plan-
+ning setting, despite its task-agnostic architecture. Furthermore, employing a
+graph structure improves zero-shot generalization, enabling DriveLM-Agent to
+correctly handle unseen deployment on Waymo data [77] after training only
+on nuScenes [6] data. Finally, with a question-wise analysis we find that the
+QA pairs from the prediction and planning stages help the final driving decision
+most. From these results, we believe that improving GVQA holds great potential
+towards building autonomous driving agents with strong generalization.
+
+==== Page 4 ====
+4 C. Sima et al.
+PerceptionPredictionPlanningDistribution of QuestionsTrafficSignsObject IdentificationPosition & State
+PossibleActionVisual OcclusionPossibleAttentionObject InteractionLane&MapImportant ObjectPlanning and ReasoningImportance RankingSafe/Unsafe Action List
+…PossibleCollision…… ReferConfigureExampleImage
+QualifiedDatavQuestions
+ABatch ofVideos
+Selected KeyFrames & Key Objects
+•FactualQuestions•Open-endedQuestionsMoving State/Type… Planning/Importance…DriveLM-nuScenesDriveLM-CARLA
+Town Settings
+Execute Expert
+Parked.Moving state?What to do?Always Brake.Rule-base generationfromGT of nuScenesFocus ondiversity andavoid fixed formulaic answers.
+QualityCheck
+Checklist
+What to do?Go StraightHumanAnnotatorErrorFeedbackConsistent with answers of previous and next frames?
+FactualQuestionsOpen-endedQuestionsSample 10%
+Humanannotated·Sensor Data ·Object Info·EnvironmentSimulatorRule-based QA Generation
+QualityCheckQualifiedDataGraphBuildingGenerate
+Objects?
+Maroon carWhere?Right to egoFollow slowlyAction?
+Key FramesSelection
+Fig.2: Annotation Pipeline: In DriveLM-nuScenes, we adopt a semi-rule-based QA
+labeling pipeline, where both the ground truth annotation in nuScenes/OpenLane-V2
+and feedback from human annotators are used. A critical part of our pipeline is the
+multi-round quality check, which guarantees high data quality at reasonable costs. In
+DriveLM-CARLA, we meet the same standards while exploiting a fully rule-based QA
+labeling pipeline instead, using a new expert algorithm called PDM-Lite.
+2 DriveLM: Task, Data, Metrics
+Human drivers usually decompose their decision-making process into distinct
+stages that follow a logical progression which encompasses the identification
+and localization of key objects, their possible future action and interaction, and
+ego planning based on all this information [27,55]. This inspires us to propose
+the GVQA as the critical ingredient of DriveLM, which serves as a suitable
+proxy task to mimic the human reasoning process. Within this section, we illus-
+trate the formulation of the GVQA task (Section 2.1), introduce DriveLM-Data
+(Section 2.2) to exemplify the instantiation of GVQA using prominent driving
+datasets, and overview the DriveLM-Metrics used for evaluation (Section 2.3).
+To encourage further research in this direction, an official evaluation server (with
+a publicleaderboard) willbe setup to benchmarkdifferentmethods anddiscover
+more insights about combining language models with autonomous driving.
+2.1 DriveLM-Task: GVQA
+Weorganizeallthequestion-answerpairs(QAs)foranimageframeintoagraph.
+We use the terminology “graph-structured” to refer to a directed acyclic graph
+(DAG), e.g., the current question can get context from (multiple) parent and
+grandparent nodes. The graph G= (V, E )contains a set of vertices V, where
+each vertex represents a QA pair v= (q, a)associated with one or more key
+objects in the scenario. The key difference between GVQA and ordinary VQA
+is that the QAs in GVQA have logical dependencies, which we formulate as the
+edges between the vertices. E⊆V×V, is a set of directed edges, where each
+edge e= (vp, vc)connects the parent QA and the child QA. We formulate the
+
+==== Page 5 ====
+DriveLM: Driving with Graph Visual Question Answering 5
+Table 1: Comparison of DriveLM-nuScenes & -CARLA with Existing
+Datasets. DriveLM-Data significant advances annotation quantity, comprehensive-
+ness (covering perception, prediction and planning ), and logic (chain to graph).
+†full dataset, ‡keyframe dataset,∗semi-rule-based labeling (w/ human annotators),
+∗∗fully-rule-based (no human annotators). - means publicly unavailable.
+DatasetSource
+Dataset# FramesAvg. QA
+per FramePerception Prediction Planning Logic
+nuScenes-QA [67] nuScenes 34,149 13.5 460k∗∗✗ ✗ None
+nuPrompt [98] nuScenes 34,149 1.0 35k∗✗ ✗ None
+HAD [41] HDD 25,549 1.8 25k ✗ 20k None
+BDD-X [42] BDD 26,228 1 26k ✗ ✗ None
+LingoQA [59] LingoQA 28,000 15.3 - - - None
+DRAMA [56] DRAMA 17,785 5.8 85k ✗ 17kChain
+Rank2Tell [71] Rank2Tell 5,800 - - ✗ -Chain
+DriveLM-nuScenes nuScenes 4,871 91.4 144k∗153k 146kGraph
+DriveLM-CARLA †CARLA 64,285 24.4 697k∗∗311k∗∗558k∗∗Graph
+DriveLM-CARLA ‡CARLA 5,721 24.8 63k∗∗28k∗∗51k∗∗Graph
+edge set Eby incorporating two dimensions: object-level and task-level edges.
+At the object level, we construct the logical edges e∈Eto represent the impact
+of interactions between different objects. For example, the planning QA node
+for the sedan is influenced by the perception QA node of the pedestrian in the
+illustration from Fig. 1 (center). At the task-level, we establish the logical edges
+e∈Eto capture the logical chain of different reasoning stages:
+– Perception (P1): identification, description, and localization of key objects
+in the current scene.
+– Prediction (P2): estimation of possible action/interaction of key objects
+based on perception results.
+– Planning (P3): possible safe actions of the ego vehicle.
+– Behavior (B): classification of driving decision.
+– Motion (M): waypoints of ego vehicle future trajectory.
+The concepts of perception, prediction, and planning ( P1−3) are similar to
+thoseinend-to-endAD[10],whiletheconceptsofmotionandbehaviorarebased
+on the ego vehicle future trajectory. Specifically, we define the motion Mas the
+ego vehicle future trajectory, which is a set of Npoints with coordinates (x, y)
+in bird’s-eye view (BEV), denoted as M={(x0, y0),(x1, y1), ..., (xN, yN)}. Each
+point is the offset between the future position and the current position by a fixed
+time interval. Then, the distance for x, yat each time interval is computed as:
+{x, y}dist={(δx,1, δy,1), ..., (δx,N, δy,N)}, (1)
+where δx,i=xi−xi−1andδy,i=yi−yi−1, for i= 1,2, . . . , N. The goal of the
+behavior representation is to serve as an interface from P1−3toM. To obtain
+a behavior representation, we map the mean of xdistandydistto one of the
+predefined bins, where each bin corresponds to a category in either speed or
+steering.Thesearedenotedas BspandBstrespectively.Inthiswork,weconsider
+5 bins:
+
+==== Page 6 ====
+6 C. Sima et al.
+Bsp∈ {fast 2,fast 1,moderate ,slow 1,slow 2},
+Bst∈ {left 2,left 1,straight ,right1,right2},
+where the number in the subscript indicates the intensity. The combination of
+the speed and steering categories for a trajectory form its behavior category
+asB= (Bsp, Bst). While we use a simple definition of Bas a starting point
+for research on driving with VLMs, we note that our formulation supports the
+incorporation of more abstract behaviors such as a lane changes or overtaking.
+2.2 DriveLM-Data
+In order to provide comprehensive and accurate QAs with the graph structure
+defined in Section 2.1, we introduce DriveLM-nuScenes and DriveLM-CARLA.
+Since there are significant disparities between nuScenes and CARLA, the collec-
+tion methods and statistics of these datasets differ.
+DriveLM-nuScenes. We divide the annotation process into three steps: select-
+ing key frames from video clips, choosing key objects within these key frames,
+and subsequently annotating the frame-level P1−3QAs for these key objects.
+A portion of the Perception QAs are generated from the nuScenes [6] and
+OpenLane-V2 [87] ground truth, while the remaining QAs are manually an-
+notated. The question templates for the manual annotations were designed by 5
+domain experts accounting for how humans make driving decisions. Annotators
+are prompted with all question templates for each frame, encouraged to answer
+all questions, but provided a skip option to account for possible incompatibil-
+ity. As we manually annotate the vast majority of data in DriveLM-nuScenes,
+quality is particularly crucial for this portion. When annotating, we conduct
+multiple rounds of rigorous quality checks. In each round, we categorize the
+data into different batches and inspect ten percent of the data in each batch.
+If the qualification rate of manually annotated data in this ten percent does
+not meet expectations, we request the annotators to re-label all data in the
+batch. In Fig. 2, we showcase an example of the QA annotation pipeline, where
+all questions undergo quality checks according to our standards. As a result,
+DriveLM-nuScenes stands out from previously proposed datasets with its larger
+scale, greater comprehensiveness, and more complex structure (See Table 1).
+These QAs cover various aspects of the driving process, ranging from percep-
+tion and prediction to planning, providing a comprehensive understanding of
+autonomous driving scenarios (details in the supplementary material).
+DriveLM-CARLAExpert. WecollectdatausingCARLA0.9.14intheLeader-
+board 2.0 framework [22]. Leaderboard 2.0 contains a large set of new driving
+scenarios compared to its predecessor, Leaderboard 1.0. However, as of now,
+there is no existing method to collect training data at scale in Leaderboard
+2.0. For example, the privileged rule-based expert used by TransFuser++ [36],
+a state-of-the-art method in Leaderboard 1.0, obtains a Driving Score (DS) of
+only 2% on the 8+ kilometer long official validation routes of Leaderboard 2.0.
+We build a new expert algorithm, PDM-Lite, that can handle the new challenges
+
+==== Page 7 ====
+DriveLM: Driving with Graph Visual Question Answering 7
+in Leaderboard 2.0. Our approach is similar to PDM-Closed [19], a rule-based
+planner for nuPlan [7]. PDM-Lite uses the Intelligent Driver Model (IDM) [84]
+to obtain a target speed based on the leading vehicle, pedestrian, stop sign or
+trafficlight.Unlikethe16proposalsfromwhichoneisselectedviaacomplexcost
+function in PDM-Closed, we use only two proposals and a simpler cost function
+basedontheTransFuser++expert[36],givingalight-weightplannersuitablefor
+scalable QA generation. PDM-Lite obtains an improved DS of 44% on the official
+CARLA validation routes. More details can be found in the supplementary.
+DriveLM-CARLA QA Generation. For collecting the DriveLM-CARLA
+dataset, we set up a series of routes in urban, residential, and rural areas and
+execute PDM-Lite on these routes. During this process, we collect the neces-
+sary sensor data, sample keyframes, generate relevant QAs based on privileged
+information about objects and the scene, and organize the logical relationships
+to connect this series of QAs into a graph. We generate data and labels at
+4 FPS and extract keyframes based on changes in the decision of the expert
+(e.g. when the expert changes from acceleration to braking). The rule-based
+annotation pipeline is illustrated in Fig. 2. During data collection, we extract
+privileged information from the simulator about the status of the static and dy-
+namic objects in the scene as well as the triggered rules of the expert. We use
+all 38 scenarios except for InterurbanAdvancedActorFlow, MergerIntoSlowTraf-
+fic, and VehicleTurningRoute to create questions and answers with hand-crafted
+sentence templates based on the information we extract from the simulator.
+The exact questions with their graph structure can be found in the supplemen-
+tary. Our annotation process has the advantage of straightforward scalability
+since we only need to define route and scenario settings in CARLA and the
+subsequent steps can be executed automatically. Including 1.6M QAs (with a
+straightforward scaling recipe), our DriveLM-CARLA stands out as the largest
+driving-language benchmark in terms of total textual content among existing
+benchmarks as shown in Table 1.
+2.3 DriveLM-Metrics
+To evaluate GVQA, the DriveLM-Metrics consist of three components for eval-
+uating motion M, behavior B, and P1−3. For measuring the performance of the
+motion stage, we use standard metrics from the nuScenes and Waymo bench-
+marks: average and final displacement error, ( ADE, FDE ), and the collision
+rateon the predicted trajectory, following UniAD [32]. We evaluate behavior
+predictions by the classification accuracy , along with a breakdown of the
+overall accuracy into its steering and speed components. Finally, we measure the
+P1−3performance using two metrics. SPICE [2] is a prevailing metric used in
+VQAandimagecaptioning,whichcalculatesthestructuresimilarityofpredicted
+texts with ground truth while ignoring the semantic meanings. Simultaneously,
+we employ GPT Score to measure the semantic alignment of answers and com-
+plement the SPICE metric. Specifically, the question, the ground truth answer,
+the predicted answer, and a prompt asking for a numerical score of the answer
+
+==== Page 8 ====
+8 C. Sima et al.
+CCDriveLMAgentLogicalDependency
+SceneImage
+BehaviorMotionPlanningPredictionPerceptionACQ
+PerceptionPredictionPlanningBehaviorMotionCContext=QQ
+CCCCQQQQ
+AQAQAQAQAQQAAQAQAQAQ
+Fig.3: DriveLM-Agent
+Pipeline. Given the scene
+image, a VLM performs
+prompting with context to
+model the logical depen-
+dency among the five QA
+stages. Context is built us-
+ing preceding QAs, and can
+have one or more sources.
+are sent to ChatGPT-3.5 [61,62]. We parse the text returned to get the score,
+where a higher score indicates better semantic accuracy.
+3 DriveLM-Agent: A GVQA Baseline
+In this section, we present DriveLM-Agent, a baseline approach for the GVQA
+taskdetailedinSection2.DriveLM-Agentisbuiltuponageneralvision-language
+modelandcanthereforeexploitunderlyingknowledgegainedduringpre-training.
+Our overall goal involves translating an image into the desired ego vehicle mo-
+tion ( M) through the different stages of VQA ( P1, P2, P3, B). For this, we choose
+BLIP-2 [47] as our base VLM due to its simplicity in architecture and flexibility
+in fine-tuning, but our approach can be applied agnostically to other VLMs.
+As shown in Fig. 3, DriveLM-Agent can be decomposed into several stages:
+(1)P1−3,i.e.,perception, prediction, planning , serve as the foundational layers
+to understand the scene and reason about its structure. (2) The behavior stage
+aggregates crucial information from the P1−3into a description of the desired
+driving action in language space. (3) Finally, the motionstage translates the
+behavior into an executable driving trajectory. To implement the logical depen-
+dency between each linked QA, we propose to use context between connected
+nodes in the GVQA graph. We expand on this idea in the following.
+3.1 Prompting with Context
+Directly translating images to motion as in [16,66] is extremely challenging.
+Motivated by the tendency of humans to perform a multi-step reasoning process,
+we propose to use a similar strategy for VLM-based driving. By doing so, we
+facilitate the retrieval of knowledge stored in LLMs and improve explainability.
+More precisely, the model is designed to use answers from the previous steps
+in the reasoning process as the context for the following questions. For each
+edge e=(vp, vc)∈E, we append the QA from the parent node vpto the question
+of the current node vcwith a prefix “ Context: ”. The context can also contain
+QAs from multiple preceding nodes in which case we concatenate all QAs to
+one context sequence. It is worth noting that the context is only one possible
+implementation to formulate logical dependency in GVQA, which we select due
+to its simplicity. With this scheme, we pass forward relevant information based
+on the logical dependencies established by the graph.
+
+==== Page 9 ====
+DriveLM: Driving with Graph Visual Question Answering 9
+Note that the size and structure of the graph during inference is a design
+choice of the algorithm, which can be adapted based on the task or available
+compute budget. We use this property to train on all available QAs, but perform
+inferenceonspecificsubgraphs,wherethequestionsaresampledusingheuristics.
+For more details, please refer to the supplementary material.
+Context Aggregation through Behavior. Driving encompasses a wide array
+ofpotentialsituationsthatrequireanappropriateresponse.However,despitethe
+diversity of these circumstances, it is interesting to note that almost all events
+involve decisions that can be discretized into a set of behaviors. For example,
+applying the brakes appropriately may address various situations such as a red
+light signal, a stop sign, or the presence of an object ahead of the vehicle. The
+focus of our behavior stage is to generate such a behavior: a statement in natural
+language that articulates the vehicle’s intended movement. As described in Sec-
+tion 2.1, this description effectively serves as a reflective step wherein the model
+summarizes all crucial information from the graph. Thus, we propose to use all
+possible sources of context for predicting behavior, i.e., all the QAs in P1−3. We
+empirically observe that this design is crucial for driving with VLMs.
+3.2 Trajectory Tokenization for Motion
+Since it is non-trivial to output fine-grained numerical results using general
+VLMs, RT-2 [108] handles robotic actions based on a specialized trajectory
+tokenization module. We use this approach to enable DriveLM-Agent to take
+as input the image and behavior description and output trajectories. Specifi-
+cally, we divide the coordinates of waypoints into 256 bins empirically based on
+statistics of train set trajectories. We re-define tokens in the BLIP-2 language
+tokenizer, establishing tokens for each bin, and fine-tune the VLM on the rede-
+fined vocabulary. For simplicity, we use the same VLM architecture (BLIP-2) to
+perform this task, but with independent LoRA weights and trained on a dataset
+consisting of only the QAs for this motion stage. Thus, it is possible to perform
+this functionality using a lightweight LLM [68] or driving-specific architecture
+that accepts a command as an input [31,99].
+4 Experiments
+In this section, we present our experimental results that aim to address the
+following research questions: (1) How can VLMs be effectively repurposed for
+end-to-end autonomous driving? (2) Can VLMs for driving generalize when
+evaluated with unseen sensor setups? (3) What is the effect of each question
+in perception, prediction and planning on the final behavior decision? (4) How
+well do VLMs perform perception, prediction, and planning via GVQA? Exper-
+iments about more VLMs on DriveLM-nuScenes and generalization to unseen
+objects on DriveLM-CARLA are included in the supplementary material.
+Setup.We now briefly overview the key implementation details for the two
+settings used in our experiments (additional details are provided in the supple-
+
+==== Page 10 ====
+10 C. Sima et al.
+mentary material). All fine-tuning is implemented with LoRA [30]. On DriveLM-
+nuScenes, we finetune BLIP-2 on the trainsplit for 10 epochs. We use a batch
+size of 2 for each GPU, and the entire training process spans approximately 7
+hours with 8 V100 GPUs. We train BLIP-2 on the keyframes of the trainsplit
+of DriveLM-CARLA for 6 epochs. This takes 6 hours on 4 A100 GPUs.
+4.1 VLMs for End-to-End Driving
+In our first experiment, we aim to assess the ability of VLMs to perform open-
+loop planning on DriveLM-nuScenes. In particular, we investigate the impact of
+the context provided to the behavior and motion stages. Given sensor data (and
+in the case of VLM methods, a text input), the model is required to predict
+the ego-vehicle future trajectory in the form of waypoints. Though open-loop
+planning suffers from a mismatched data distribution [50], we try to alleviate
+this by evaluating on only the key frames annotated in DriveLM-nuScenes.
+Baselines. As a reference for the task’s difficulty, we provide a simple Com-
+mand Mean baseline. Each frame in nuScenes is associated with one of 3 com-
+mands, ‘turn left’, ‘turn right’, or ‘go straight’. We output the mean of all tra-
+jectories in the training set whose command matches the current test frame
+command. Further, we compare our approach to the current state-of-the-art on
+nuScenes, UniAD [32]. Besides its original setting which requires video inputs,
+we train a single-frame version (‘ UniAD-Single ’) for a fair comparison. Fi-
+nally,BLIP-RT-2 denotes BLIP-2 [47] fine-tuned on DriveLM-Data with the
+trajectory tokenization scheme described in Section 3.2 for only the motion task.
+This acts as an indicator for the performance when using an identical network
+architecture as DriveLM-Agent, but no context inputs or VQA training data.
+DriveLM-Agent. We consider 3 variants of DriveLM-Agent incorporating our
+proposed changes in steps: (1) a 2-stage version that predicts behavior and then
+motion (as described in Section 2.1), but without any P1−3context for behavior
+prediction (‘None’); (2) a ‘Chain’ version that builds the P1−3graph, but only
+passes the final node ( P3) to the behavior stage; (3) the full model (‘Graph’)
+that uses all QAs from P1−3as context for B.
+Results. We show results for the above methods in Table 2. Among the base-
+lines, BLIP-RT-2 is unable to match UniAD-Single (though both perform well
+relative to Command Mean). This shows that the single-stage approach without
+any reasoning is unable to compete with the prior state-of-the-art on nuScenes.
+However, the proposed DriveLM-Agent, which predicts behavior as an interme-
+diate step for motion, provides a significant boost in performance, surpassing
+UniAD-Single. This indicates that with the appropriate prompting, VLMs can
+be surprisingly competitive for end-to-end driving. Interestingly, in the exper-
+imental settings that do not involve generalization, the Chain and Graph ver-
+sions of DriveLM-Agent do not provide any further advantage over no context.
+Further, single-frame VLMs fall short compared to the privileged video-based
+UniAD model, indicating that VLMs with video inputs may be necessary for
+this task. We provide video-input VLM result in the supplementary material.
+
+==== Page 11 ====
+DriveLM: Driving with Graph Visual Question Answering 11
+Table 2: Open-loop Planning on DriveLM-nuScenes and Zero-shot Gen-
+eralization across Sensor Configurations on Waymo. Under nuScenes, using
+Behavior ( B) as context for Motion ( M) enables end-to-end driving with VLMs on
+par with UniAD-Single, a state-of-the-art driving-specific architecture. Under Waymo,
+we randomly sampled 1k frames from the Waymo valset after training on DriveLM-
+nuScenes. DriveLM-Agent outperforms UniAD-Single and benefits from graph context.
+MethodBehavior Motion nuScenes Waymo
+(B) ( M)Behavior ( B)Motion ( M)Behavior ( B)Motion ( M)
+Context Context Acc.↑Speed ↑Steer↑ADE↓Col.↓Acc.↑Speed ↑Steer↑ADE↓Col.↓
+Command Mean - - - - - 4.57 5.72 - - - 7.98 11.41
+UniAD-Single - - - - - 1.80 2.62 - - - 4.16 9.31
+BLIP-RT-2 - - - - - 2.63 2.77 - - - 2.78 6.47
+None B61.4572.2084.731.391.6735.7043.9065.202.766.59
+DriveLM-Agent Chain B50.4360.3275.342.072.0834.6241.2864.552.856.89
+Graph B57.4969.8980.631.741.8939.7354.2970.352.636.17
+UniAD [32] - - - - - 0.80 0.17 - - - - -
+: Predict the motion of the ego vehicle. :Accelerate and go ahead, change to the left lane.: {(1.1,-1.9), (4.1, -4.6),…,(18.4, -7.2)}A:In this scenario, what are dangerous actions to take for the ego vehicle?Q: There are two cars to the front of the ego car.A:What are objects to the front of the ego car? Q
+: The ego vehicle is going straight.The ego vehicle is driving fast.A: Predict the behavior of the ego vehicle. Q: Two cars are moving.A: What is the status of the cars that are to the front of the ego car?Q
+QAACQ=
+CCCCCC
+: Predict the motion of the ego vehicle. Motion:Brake gently to a stop, turn right, turn left.: {0.1,2.5), (0.2, 5.2),…,(0.5, 8.4)}PlanningBehaviorA:In this scenario, what are safeactions to take for the ego vehicle?QPerception: There is one construction vehicle, many barriers, many pedestrians, two traffic cones, and many cars to the front of the ego car.:What are objects to the front of the ego car? Q
+: The ego vehicle is going straight.The ego vehicle is driving slowly.A: Predict the behavior of the ego vehicle. QPrediction: One construction vehicle is parkedA: What is the status of the construction vehicle that is to the front of the ego car?Q
+QACCCCCCAACQ=
+MotionPlanningBehaviorPerception
+Prediction
+Fig.4: Qualitative Results of DriveLM-Agent. (Left) DriveLM-nuScenes val
+frame, (Right) Waymo valframe. We show the questions (Q), context (C), and pre-
+dicted answers (A). DriveLM-Agent’s outputs are easy to interpret for human users.
+4.2 Generalization Across Sensor Configurations
+As a more challenging setting for evaluating the models from Section 4.1, we now
+apply them without further training to a new domain: the Waymo dataset [77].
+Waymo does not include rear cameras’ images, so we drop this input for UniAD-
+Single. VLM methods only use the front view and do not require any adaptation.
+Results. As shown in Table 2, UniAD-Single does not cope well with the new
+sensor configuration, and drops below BLIP-RT-2 in performance. The multi-
+stage approach of DriveLM-Agent provides further improvements. In particular,
+the accuracy of speed predictions rises from 43.90with no context to 54.29with
+the full graph. On the other hand, the chain approach does not provide sufficient
+useful information, with a speed accuracy of only 41.28.
+We present qualitative results for DriveLM-Agent on nuScenes and Waymo
+in Fig. 4. The model generally provides intuitive answers, with a few exceptions
+(e.g., planning on DriveLM-nuScenes, perception on Waymo). This shows the
+
+==== Page 12 ====
+12 C. Sima et al.
+utility of GVQA towards interactive driving systems. Further, on Waymo, we
+seemeaningfulpredictionandplanninganswersdespitetheimperfectperception.
+For more visualizations, please see the supplementary material.
+4.3 Question-wise Analysis in DriveLM-nuScenes
+Next, we analyze the effect of each type of QA pair on the behavior performance
+by adding them as context. First, a set of representative QA pairs are selected in
+each stage. We then train BLIP-2 on different combinations of sets of QA pairs,
+and those QA pairs are added as the context for the behavior question (Table 3).
+Representative Questions at each stage. We select different sets of repre-
+sentative QA pairs in each stage as follows:
+•P1−1: What are the important objects in the current scene?
+•P1−2: What is the moving status of object X?
+•P1−3: What is the visual description of object X?
+•P2−1: What is the future state of object X?
+•P2−2: Would object Xbe in the moving direction of the ego vehicle?
+•P2−3: What object should the ego vehicle notice first / second / third when the ego
+vehicle is getting to the next possible location?
+•P3−1: What actions could the ego vehicle take based on the observation of object X?
+•P3−2: What actions taken by the ego vehicle can lead to a collision with object X?
+•P3−3: In this scenario, what are safe actions to take for the ego vehicle?
+The reasons for such a selection are 1)statistically they make up about 60%
+of the total QA pairs in the three stages. 2)subjectively they represent the most
+information needed for human to drive. A coarser stage-wise analysis is provided
+in the supplementary material for further investigation.
+Results. Our results are shown in Table 3. We observe that training with QA
+pairs from prediction and planning stage ( ID4-9) improves the performance
+from training with perception QA pairs only ( ID1-3). Adding QA pairs from the
+planning stage ( ID7-9) does not significantly boost the performance compared
+to their previous stages ( ID4-6). The reason could be that other vehicles’ future
+status contains all the necessary information to make the behavior decision.
+4.4 Performance for P1−3via GVQA
+In our final experiment, we establish baseline results for the P1−3stages of
+GVQA, studying the impact of context. We use two VLMs, the off-the-shelf
+BLIP-2 [47] (not fine-tuned on DriveLM), and the proposed DriveLM-Agent.
+Baselines. We consider the lower bound of no context (‘None’), which corre-
+spondstotrainingandevaluationwiththesamesettingasstandardVQA(image
+and question in, answer out). As an upper bound for each architecture, we per-
+form GVQA but input the ground truth (‘GT’) context to the model at test
+time instead of its own prior predictions.
+Results. OurresultsaresummarizedinTable4.ItcanbeobservedthatDriveLM-
+nuScenes is more challenging for both models, as indicated by the lower scores on
+
+==== Page 13 ====
+DriveLM: Driving with Graph Visual Question Answering 13
+Table 3: Question-wise analysis in DriveLM-nuScenes. Questions of Px−ylisted
+in Section 4.3. Using Prediction and Planning stages of QA pairs as context for Be-
+havior question improves the performance from using Perception only. However, the
+performance of different questions in the identical stage differentiate slightly.
+IDPerception Prediction Planning Behavior
+P1−1P1−2P1−3P2−1P2−2P2−3P3−1P3−2P3−3Acc.↑Speed ↑Steer↑
+1 ✓- - - - - - - - 54.69 66.83 75.22
+2 ✓ ✓ -- - - - - - 55.32 67.33 74.34
+3 ✓ ✓ ✓ - - - - - - 53.94 65.33 75.72
+4 ✓ ✓ ✓ ✓- - - - - 58.82 71.83 80.98
+5 ✓ ✓ ✓ ✓ ✓ -- - - 57.07 71.96 78.97
+6 ✓ ✓ ✓ ✓ ✓ ✓ - - - 57.70 72.22 79.22
+7 ✓ ✓ ✓ ✓ ✓ ✓ ✓- - 58.95 72.59 80.23
+8 ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ -57.9572.97 79.97
+9 ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ 57.49 69.89 80.63
+Table 4: Baseline P1−3Results. DriveLM-Agent and the zero-shot BLIP-2 benefit
+from a step-wise reasoning procedure given by our graph structure.
+ContextDriveLM-nuScenes (P1−3) DriveLM-CARLA (P1−3)
+BLIP-2 [47] DriveLM-Agent BLIP-2 [47] DriveLM-Agent
+SPICE ↑GPT↑SPICE ↑GPT↑SPICE ↑GPT↑SPICE ↑GPT↑
+None 4.34 42.97 42.56 71.39 10.46 46.37 72.71 79.67
+Graph 7.71 45.21 49.54 72.51 10.30 55.03 75.26 81.78
+GT 8.19 41.10 50.29 72.94 16.18 57.98 79.07 83.13
+it relative to DriveLM-CARLA in all context settings. This is likely due to the
+higherdiversityinhumananswersobtainedforDriveLM-nuScenes,asopposedto
+the rule-based generation in CARLA. On both datasets, DriveLM-Agent, which
+is fine-tuned on DriveLM, significantly outperforms BLIP-2 which is applied in
+a zero-shot manner. On both datasets and cases (zero-shot and fine-tuned), we
+see the potential of the graph-based structure. For the exact evaluation setting
+and a question-wise performance analysis, we refer to the supplementary.
+5 Related Work
+Generalization in Autonomous Driving. The inadequacy of generalization
+to the “long tail” of corner cases poses significant safety concerns to AD sys-
+tems [10,79,80]. To tackle this issue, prior research primarily makes efforts in
+data-driven methods [1,9,29,78,88]. For example, TrafficSim [78] collects more
+data for safety-critical cases by simulation. An emerging direction involves lever-
+aging semantic information to supervise the detection of unseen or anomalous
+objects [14,24,63,89]. Even so, the zero-shot performance of AD systems is cur-
+rently not satisfactory. In this paper, we bring a new approach towards better
+generalization: learning logical reasoning using Graph VQA.
+Language-grounded Driving. Several concurrent methods attempt to incor-
+porate multi-modal inputs into LLMs for AD tasks [11,14,28,39,57–59,63,72,
+
+==== Page 14 ====
+14 C. Sima et al.
+73,81,89,91,94,102,104]. Specifically, GPT-Driver [57] and LLM-Driver [11]
+encode the perceived scene state into prompts, relying on LLMs to formulate
+reasonable plans. DriveGPT4 [102] projects raw sensor data into tokens and uti-
+lizes LLMs for end-to-end prediction of control signals and explanations. Despite
+these preliminary attempts, there is untapped potential in addressing generaliza-
+tion in AD through LLMs. Our work combines VLMs with training over graph-
+structured QAs from DriveLM. This enables us to show benefits on zero-shot
+end-to-end planning, which was not demonstrated by these concurrent studies.
+6 Discussion
+Table 5: Compared to UniAD-Single,
+DriveLM-Agent has fewer trainable pa-
+rameters but a higher inference cost.
+Method #Params #Trainable FLOPs FPS
+UniAD-Single 131.9M 58.8M 1.7T 1.8
+DriveLM-Agent 3.955B 12.9M 24.2T0.16EventhoughDriveLMexhibitspromis-
+ing generalization, there are concern-
+ing limitations of this work.
+– Efficiency Constraints. Inherit-
+ing the drawbacks of LLMs, our
+baseline model suffers from long
+inference times, especially as we
+require multiple rounds of predictions based on the graph structure (roughly
+10×slower than UniAD, as shown in Table 5). The core problem lies in the
+slow throughput of the current model ( 8.5 tokens/s in DriveLM-Agent),
+which may impact practical usage. However, LLMs have become orders of
+magnitude faster [74,100] in the last months as this is a general topic of
+broad interest. We believe that the rapid progress in orthogonal research
+can alleviate this issue.
+– Driving-specific Inputs. DriveLM-Agent directly applies the VLM’s vi-
+sion module, taking a low-resolution front-view image as input. Driving-
+specific sensors such as LiDAR cannot be processed as well. This results in a
+lack of temporal information and 360-degree scene understanding. Extend-
+ing DriveLM-Agent to images from multiple views is straightforward as the
+graph formulation allows various input frames for different nodes. We leave
+it for future work to explore options for multi-modal and multi-frame inputs.
+– Closed-loop Planning. Our approach is currently evaluated under an
+open-loop scheme. In this setting, incorporating the ego vehicle’s status as
+input can significantly enhance the metrics, but its effectiveness may not
+translate well to the real world, and hence we only consider methods that
+do not do so. Extending our work to a closed-loop setting with an affordable
+budget in training time and computational cost is a promising direction to
+explore. With the usage of CARLA we provide a promising foundation for
+more research in the direction of closed-loop planning with VLMs.
+Conclusion. We show how VLMs can be leveraged as end-to-end autonomous
+driving agents with improved generalization over task-specific driving stacks.
+For this we propose the task of Graph VQA together with new datasets and
+metrics. Equipped with these tools, we build a baseline approach that has a
+simple architecture and obtains promising results.
+
+==== Page 15 ====
+DriveLM: Driving with Graph Visual Question Answering 15
+Acknowledgements
+TheOpenDriveLabteamispartoftheShanghaiAILabandkindlysupportedby
+National Key R&D Program of China (2022ZD0160104) and NSFC (62206172).
+This paper is partially supported by the National Key R&D Program of China
+No.2022ZD0161000 and the General Research Fund of Hong Kong No.17200622
+and17209324.ThisworkwasalsosupportedbytheBMBF(TübingenAICenter,
+FKZ: 01IS18039A), the DFG (SFB 1233, TP 17, project number: 276693517),
+and by EXC (number 2064/1 – project number 390727645). We thank the In-
+ternational Max Planck Research School for Intelligent Systems (IMPRS-IS) for
+supporting K. Renz and K. Chitta. Our gratitude goes to Tai Wang for the valu-
+able feedback, Qingwen Bu for refining the figures, and Jiazhi Yang, Shenyuan
+Gao, Yihang Qiu, Tianyu Li, Yunsong Zhou, Zetong Yang, Julian Zimmerlin for
+the fruitful discussion.
+References
+1. Akhauri, S., Zheng, L.Y., Lin, M.C.: Enhanced transfer learning for autonomous
+driving with systematic accident simulation. In: IROS (2020)
+2. Anderson,P.,Fernando,B.,Johnson,M.,Gould,S.:Spice:Semanticpropositional
+image caption evaluation. In: ECCV (2016)
+3. Atakishiyev, S., Salameh, M., Babiker, H., Goebel, R.: Explaining autonomous
+driving actions with visual question answering. arXiv preprint arXiv:2307.10408
+(2023)
+4. Beißwenger, J.: PDM-Lite: A rule-based planner for carla leaderboard 2.0. https:
+//github.com/OpenDriveLab/DriveLM/blob/DriveLM-CARLA/docs/report.
+pdf (2024)
+5. Besta, M., Blach, N., Kubicek, A., Gerstenberger, R., Gianinazzi, L., Gajda, J.,
+Lehmann, T., Podstawski, M., Niewiadomski, H., et al.: Graph of Thoughts:
+Solving Elaborate Problems with Large Language Models. arXiv preprint
+arXiv:2308.09687 (2023)
+6. Caesar, H., Bankiti, V., Lang, A.H., Vora, S., Liong, V.E., Xu, Q., Krishnan,
+A., Pan, Y., Baldan, G., Beijbom, O.: nuScenes: A multimodal dataset for au-
+tonomous driving. In: CVPR (2020)
+7. Caesar, H., Kabzan, J., Tan, K.S., Fong, W.K., Wolff, E.M., Lang, A.H., Fletcher,
+L., Beijbom, O., Omari, S.: nuplan: A closed-loop ml-based planning benchmark
+for autonomous vehicles. In: CVPR Workshops (2021)
+8. Chen, D., Koltun, V., Krähenbühl, P.: Learning to drive from a world on rails.
+In: ICCV (2021)
+9. Chen, D., Krähenbühl, P.: Learning from all vehicles. In: CVPR (2022)
+10. Chen, L., Wu, P., Chitta, K., Jaeger, B., Geiger, A., Li, H.: End-to-end au-
+tonomous driving: Challenges and frontiers. arXiv preprint arXiv:2306.16927
+(2023)
+11. Chen, L., Sinavski, O., Hünermann, J., Karnsund, A., Willmott, A.J., Birch, D.,
+Maund, D., Shotton, J.: Driving with llms: Fusing object-level vector modality
+for explainable autonomous driving. arXiv preprint arXiv:2310.01957 (2023)
+12. Chen,X.,Jia,S.,Xiang,Y.:Areview:Knowledgereasoningoverknowledgegraph.
+Expert Syst. Appl (2020)
+
+==== Page 16 ====
+16 C. Sima et al.
+13. Chen, Y., Rohrbach, M., Yan, Z., Shuicheng, Y., Feng, J., Kalantidis, Y.: Graph-
+based global reasoning networks. In: CVPR (2019)
+14. Chen, Y., Tonkens, S., Pavone, M.: Categorical traffic transformer: Inter-
+pretable and diverse behavior prediction with tokenized latent. arXiv preprint
+arXiv:2311.18307 (2023)
+15. Chib, P.S., Singh, P.: Recent advancements in end-to-end autonomous driving
+using deep learning: A survey. IEEE T-IV (2023)
+16. Chitta, K., Prakash, A., Geiger, A.: Neat: Neural attention fields for end-to-end
+autonomous driving. In: ICCV (2021)
+17. Chitta, K., Prakash, A., Jaeger, B., Yu, Z., Renz, K., , Geiger, A.: Transfuser:
+Imitation with transformer-based sensor fusion for autonomous driving. IEEE
+T-PAMI (2023)
+18. Database, A.I.: Incident 293: Cruise’s self-driving car involved in a multiple-injury
+collision at an san francisco intersection. https://incidentdatabase.ai/cite/293/
+(2022)
+19. Dauner, D., Hallgarten, M., Geiger, A., Chitta, K.: Parting with misconceptions
+about learning-based vehicle motion planning. In: CoRL (2023)
+20. Dewangan, V., Choudhary, T., Chandhok, S., Priyadarshan, S., Jain, A., Singh,
+A., Srivastava, S., Jatavallabhula, K., Krishna, M.: Talk2BEV: Language-
+enhanced bird’s-eye view maps for autonomous driving. arXiv preprint
+arXiv:2310.02251 (2023)
+21. Ding, R., Zhang, C., Wang, L., Xu, Y., Ma, M., Zhang, W., Qin, S., Rajmohan,
+S., Lin, Q., Zhang, D.: Everything of thoughts: Defying the law of penrose triangle
+for thought generation. arXiv preprint arXiv:2311.04254 (2023)
+22. Dosovitskiy, A., Ros, G., Codevilla, F., Lopez, A., Koltun, V.: CARLA: An open
+urban driving simulator. In: CoRL (2017)
+23. Driess, D., Xia, F., Sajjadi, M.S.M., Lynch, C., Chowdhery, A., Ichter, B., Wahid,
+A., Tompson, J., Vuong, Q., et al.: PaLM-E: An embodied multimodal language
+model. In: ICML (2023)
+24. Elhafsi, A., Sinha, R., Agia, C., Schmerling, E., Nesnas, I.A., Pavone, M.: Seman-
+tic anomaly detection with large language models. Auton. Robot (2023)
+25. Floridi, L., Chiriatti, M.: GPT-3: Its nature, scope, limits, and consequences.
+MIND MACH (2020)
+26. Gao, P., Han, J., Zhang, R., Lin, Z., Geng, S., Zhou, A., Zhang, W., Lu, P.,
+He, C., Yue, X., Li, H., Qiao, Y.: LLaMA-Adapter v2: Parameter-efficient visual
+instruction model. arXiv preprint arXiv:2304.15010 (2023)
+27. Groeger, J.A.: Understanding driving: Applying cognitive psychology to a com-
+plex everyday task. Routledge (2013)
+28. Han, W., Guo, D., Xu, C.Z., Shen, J.: DME-Driver: Integrating human de-
+cision logic and 3d scene perception in autonomous driving. arXiv preprint
+arXiv:2401.03641 (2024)
+29. Hanselmann, N., Renz, K., Chitta, K., Bhattacharyya, A., Geiger, A.: King: Gen-
+erating safety-critical driving scenarios for robust imitation via kinematics gradi-
+ents. In: ECCV (2022)
+30. Hu, E.J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen,
+W.: LoRA: Low-rank adaptation of large language models. In: CoRL (2021)
+31. Hu, S., Chen, L., Wu, P., Li, H., Yan, J., Tao, D.: St-p3: End-to-end vision-based
+autonomous driving via spatial-temporal feature learning. In: ECCV (2022)
+32. Hu, Y., Yang, J., Chen, L., Li, K., Sima, C., Zhu, X., Chai, S., Du, S., Lin, T.,
+et al.: Planning-oriented autonomous driving. In: CVPR (2023)
+
+==== Page 17 ====
+DriveLM: Driving with Graph Visual Question Answering 17
+33. Huang, W., Xia, F., Xiao, T., Chan, H., Liang, J., Florence, P., Zeng, A., Tomp-
+son, J., Mordatch, I., et al.: Inner monologue: Embodied reasoning through plan-
+ning with language models. In: CoRL (2022)
+34. Hudson, D.A., Manning, C.D.: Gqa: A new dataset for real-world visual reasoning
+and compositional question answering. In: CVPR (2019)
+35. Ichter, B., Brohan, A., Chebotar, Y., Finn, C., Hausman, K., Herzog, A., Ho, D.,
+Ibarz, J., Irpan, A., et al.: Do as i can, not as i say: Grounding language in robotic
+affordances. In: CoRL (2023)
+36. Jaeger, B., Chitta, K., Geiger, A.: Hidden biases of end-to-end driving models.
+In: ICCV (2023)
+37. Jaeger, B., Chitta, K., Geiger, A.: Hidden biases of end-to-end driving models.
+In: ICCV (2023)
+38. Jelinek, F., Lafferty, J.D., Mercer, R.L.: Basic methods of probabilistic context
+free grammars. Springer, Berlin, Heidelberg (1992)
+39. Jin, B., Liu, X., Zheng, Y., Li, P., Zhao, H., Zhang, T., Zheng, Y., Zhou, G., Liu,
+J.: Adapt: Action-aware driving caption transformer. In: ICRA (2023)
+40. Karamcheti, S., Nair, S., Chen, A.S., Kollar, T., Finn, C., Sadigh, D., Liang, P.:
+Language-Driven representation learning for robotics. In: RSS (2023)
+41. Kim,J.,Misu,T.,Chen,Y.T.,Tawari,A.,Canny,J.:Groundinghuman-to-vehicle
+advice for self-driving vehicles. In: CVPR (2019)
+42. Kim, J., Rohrbach, A., Darrell, T., Canny, J., Akata, Z.: Textual explanations for
+self-driving vehicles. In: ECCV (2018)
+43. Kojima, T., Gu, S.S., Reid, M., Matsuo, Y., Iwasawa, Y.: Large language models
+are zero-shot reasoners. In: NeurIPS (2022)
+44. Lamb, A.M., ALIAS PARTH GOYAL, A.G., Zhang, Y., Zhang, S., Courville,
+A.C., Bengio, Y.: Professor forcing: A new algorithm for training recurrent net-
+works. In: NeurIPS (2016)
+45. Lavie, A., Agarwal, A.: METEOR: An automatic metric for MT evaluation with
+high levels of correlation with human judgments. In: ACL Workshop (2007)
+46. Li, H., Sima, C., Dai, J., Wang, W., Lu, L., Wang, H., Zeng, J., Li, Z., Yang, J.,
+Deng, H., et al.: Delving into the devils of bird’s-eye-view perception: A review,
+evaluation and recipe. IEEE T-PAMI (2023)
+47. Li, J., Li, D., Savarese, S., Hoi, S.: BLIP-2: Bootstrapping language-image pre-
+training with frozen image encoders and large language models. In: ICML (2023)
+48. Li, K., Chen, K., Wang, H., Hong, L., Ye, C., Han, J., Chen, Y., Zhang, W., Xu,
+C., Yeung, D.Y., et al.: CODA: A real-world road corner case dataset for object
+detection in autonomous driving. In: ECCV (2022)
+49. Li, Z., Wang, W., Li, H., Xie, E., Sima, C., Lu, T., Qiao, Y., Dai, J.: Bevformer:
+Learning bird’s-eye-view representation from multi-camera images via spatiotem-
+poral transformers. In: ECCV (2022)
+50. Li, Z., Yu, Z., Lan, S., Li, J., Kautz, J., Lu, T., Alvarez, J.M.: Is ego status all
+you need for open-loop end-to-end autonomous driving? (2023)
+51. Liang, J., Huang, W., Xia, F., Xu, P., Hausman, K., Ichter, B., Florence, P., Zeng,
+A.: Code as policies: Language model programs for embodied control. In: ICRA
+(2023)
+52. Lin, C.Y.: Rouge: A package for automatic evaluation of summaries. In: ACL
+Workshop (2004)
+53. Lin, T.Y., Maire, M., Belongie, S., Hays, J., Perona, P., Ramanan, D., Dollár, P.,
+Zitnick, C.L.: Microsoft coco: Common objects in context. In: ECCV (2014)
+54. Liu, H., Li, C., Wu, Q., Lee, Y.J.: Visual instruction tuning. In: NeurIPS (2023)
+
+==== Page 18 ====
+18 C. Sima et al.
+55. Macadam, C.C.: Understanding and modeling the human driver. Veh. Syst. Dyn
+(2003)
+56. Malla, S., Choi, C., Dwivedi, I., Choi, J.H., Li, J.: DRAMA: Joint risk localization
+and captioning in driving. In: WACV (2023)
+57. Mao, J., Qian, Y., Zhao, H., Wang, Y.: GPT-Driver: Learning to drive with gpt.
+arXiv preprint arXiv:2310.01415 (2023)
+58. Mao,J.,Ye,J.,Qian,Y.,Pavone,M.,Wang,Y.:Alanguageagentforautonomous
+driving. arXiv preprint arXiv:2311.10813 (2023)
+59. Marcu, A.M., Chen, L., Hünermann, J., Karnsund, A., Hanotte, B., Chidananda,
+P., Nair, S., Badrinarayanan, V., Kendall, A., et al.: LingoQA: Video question
+answering for autonomous driving. arXiv preprint arXiv:2312.14115 (2023)
+60. Marr, D.: Vision: A computational investigation into the human representation
+and processing of visual information. The MIT Press (2010)
+61. OpenAI: OpenAI: Introducing ChatGPT. https://openai.com/blog/chatgpt
+(2022)
+62. Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang,
+C., Agarwal, S., Slama, K., et al.: Training language models to follow instructions
+with human feedback. In: NeurIPS (2022)
+63. Pan, C., Yaman, B., Nesti, T., Mallik, A., Allievi, A.G., Velipasalar, S., Ren,
+L.: VLP: Vision language planning for autonomous driving. arXiv preprint
+arXiv:2401.05577 (2024)
+64. Papineni, K., Roukos, S., Ward, T., Zhu, W.J.: Bleu: a method for automatic
+evaluation of machine translation. In: ACL (2002)
+65. Peng, Z., Wang, W., Dong, L., Hao, Y., Huang, S., Ma, S., Wei, F.: Kosmos-
+2: Grounding multimodal large language models to the world. arXiv preprint
+arXiv:2306.14824 (2023)
+66. Prakash, A., Chitta, K., Geiger, A.: Multi-modal fusion transformer for end-to-
+end autonomous driving. In: CVPR (2021)
+67. Qian, T., Chen, J., Zhuo, L., Jiao, Y., Jiang, Y.G.: NuScenes-QA: A multi-modal
+visual question answering benchmark for autonomous driving scenario. arXiv
+preprint arXiv:2305.14836 (2023)
+68. Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I.: Language
+models are unsupervised multitask learners. OpenAI blog (2019)
+69. Rana, K., Haviland, J., Garg, S., Abou-Chakra, J., Reid, I., Suenderhauf, N.:
+SayPlan: Grounding large language models using 3d scene graphs for scalable
+robot task planning. In: CoRL (2023)
+70. Renz,K.,Chitta,K.,Mercea,O.B.,Koepke,A.S.,Akata,Z.,Geiger,A.:Plant:Ex-
+plainable planning transformers via object-level representations. In: CoRL (2022)
+71. Sachdeva, E., Agarwal, N., Chundi, S., Roelofs, S., Li, J., Dariush, B., Choi, C.,
+Kochenderfer, M.: Rank2Tell: A multimodal driving dataset for joint importance
+ranking and reasoning. arXiv preprint arXiv:2309.06597 (2023)
+72. Seff, A., Cera, B., Chen, D., Ng, M., Zhou, A., Nayakanti, N., Refaat, K.S.,
+Al-Rfou, R., Sapp, B.: MotionLM: Multi-agent motion forecasting as language
+modeling. In: ICCV (2023)
+73. Shao,H.,Hu,Y.,Wang,L.,Waslander,S.L.,Liu,Y.,Li,H.:LMDrive:Closed-loop
+end-to-end driving with large language models. arXiv preprint arXiv:2312.07488
+(2023)
+74. Shi, D., Tao, C., Rao, A., Yang, Z., Yuan, C., Wang, J.: Crossget: Cross-guided
+ensemble of tokens for accelerating vision-language transformers (2023)
+75. Shi, J., Zhang, H., Li, J.: Explainable and explicit visual reasoning over scene
+graphs. In: CVPR (2019)
+
+==== Page 19 ====
+DriveLM: Driving with Graph Visual Question Answering 19
+76. Spelke, E.S., Kinzler, K.D.: Core knowledge. Dev Sci (2007)
+77. Sun, P., Kretzschmar, H., Dotiwalla, X., Chouard, A., Patnaik, V., Tsui, P., Guo,
+J., Zhou, Y., Chai, Y., Caine, B., et al.: Scalability in perception for autonomous
+driving: Waymo open dataset. In: CVPR (2020)
+78. Suo, S., Regalado, S., Casas, S., Urtasun, R.: Trafficsim: Learning to simulate
+realistic multi-agent behaviors. In: CVPR (2021)
+79. Tampuu, A., Matiisen, T., Semikin, M., Fishman, D., Muhammad, N.: A survey
+of end-to-end driving: Architectures and training methods. IEEE T-NNLS (2020)
+80. Teng, S., Hu, X., Deng, P., Li, B., Li, Y., Ai, Y., Yang, D., Li, L., Xuanyuan, Z.,
+Zhu, F., et al.: Motion planning for autonomous driving: The state of the art and
+future perspectives. IEEE T-IV (2023)
+81. Tian, X., Gu, J., Li, B., Liu, Y., Hu, C., Wang, Y., Zhan, K., Jia, P., Lang, X.,
+Zhao, H.: DriveVLM: The convergence of autonomous driving and large vision-
+language models. arXiv preprint arXiv:2402.12289 (2024)
+82. Toomarian, N.B., Barhen, J.: Learning a trajectory using adjoint functions and
+teacher forcing. Neural networks (1992)
+83. Touvron, H., Martin, L., Stone, K.R., Albert, P., Almahairi, A., Babaei, Y., Bash-
+lykov,N.,Batra,S.,Bhargava,P.,etal.:Llama2:Openfoundationandfine-tuned
+chat models. arXiv preprint arXiv:2307.09288 (2023)
+84. Treiber, M., Hennecke, A., Helbing, D.: Congested traffic states in empirical ob-
+servations and microscopic simulations. Physical Review E 62(2) (2000)
+85. Treiber, M., Hennecke, A., Helbing, D.: Congested traffic states in empirical ob-
+servations and microscopic simulations. Physical review E (2000)
+86. Vedantam, R., Lawrence Zitnick, C., Parikh, D.: Cider: Consensus-based image
+description evaluation. In: CVPR (2015)
+87. Wang, H., Li, T., Li, Y., Chen, L., Sima, C., Liu, Z., Wang, B., Jia, P., Wang,
+Y., Jiang, S., et al.: OpenLane-V2: A topology reasoning benchmark for unified
+3d HD mapping. In: NeurIPS Datasets and Benchmarks (2023)
+88. Wang, J., Pun, A., Tu, J., Manivasagam, S., Sadat, A., Casas, S., Ren, M., Urta-
+sun, R.: Advsim: Generating safety-critical scenarios for self-driving vehicles. In:
+CVPR (2021)
+89. Wang, T.H., Maalouf, A., Xiao, W., Ban, Y., Amini, A., Rosman, G., Karaman,
+S., Rus, D.: Drive anywhere: Generalizable end-to-end autonomous driving with
+multi-modal foundation models. arXiv preprint arXiv:2310.17642 (2023)
+90. Wang, W., Chen, Z., Chen, X., Wu, J., Zhu, X., Zeng, G., Luo, P., Lu, T., Zhou,
+J., Qiao, Y., Dai, J.: VisionLLM: Large language model is also an open-ended
+decoder for vision-centric tasks. arXiv preprint arXiv:2305.11175 (2023)
+91. Wang, W., Xie, J., Hu, C., Zou, H., Fan, J., Tong, W., Wen, Y., Wu, S., Deng, H.,
+et al.: DriveMLM: Aligning multi-modal large language models with behavioral
+planning states for autonomous driving. arXiv preprint arXiv:2312.09245 (2023)
+92. Wang, X., Wang, D., Xu, C., He, X., Cao, Y., Chua, T.S.: Explainable reasoning
+over knowledge graphs for recommendation. In: AAAI (2019)
+93. Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang, S., Chowdhery,
+A., Zhou, D.: Self-Consistency improves chain of thought reasoning in language
+models. In: ICLR (2023)
+94. Wayve: Lingo-1. https://wayve.ai/thinking/lingo-natural-language-autonomous-
+driving/ (2023)
+95. Wei,J.,Wang,X.,Schuurmans,D.,Bosma,M.,Ichter,B.,Xia,F.,Chi,E.,Le,Q.,
+Zhou, D.: Chain-of-thought prompting elicits reasoning in large language models.
+In: NeurIPS (2022)
+
+==== Page 20 ====
+20 C. Sima et al.
+96. Wen, C., Lin, J., Qian, J., Gao, Y., Jayaraman, D.: Keyframe-focused visual
+imitation learning. In: ICML (2021)
+97. Wu,D.,Han,W.,Wang,T.,Dong,X.,Zhang,X.,Shen,J.:ReferringMulti-Object
+tracking. In: CVPR (2023)
+98. Wu, D., Han, W., Wang, T., Liu, Y., Zhang, X., Shen, J.: Language prompt for
+autonomous driving. arXiv preprint arXiv:2309.04379 (2023)
+99. Wu, P., Jia, X., Chen, L., Yan, J., Li, H., Qiao, Y.: Trajectory-guided control
+prediction for end-to-end autonomous driving: A simple yet strong baseline. In:
+NeurIPS (2022)
+100. Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., Han, S.: SmoothQuant: Ac-
+curate and efficient post-training quantization for large language models. In: Pro-
+ceedings of the 40th International Conference on Machine Learning (2023)
+101. Xinpeng, D., Jinahua, H., Hang, X., Xiaodan, L., Xu, H., Wei, Z., Xiaomeng,
+L.: Holistic autonomous driving understanding by bird’s-eye-view injected multi-
+modal large models. In: CVPR (2024)
+102. Xu, Z., Zhang, Y., Xie, E., Zhao, Z., Guo, Y., Wong, K.K., Li, Z., Zhao, H.:
+DriveGPT4: Interpretable end-to-end autonomous driving via large language
+model. arXiv preprint arXiv:2310.01412 (2023)
+103. Yao, S., Yu, D., Zhao, J., Shafran, I., Griffiths, T.L., Cao, Y., Narasimhan, K.:
+Tree of Thoughts: Deliberate problem solving with large language models. arXiv
+preprint arXiv:2305.10601 (2023)
+104. Yuan, J., Sun, S., Omeiza, D., Zhao, B., Newman, P., Kunze, L., Gadd, M.: RAG-
+Driver: Generalisable driving explanations with retrieval-augmented in-context
+learning in multi-modal large language model. arXiv preprint arXiv:2402.10828
+(2024)
+105. Zareian,A.,Rosa,K.D.,Hu,D.H.,Chang,S.F.:Open-vocabularyobjectdetection
+using captions. In: CVPR (2021)
+106. Zhang, R., Han, J., Zhou, A., Hu, X., Yan, S., Lu, P., Li, H., Gao, P., Qiao, Y.:
+LLaMA-Adapter:Efficientfine-tuningoflanguagemodelswithzero-initattention.
+arXiv preprint arXiv:2303.16199 (2023)
+107. Zhou, X., Liu, M., Zagar, B.L., Yurtsever, E., Knoll, A.C.: Vision language mod-
+els in autonomous driving and intelligent transportation systems. arXiv preprint
+arXiv:2310.14414 (2023)
+108. Zitkovich, B., Yu, T., Xu, S., Xu, P., Xiao, T., Xia, F., Wu, J., Wohlhart, P.,
+Welker, S., et al.: RT-2: Vision-language-action models transfer web knowledge
+to robotic control. In: CoRL (2023)
+
+==== Page 21 ====
+DriveLM: Driving with Graph Visual Question Answering 21
+Overview
+In the appendices below, we first delve deeper into various discussions, along
+with additional details around the annotation process of DriveLM-nuScenes &
+-CARLA, GVQA metrics, context setting & trajectory tokenization in DriveLM-
+Agent, and more ablation results of DriveLM-Agent on DriveLM-nuScenes and
+Waymo. Finally, we provide additional results and visualizations that further
+complement the findings from the main text.
+For readers who want to focus on specific topics, we provide a summary
+below:
+Appendix A – Motivating Questions
+We index a list of “motivating” questions that may arise from reading the
+main text and that we expand on further here ( e.g., “why adapt general
+VLMs to driving”). These questions are open to be explored and thus
+our answers here are intuitive andempirical .
+Appendix B – DriveLM-nuScenes
+We provide the DriveLM-nuScenes dataset composition, introduce the
+detailed annotation pipeline and conduct statistics of QA categories.
+Appendix C – DriveLM-CARLA
+We provide a detailed description of the PDM-Lite expert, composition
+of the dataset, how the graph looks, and explain the data generation and
+annotation process.
+Appendix D – DriveLM-Metrics
+We explain the details of the metrics for each task in the GVQA, illus-
+trate their differences, and provide the reasons for proposing GPT-score
+as the main metric used in the P1−3VQA tasks.
+Appendix E – DriveLM-Agent
+We introduce the detailed design of the prompting with context and
+the trajectory tokenization, including the differences in context during
+training and evaluation, the pattern for the trajectory as a sentence, and
+the hyperparameters in the tokenizer.
+
+==== Page 22 ====
+22 C. Sima et al.
+Appendix F – Experiments
+We provide more experiments, including the generalization to unseen
+objects, effects of more context design on the zero-shot ability, the per-
+formance with more conventional VQA metrics and the model efficiency
+comparison.
+Appendix G – Qualitative Results
+We show qualitative examples of the context, questions, and answers
+on nuScenes, Waymo, and CARLA. Additionally, we contrast predicted
+and ground truth answers together with their SPICE and GPT Score on
+nuScenes to provide some intuition for those metrics.
+Appendix H – Other Related Work
+Weprovidemorerelatedworksfromtwonewperspectives.Oneisreason-
+ing over graph structure which is similar to our idea of graph-structure
+reasoning, the other is more vision-language benchmarks for autonomous
+driving.
+
+==== Page 23 ====
+DriveLM: Driving with Graph Visual Question Answering 23
+A Motivating Questions
+Q1.In what situations could we expect planning with VLMs to outperform con-
+ventional end-to-end autonomous driving?
+One of the key challenges of autonomous driving is to generalize to the long-
+tail of scenarios, that are rarely encountered but have critical importance. Con-
+sidering the large-scale pre-training of VLMs, their acquired knowledge of the
+world, and the reasoning ability of the LLM, it is anticipated that planning with
+VLMs will work better in situations that are novel or unseen in the context of
+driving scenarios but encountered during pre-training in unrelated contexts.
+Q2.Why adapt general VLMs to driving rather than adding language inputs to
+driving-specific models?
+General VLMs benefit from billion-scale pre-training data for vision-language
+tasks extracted from the internet, which can be adapted to the driving domain
+through fine-tuning on small autonomous driving datasets like DriveLM. Con-
+versely,driving-specificmodelsareonlypre-trainedonsmallautonomousdriving
+datasets, and adding language inputs to these with data from outside the self-
+driving domain is non-trivial. Combining the advantages of VLMs and driving-
+specific models is however an interesting direction to explore.
+Q3.Can open-loop evaluation of planning provide meaningful results?
+When performing open-loop evaluation, providing the ego history as an input
+totheplanningmodulepreventsfaircomparisons,asthissignalaloneissufficient
+for achieving low errors on existing benchmarks. DriveLM alleviates this issue by
+evaluatingkeyframes,wheretheintentionoftheegovehiclechanges,andtheego
+history is not strongly indicative of the future behavior or motion. Additionally,
+we consider baselines in our analysis that do not input the ego history to the
+planning module. Finally, we introduce DriveLM-CARLA as a means to show
+closed-loop planning results in the future.
+Q4.Why are there currently no closed-loop planning results on CARLA?
+Running 4B parameter models at 20 FPS as required by CARLA needs more
+engineering effort. This could be solved by using distillation, quantization, and
+caching techniques in LLM inference. Another approach would be to execute
+only the final motion stage of DriveLM-Agent at 20 FPS, while the other GVQA
+stages are executed at a lower frame rate.
+Q5.Is DriveLM-Agent efficient enough to be applicable to real-world autonomous
+driving?
+We comment on the runtime of DriveLM-Agent in Table 5 in the main paper.
+Without any optimization, the approach is around 1 order of magnitude slower
+thanUniAD.However,withtheoptimizationsproposedforclosed-loopresultson
+CARLA (see Q4), practical applications of VLMs in driving should be possible.
+
+==== Page 24 ====
+24 C. Sima et al.
+Q6.What is the trade-off between long inference time and generalization?
+LLMs have become orders of magnitude faster in the last years as they are
+a general topic of broad interest, e.g. [100]. Similarly, recent works show BLIP-2
+can be run 40% faster while maintaining performance [74]. Furthermore, most
+AD research begins with systems that are not real-time, which are later opti-
+mized by practitioners. We admit that runtime efficiency is a limitation of Driv-
+eLM but we hope that the rapid progress in orthogonal research can alleviate
+this issue, which is out of the scope of our project.
+Q7.Why is VQA more suited than alternative techniques to train internet-
+scale models (such as generative modeling) for the downstream application of
+autonomous driving?
+Both perception and planning in driving require reasoning and involve zero-
+shot generalization. VLMs potentially have the reasoning ability inherited from
+LLMs, making VQA a promising direction for bringing the benefits of web-scale
+training to autonomous driving.
+Q8.Do today’s VLMs understand and reason about the visual world as well as
+LLMs understand text-based worlds?
+Thisisnotknownbutdeservestobeexplored.VLMsapproachtheproblemof
+generalization in a data-driven way, which has been proved successful repeatedly
+on other tasks.
+Q9.Why does the proposed graph reasoning scheme not provide very strong
+improvements in VQA?
+It is possible that the simple prompting scheme, relatively small base VLMs,
+or insufficiently strong logical dependencies in the dataset (or a combination of
+these factors) contribute to the lack of major improvements. DriveLM-CARLA
+provides a platform to carefully study these factors and inform the annotation
+of future datasets for GVQA.
+Q10.What questions should be asked when collecting DriveLM?
+Determining the right questions is a critical aspect of the DriveLM system.
+We are unable to recommend a detailed protocol for this in our work, which
+is a pioneering study for driving with VLMs. This relies on domain expertise,
+which we aim to address in future work. See Table 3 in the main paper for a
+question-wise analysis of our chosen protocol.
+Q11.Is generalization in automobiles an oversold topic?
+Driving scenarios predominantly consist of vehicles, pedestrians, and cyclists.
+However, real-world AD is a safety-critical application that must handle the long
+tail of rare objects to avoid accidents in commercial deployment [18]. Further-
+more, generalization to novel objects is an active and growing research field as
+shown in [48,105]. While it is true that most of the objects in autonomous driv-
+ing are limited, the tiny percentage of rare objects are in fact the main existing
+
+==== Page 25 ====
+DriveLM: Driving with Graph Visual Question Answering 25
+barrier to the commercialization of AD, making generalization an important
+feature.
+Q12.Why not use video inputs?
+It has been observed that in AD multi-frame inputs do not always lead to
+improved performance due to causal confusion [96], motivating the use of single
+frames in several prior works [37,99]. However, we agree that in the long term,
+multi-frame models are desirable. As a proof of concept, we provide the results
+for one (adapted from LLaMA-Adapter-V2 [26]) in Table 13. Multi-frame inputs
+give a slight improvement.
+Q13.What is the technical novelty in this paper?
+The young field of driving with language still lacks a standardized dataset,
+taskandevaluationframework.Ourpaperfillsthisgap.Webelievethattheseare
+as valuable as proposing a new method. Therefore, we do not make any claims
+regarding algorithmic novelty, intentionally constructing simple baselines. Our
+technical novelty lies in the formulation of the task and preparation of data
+suitable for adapting general VLMs to the driving application, which we show
+to have promising results even in combination with existing models.
+B DriveLM-nuScenes
+In this section, we introduce the details of DriveLM-nuScenes, including the
+dataset composition, collection methodology, and statistics.
+B.1 Dataset Composition
+DriveLM-nuScenes comprises a training set of 4072 frames and a valida-
+tion set of 799 frames , consisting of scene-level descriptions and frame-level
+QA accompanied by 2D bounding boxes within multi-view images from the
+nuScenes dataset. The scene-level description delineates the behavior of the ego
+vehicle throughout the entire video clip. The frame-level QA encompasses three
+distinct categories: perception, prediction, and planning.
+– Perception involves queries related to the thorough examination of the
+entire frame. Apart from several questions in this question set that are man-
+ually annotated, we design prompts to generate questions about the obser-
+vational facets of objects within the scene, leveraging ground truth from
+nuScenes [6] and OpenLane-V2 [87].
+– Prediction encompasses a series of inquiries regarding the projection of the
+forthcoming state of key objects and the ego vehicle in the current frame,
+and the underlying reasoning process behind the prediction. Because the
+predictions are intricate and challenging, we manually annotate the answers.
+
+==== Page 26 ====
+26 C. Sima et al.
+– Planning contains questions related to planning subsequent actions of the
+ego vehicle in the current frame. As “Planning” is the same challenging as
+“prediction”, we design the prompt for the reasoning process and manually
+annotate the answers to the questions.
+For the key objects referred to in the QA, we encode them as c tagsin the
+format < c,CAM,x,y>, where cis the identifier, CAMindicates the camera
+where the object’s center point is situated, and x,yrepresent the horizontal
+and vertical coordinates of the 2D bounding box in the respective camera’s
+coordinate system. We also provide a dictionary in each key frame, recording
+more basic information about the key objects such as the size of the bounding
+box, the category, the moving state, and the visual description. The overview of
+data organization forms is shown in Fig. 5.
+After the ego vehicle turned right at the intersection, it proceeded along the main road, eventually coming to a halt and patiently waiting alongside the black vehicle.Scene-levelDescriptionPerception:Q: What are the important objects in the current scene?A: There is a moving car to the front left of the ego car/…The ids of these objects are <c1,CAM_FRONT_LEFT,873.4,665.1>/…
+ One of the key frames.Frame-levelQAPrediction:Q: Would <c3,CAM_FRONT,838.3,609.2> be in the moving direction of the ego vehicle?A: Yes.                    Q: Based on the observations of <c2,CAM_BACK,854.2,571.7>,what are possible actions to be taken by <c3,CAM_FRONT,838.3,609.2>?What is the reason?                   A: The action is to do nothing, the reason is that there is no safety issue.Planning:Q: What are safe actions to take for the ego vehicle?A: Brake gently to a stop.
+Fig.5:OverallCompositionofDriveLM-nuScenes .Thedatasetcomprisesscene-
+leveldescriptionsandframe-levelQA,whichcanbedividedintothreeparts: Perception ,
+Prediction , and Planning . Objects are encoded using c tags, which contain identifiers,
+camera affiliations, and center coordinates of its 2D bounding box in the corresponding
+camera frame.
+B.2 Collection Methodology
+During the annotation process, we employ individuals with driving experience
+for the labeling task. We provide annotators with the stitched results from the
+six cameras of nuScenes as source data. As shown in Fig. 6 (left), we divide
+the annotation process into three steps: selecting key frames from video clips,
+choosing key objects within these key frames, and subsequently annotating the
+frame-level QAs in the key frames. Following this, we conduct multiple rounds
+of quality checks to ensure the data reliability and perform post-processing pro-
+cedures on the qualified data as shown in Fig. 6 (right). The specific details of
+this pipeline will be introduced below.
+Key Frame Selection. In this process, we ask annotators to review the en-
+tire video clip to pinpoint key frames rich in scene information and potentially
+indicative of future state changes. Simultaneously, annotators are instructed to
+
+==== Page 27 ====
+DriveLM: Driving with Graph Visual Question Answering 27
+Each Video
+Stitch cameras
+Multi-view video clipFrame-levelQApairsScene-level description
+Abatch ofvideos
+Selected key frames/objects
+Adjust QAEach Video
+Original versionGPT augmented versionKey frame with pre-annotated boxes
+Theegovehicleisrivinginafactoryareawithseveralparkedcars…Scene-level description
+Key frame with key objectsOpen-ended questionsImportance ranking/Motion predictionFactual questionsMoving states/Occurrence…ContextKey ObjectsFrame level QA PairsRule-base generationfromGT of nuScenesHumanannotatedStep 1
+Step 3Step 2
+Quality CheckManually Annotated DataRule-based Generated Data
+Annotated Data
+DriveLM-nuScenesPostprocessSample 10%Key frames
+Fig.6:(Left)Pipelineofthethree-stepsannotationprocess. Foreachvideo,we
+ask the annotators to annotate the key frames, key objects, and QA attributes step by
+step.(Right) The quality check and post-processing progress. We divided the
+annotated data into batches, where each batch contains 8 video clips and their related
+annotations. We conduct rigorous quality checks, and after the post-processing, we
+finally get two versions of our DriveLM-nuScenes dataset.
+label the ego vehicle’s behavior throughout the video clip. This segment serves
+as the foundation for our scene-level description.
+Key Object Selection. In this annotation step, we instruct annotators to
+identify objects in key frames that are relevant to the ego vehicle’s driving,
+denoted as key objects. To ensure accuracy, we provide pre-annotated bounding
+boxes based on ground truth categories from nuScenes [6]. Annotators also have
+the flexibility to designate objects not present in the ground truth as key objects
+if they are deemed significant.
+QA Labeling. In the QA labeling process, we have two sets of questions, factual
+questions and open-ended questions. For the factual questions, we generate the
+answers with a rule-based method. For the open-ended questions, we instruct
+annotators to manually annotate the meticulously designed questions. Options
+are provided for most manually annotated questions, and we include an "Other
+- Fill in the Blank" option for answer choices in such cases to ensure flexibility.
+We have also incorporated free-form questions, allowing annotators to generate
+their own inquiries about the current frame.
+QualityCheck. Weprioritizethequalityofourdata.Inadditiontoestablishing
+clearcriteriaandimplementingautonomiccheckingstrategiesateachannotation
+step, we conduct rigorous manual quality checks. We organize the final data into
+batches, with each batch comprising 8 video clips, along with their scene-level
+descriptions, key frames with key objects selected from the 8 video clips, and
+corresponding QA pairs for each key frame. We provide explicit standards to
+qualitycheckinspectors,instructingthemtoassessdataeligibilitybasedonthese
+criteria. For manually annotated data, if the accuracy of the manual annotations
+falls below expectations for a particular batch, we compile feedback on the issues
+encountered and request annotators to re-annotate the entire batch. For data
+generated from ground truth, we instruct quality inspectors to manually adjust
+the inconsistent or unreasonable QA pairs.
+Post Processing. Since our annotators are Chinese speakers, we need to trans-
+late the labeled data into English after obtaining it. Initially, we establish map-
+
+==== Page 28 ====
+28 C. Sima et al.
+pings between Chinese and English using a vocabulary. For texts that are not
+successfully mapped, we utilize GPT-3.5 for translation, and then perform man-
+ual checks and corrections on the GPT outputs. We also provide a version aug-
+mented by GPT-3.5, utilizing the prompt as shown in Table 6.
+Messages = [
+{ "role": "system", "content": f""" You are an English improver.
+""" },
+{ "role": "user", "content": f""" I have a question and answer
+that I need you to help me modify and embellish, please make a few
+simple changes to the content in written language and keep the meaning
+same, you only need to answer the changes to: { QA}"""}]
+Table 6: Prompt for GPT-refined version of DriveLM-nuScenes . We try 50
+different prompt and select this pattern as the final one to do the refinement.
+PerceptionPredictionPlanningDistribution of QuestionsTrafficSignsObject IdentificationPosition & State
+PossibleActionVisual OcclusionPossibleAttentionObject InteractionLane&MapImportant ObjectPlanning and ReasoningImportance RankingSafe/Unsafe Action List
+…PossibleCollision…… ReferConfigureExampleImage
+QualifiedDatavQuestions
+ABatch ofVideos
+Selected KeyFrames & Key Objects
+•FactualQuestions•Open-endedQuestionsMoving State/Type… Planning/Importance…DriveLM-nuScenesDriveLM-CARLA
+Town Settings
+Execute Expert
+Parked.Moving state?What to do?Always Brake.Rule-base generationfromGT of nuScenesFocus ondiversity andavoid fixed formulaic answers.
+QualityCheck
+Checklist
+What to do?Go StraightHumanAnnotatorErrorFeedbackConsistent with answers of previous and next frames?
+FactualQuestionsOpen-endedQuestionsSample 10%
+Humanannotated·Sensor Data ·Object Info·EnvironmentSimulatorRule-based QA Generation
+QualityCheckQualifiedDataGraphBuildingGenerate
+Objects?
+Maroon carWhere?Right to egoFollow slowlyAction?
+Key FramesSelection
+Fig.7: Question Distribution of Perception ,Prediction andPlanning: The
+questions in our dataset cover various specific aspects of driving tasks, generally cate-
+gorizedintoperception,prediction,andplanning.Mostofthesequestionsareannotated
+by human annotators, making this a suitable proxy for human-like driving reasoning.
+B.3 Statistics and Facts
+In this section, we conduct a distribution analysis of our DriveLM-nuScenes QA
+categories at both the task level and object level. Additionally, for the task level,
+we provide the templates for all our QA under this classification criterion. The
+results indicate the richness of our QA categories, covering various aspects of
+autonomousdriving.Moreover,theabundanceoflogicalrelationshipsissufficient
+to construct a graph-structured QA.
+Task level. Our DriveLM-nuScenes orchestrates a benchmark that encompasses
+variousaspectsofautonomousdriving,connectingthewholestagesofthehuman
+driving logic. To delve deeper into this aspect, we present the detailed QA types
+
+==== Page 29 ====
+DriveLM: Driving with Graph Visual Question Answering 29
+41%4%6%11%38%
+Surrounding Objects Identify
+Traffic Elements Identify
+Important Objects Identify
+Visual Descriptions
+Motion States
+9%4%41%14%28%4%
+Visual Occlusion
+Logical Sequence
+Motion Prediction
+Object Interaction
+Possible Attention
+Signal Meaning
+9%5%5%19%35%24%3%
+Safe/Unsafe Action
+Importance Ranking
+Goal Action
+Planning and Reasoning
+Possible Collision
+Ego Attention
+Free-form QA/Comment
+14%8%16%9%35%18%
+Signal Position
+Visual Description
+Signal Meaning
+Planning
+Attention
+OthersTrafficElementsVehiclePedestrianSignalCycle/MotorcycleOthersTypesofImportantObjectsVanSedanSUVTruckBusMotorhomeJeepExcavator
+ForkliftTaxiCarManWomanPolicePersonBarrierLane markingTraffic Light………
+11%26%17%7%7%4%14%14%
+Motion State
+Motion Prediction
+Attention
+Planning and Reasoning
+Visual Description
+Occlusion
+Collision
+OthersOtherCategoriesPerceptionPredictionPlanning
+Fig.8: The distribution of question types according to different tasks in
+DriveLM-nuScenes. We categorize questions into perception, prediction, and plan-
+ning tasks, each further subdivided into more specific question types.
+distribution at task level in Fig. 8. For a better understanding, we also provide
+examples of QA templates in all of the P3 stages in Table 7.
+Perception
+Surrounding Objects Identify
+Q: Please describe the current scene.
+A: There are two moving cars behind the ego car and two barriers in front
+of it.
+Q: What are objects to the front left/back right/... of the ego car?
+A: There are two barriers to the front left of the ego car.
+Q: Are there traffic cones/moving cars/... to the front right/back left/...
+of the ego car?
+A: No.
+Traffic Elements Identify
+Q: Is there any traffic element in the front view?
+A: Yes, there are some traffic elements in the front view.
+Q: Identify all the traffic elements in the front view, categorize them,
+determine their status, and predict the bounding box around each one.
+The output should be a list formatted as (c, s, x1, y1, x2, y2), where c
+represents the category, s denotes the status, and x1, y1, x2, y2 are the
+offsets of the top-left and bottom-right corners of the box relative to the
+center point.
+A: There are three traffic elements in the front view. The information of
+these traffic elements are [(road sign, go straight, 907.58, 590.67, 992.54,
+630.95)...].
+Important Objects Identify
+Q: What are the important objects in the current scene? Those objects
+will be considered for the future reasoning and driving decision.
+
+==== Page 30 ====
+30 C. Sima et al.
+A: There is a parked truck to the back of the ego car... The ids of these
+objects are <c1,CAM_BACK,827.5,484.2>...
+Q: What is the relative positioning of the important objects in the current
+scene?
+A: <c3,CAM_FRONT,689.2,527.5> is to the front of
+<c1,CAM_BACK,827.5,484.2>...
+Q: Which lanes are each important object on in the scene?
+A: <c2,CAM_FRONT,820.8,473.3> is on the ego lane...
+Visual Description
+Q: What is the visual description of
+<c2,CAM_FRONT_LEFT,415.8,580.8>/...?
+A: Pedestrian riding a bicycle.
+Motion State
+Q:Whatisthestatusofthecars/pedestrians/...thataretothefront/front
+right/... of the ego car?
+A: Many cars are parked.
+Q: What is the observed status of object
+<c1,CAM_FRONT,920.0,509.2>/...?
+A: Moving.
+Q: What is the moving status of object
+<c1,CAM_FRONT,920.0,509.2>/...?
+A: Going ahead.
+Prediction
+Visual Occlusion
+Q: Which object is most likely to be occluded by
+<c1,CAM_FRONT,707.5,472.5>/...? Would this object affect the
+ego vehicle? Based on this object, what action of the ego vehicle is
+dangerous?
+A: The object in front of <c1,CAM_FRONT,840.8,507.5>, yes, acceler-
+ating forward.
+Logical Sequence
+Q: What object should the ego vehicle notice first when the ego vehicle
+is getting to the next possible location? What is the state of the object
+that is first noticed by the ego vehicle and what action should the ego
+vehicle take? What object should the ego vehicle notice second when the
+ego vehicle is getting to the next possible location? What is the state of
+the object perceived by the ego vehicle as second and what action should
+the ego vehicle take? What object should the ego vehicle notice third?
+What is the state of the object perceived by the ego vehicle as third and
+what action should the ego vehicle take?
+A: Firstly notice that <c2,CAM_FRONT,514.7,462.2>, the state of it is
+traffic sign, so the ego vehicle should slow down and go ahead. Secondly
+
+==== Page 31 ====
+DriveLM: Driving with Graph Visual Question Answering 31
+noticethat<c3,CAM_FRONT,950.3,613.1>,thestateofitistrafficsign,
+so the ego vehicle should slow down and go ahead. Thirdly notice that
+<c1,CAM_FRONT,707.5,472.5>, the state of it is going ahead, so the
+ego vehicle should slow down and go ahead.
+Motion Prediction
+Q:Would<c1,CAM_FRONT,920.0,509.2>/...beinthemovingdirection
+of the ego vehicle?
+A: Yes.
+Q: What is the future state of <c1,CAM_FRONT,920.0,509.2>/...?
+A: Keep going straight.
+Q: Will <c2,CAM_FRONT,1223.3,598.3>/... be in the moving direction
+of <c1,CAM_BACK,514.2,503.3>/...?
+A: No.
+Object Interaction
+Q: Will <c2,CAM_FRONT,1223.3,598.3>/... change its motion state
+based on <c1,CAM_BACK,514.2,503.3>/...?
+A: No.
+Q:Basedontheobservationsof<c1,CAM_BACK,514.2,503.3>/...,what
+arepossibleactionstobetakenby<c2,CAM_FRONT,1223.3,598.3>/...?
+What is the reason?
+A: The action is to keep going at the same speed, the reason is there is
+no safety issue.
+Q: Based on the observation of <c4,CAM_FRONT,1071.2,346.2>/...,
+what actions may <c1,CAM_FRONT,1126.7,515.0>/... take?
+A: The action is to keep going at the same speed, the reason is there is
+no safety issue.
+Possible Attention
+Q: In this scenario, what object is most likely to consider
+<c3,CAM_FRONT,400.1,717.2>/...?
+A: The ego vehicle.
+Q: Would <c1,CAM_BACK,514.2,503.3>/... take
+<c3,CAM_FRONT,400.1,717.2>/... into account?
+A: No.
+Q: What object would consider <c1,CAM_FRONT,985.8,516.7>/... to
+be most relevant to its decision?
+A: The ego vehicle.
+Q: Except for the ego vehicle, what object would consider
+<c1,CAM_FRONT,985.8,516.7>/... to be most relevant to its decision?
+A: <c2,CAM_FRONT,1217.5,511.7>.
+Signal Meaning
+Q: What does <c2,CAM_BACK_LEFT,400.8,654.2>/... mean?
+
+==== Page 32 ====
+32 C. Sima et al.
+A: No entry.
+Q:Whatkindoftrafficsignis<c2,CAM_BACK_LEFT,400.8,654.2>/...?
+A: Traffic cone.
+Planning
+Safe/Unsafe Action
+Q: In this scenario, what are safe actions to take for the ego vehicle?
+A: Decelerate gradually without braking, keep going at the same speed.
+Q: In this scenario, what are dangerous actions to take for the ego vehicle?
+A: Accelerate and go ahead, brake suddenly, drive backward, turn right.
+Importance Ranking
+Q:Whatisthepriorityoftheobjectsthattheegovehicleshouldconsider?
+(in descending order)
+A: <c2,CAM_FRONT,514.7,462.2>, <c3,CAM_FRONT,950.3,613.1>,
+<c1,CAM_FRONT,707.5,472.5>.
+Goal Action
+Q: What is the target action of the ego vehicle?
+A: Go straight.
+Planning and Reasoning
+Q: What actions could the ego vehicle take based on
+<c1,CAM_FRONT,920.0,509.2>/...? Why take this action and what’s
+the probability?
+A: The action is to decelerate gradually without braking, the reason is to
+keep a safe distance, high.
+Q: Based on <c3,CAM_FRONT,1591.1,441.8>/... in this scene, what is
+the most possible action of the ego vehicle?
+A: Decelerate gradually without braking.
+Possible Collision
+Q: What is the probability of colliding with
+<c1,CAM_FRONT,920.0,509.2>/... after the ego vehicle goes straight
+and keeps the same speed/accelerates and goes straight/...?
+A: Low.
+Q: What actions taken by the ego vehicle can lead to a collision with
+<c1,CAM_FRONT,920.0,509.2>/...?
+A: Accelerate and go straight.
+Ego Attention
+Q: What is the traffic signal that the ego vehicle should pay attention to?
+A: None.
+Q: Is <c1,CAM_FRONT,920.0,509.2>/... an object that the ego vehicle
+should consider in the current scene?
+A: Yes.
+
+==== Page 33 ====
+DriveLM: Driving with Graph Visual Question Answering 33
+Q: Is it necessary for the ego vehicle to take
+<c3,CAM_FRONT,400.1,717.2>/... into account?
+A: Yes.
+Free-form QA/Comment
+Q: What impact does this situation have on driving vehicles?
+A: The road scene is complex, please slow down.
+Q: What’s your comment on this scene?
+A: Pedestrians at the intersection, please be careful and give way.
+...
+Table 7: Question templates of DriveLM-nuScenes at task level. The cate-
+gories in the table correspond to those in Fig. 8.
+Object level. We also conduct some statistics at the object level since QAs in
+our DriveLM-nuScenes revolve around key objects. Fig. 9 (left) shows the distri-
+bution of our key object types. Given the substantial differences in questions
+associated with traffic elements compared to other categories, we separately
+conduct statistics for QA types related to traffic elements and the remaining
+categories. The results are depicted in Fig. 9 (right).
+41%4%6%11%38%DISTRIBUTION OF PERCEPTION QUESTION TYPES
+Surrounding Objects Identify
+Traffic Elements Identify
+Important Objects Identify
+Visual Descriptions
+Motion States
+9%4%
+41%14%28%4%DISTRIBUTION OF PREDICTION QUESTION TYPES
+Visual Occlusion
+Logical Sequence
+Motion Prediction
+Object Interaction
+Possible Attention
+Signal Meaning
+9%5%5%19%35%24%3%DISTRIBUTION OF PLANNING QUESTION TYPES
+Safe/Unsafe Action
+Importance Ranking
+Goal Action
+Planning and Reasoning
+Possible Collision
+Ego Attention
+Free-form QA/Comment
+14%8%16%9%35%18%
+4JHOBM1PTJUJPO
+7JTVBM%FTDSJQUJPO
+4JHOBM.FBOJOH
+1MBOOJOH
+"UUFOUJPO
+0UIFSTTrafficElements
+7FIJDMF1FEFTUSJBO4JHOBM$ZDMF.PUPSDZDMF0UIFSTTypesofImportantObjectsVanSedanSUVTruckBusMotorhomeJeepExcavator
+ForkliftTaxiCarManWomanPolicePersonBarrierLane markingTraffic Light………
+11%26%17%7%7%4%14%14%
+.PUJPO4UBUF
+.PUJPO1SFEJDUJPO
+"UUFOUJPO
+1MBOOJOHBOE3FBTPOJOH
+7JTVBM%FTDSJQUJPO
+0DDMVTJPO
+$PMMJTJPO
+0UIFSTOtherCategories
+14%8%16%9%35%18%
+4JHOBM1PTJUJPO
+7JTVBM%FTDSJQUJPO
+4JHOBM.FBOJOH
+1MBOOJOH
+"UUFOUJPO
+0UIFSTTrafficElements7FIJDMF1FEFTUSJBO4JHOBM$ZDMF.PUPSDZDMF0UIFSTTypesofImportantObjectsVanSedanSUVTruckBusMotorhomeJeepExcavator
+ForkliftTaxiCarManWomanPolicePersonBarrierLane markingTraffic Light………
+11%26%17%7%7%4%14%14%
+.PUJPO4UBUF
+.PUJPO1SFEJDUJPO
+"UUFOUJPO
+1MBOOJOHBOE3FBTPOJOH
+7JTVBM%FTDSJQUJPO
+0DDMVTJPO
+$PMMJTJPO
+0UIFSTOtherCategories
+Fig.9: (Left) The distribution of key objects in DriveLM-nuScenes. The sub-
+categories are extracted from the visual description. (Right) The distribution of
+question types related to different key objects in DriveLM-nuScenes. Since
+the questions associated with traffic elements differ significantly from other categories,
+we separately conduct statistics for QA types related to traffic elements and the re-
+maining categories.
+C DriveLM-CARLA
+In this section, we introduce the details of DriveLM-CARLA, including the
+dataset composition and collection methodology.
+
+==== Page 34 ====
+34 C. Sima et al.
+C.1 Dataset Composition
+DriveLM-CARLAconsistsofautomaticallygeneratedframe-levelquestion-answer
+pairs that are structured with an interconnected graph. The graph structure can
+be seen in Fig. 10. In the current version, the dataset consists of questions about
+the road layout, stop signs, traffic lights, and vehicles. In future versions, the
+dataset can be extended to more categories like static objects, weather, traffic
+signs, and others.
+UtilizingthedrivingsimulatorCARLAforthedatagenerationprocessallows
+for scalable annotations and data without any manual effort involved. Addition-
+ally, the dataset supports a variety of sensor outputs from CARLA, including
+semantic segmentation, depth map, LiDAR, and others, which can be employed
+to train different network architectures. Each question within the graph is de-
+signed in a way to facilitate situational reasoning, which could be instrumental
+in answering subsequent questions. As with DriveLM-nuScenes, each question
+can be categorized into perception, prediction, or planning. For each QA-pair,
+besides the corresponding question and answer, we also save the object ID in
+case the QA-pair is about an object. This ID is consistent over time, enabling
+object tracking and temporal reasoning in future studies. In addition, relation-
+ships to parent and child questions within the graph are documented to allow
+efficient traversal of the graph.
+C.2 Expert Algorithm: PDM-Lite
+While previous CARLA expert algorithms like the privileged rule-based expert
+used by TransFuser++ [36] can only solve the scenarios implemented in CARLA
+Leaderboard 1.0, PDM-Lite [4] is designed to tackle all 38 scenarios present in
+Leaderboard 2.0. It consists of six distinct stages, summarized in Fig. 11.
+Path Planning. First, PDM-Lite creates a dense path in the form of spatially
+equidistant points using an A* planning algorithm, given sparse target points
+(up to 200m apart) by the leaderboard module. The plan is based on the HD
+map of the town, provided by CARLA. Furthermore, we add information such
+as speed limits and distances to the next traffic light/stop sign to different sec-
+tions of this route that is to be traversed. To handle scenarios that require
+leaving the default path (e.g. Accident, ConstructionObstacle, ParkedObstacle,
+VehicleOpensDoor, AccidentTwoWays, ConstructionObstacleTwoWays, Parke-
+dObstacleTwoWays, VehicleOpensDoorTwoWays, YieldToEmergencyVehicle ), a
+short segment of the route where the scenario will be spawned is shifted laterally
+towards an adjacent lane.
+Agent Forecasting. PDM-Lite generates a forecast of dynamic agents for a
+horizon of 2s with a temporal resolution of 20Hz. Since we do not know other
+actors’ paths and controls in advance, we assume they maintain their previous
+controls and apply similar ones in the near future. Using a kinematic bicycle
+model with parameters taken from [8], PDM-Lite forecasts other agents’ motion
+using this constant action assumption, similar to the expert of [36]. We only
+consider actors closer than 50m to the ego agent for forecasting.
+
+==== Page 35 ====
+DriveLM: Driving with Graph Visual Question Answering 35
+Stop signs Traffic lightsRoad layout
+Vehicles
+Is there a stop sign 
+in the scene?
+What should the ego 
+vehicle do based on the 
+stop sign/ traffic light?Is there a traffic 
+light in the scene?
+What is the state 
+of the traffic light?Is the ego vehicle 
+close to a junction?
+How many lanes are 
+there in the same/ 
+opposite direction?
+What lane markings 
+are to the left/ right 
+of the ego vehicle?On which lane is the 
+ego vehicle driving?
+In which direction 
+can the ego vehicle 
+change lanes?What is the current 
+speed limit ?
+Where on the road is 
+the vehicle located?
+Where is the vehicle 
+potentially going?
+Is the vehicle potentially 
+crossing path with the 
+ego vehicle?What is the moving 
+status of the vehicle?
+for each 
+vehicle
+Does the ego vehicle 
+need to stop? WhyIs there a vehicle right in 
+front of the ego vehicle?
+What should the ego 
+vehicle do based on the 
+vehicle in front?What lanes are 
+important to watch 
+out for?
+Fig.10: Detailed flow of CARLA graph. We show the full graph of DriveLM-
+CARLA. The graph consists of questions and answers about the road layout, traffic
+lights, stop signs, and vehicles.
+IDM Target Speed. We generate a target speed proposal using the Intelligent
+Driver Model [85]. Specifically, while the original IDM selects only one vehicle
+as a leading actor, we instead iteratively apply it to all vehicles, pedestrians,
+non-green traffic lights, and stop signs intersecting the path ahead of the ego
+vehicle. Once the leading actors are selected, we determine a target speed for
+each actor using the parameters summarized in Table 8. We use the minimum
+speed value obtained as the final target speed proposal for that timestep.
+Simulation. We simulate the trajectory with the proposed target speed for 2s
+at 20Hz by alternatively applying the longitudinal controller (described in the
+following) and a kinematic bicycle model. Thereby, the proposal is converted
+into an actual expected sequence of ego-vehicle bounding boxes in closed-loop.
+Scoring. Having forecasted the bounding boxes for all actors, we can now check
+for bounding box intersections between the simulated ego vehicle and other vehi-
+cles. We score the ego vehicle’s motion accordingly: if we detect an intersection
+with a non-leading and non-rear-end vehicle, we reject the IDM target speed
+proposal, and instead set the target speed to zero.
+Controllers. Controlling the vehicle requires three values: steer, throttle, and
+brake. The steering value can be directly estimated from the ego vehicle’s lo-
+cation, velocity, and path. We use a lateral PID controller for doing so, similar
+
+==== Page 36 ====
+36 C. Sima et al.
+Table 8: Target Speed Proposal by IDM. PDM-Lite uses IDM to select a target
+speed. The parameters for the desired net distance and desired time headway differ
+with respect to the type of the leading actor: vehicles, bicycles / stop signs / traffic
+lights / walkers / static objects (e.g. construction signs).
+Parameter Value Description
+v0 0.72vlane Desired velocity. 72% of the speed limit
+s0 4.0/2.0/6.0/4.0/2.0mDesired net distance to the leading agent
+T 0.25/0.1/0.1/0.1/0.1sDesired time headway to leading agent
+a 24.0ms−2Maximum acceleration of ego
+bv≤6.02 8.7ms−2Maximum deceleration of ego if v≤6.02
+bv>6.02 3.72ms−2Maximum deceleration of ego if v >6.02
+δ 4.0 Acceleration exponent
+to [36], which minimizes the angle to a selected point along the path ahead. For
+the throttle and brake predictions, we employ a linear regression model using
+features extracted based on the current speed and target speed.
+Results. The performance of PDM-Lite is evaluated on the 20 official valida-
+tion routes of Leaderboard 2.0. The results of three different seed evaluations are
+presented in Table 9. Routes 0-9 and 10-19 are identical except for weather con-
+ditions, providing an additional measure of performance variance. Since PDM-
+Lite utilizes privileged information, its variance in performance is not due to
+the differing weather parameters, but rather the random initialization of the
+surrounding traffic.
+C.3 Collection Methodology
+In this section, we provide details about the data collection and the annotation
+process.
+Simulator settings. We utilize the CARLA Simulator (version 0.9.14) with
+Leaderboard 2.0 [22] to generate our dataset. Leaderboard 2.0 introduces two
+new large maps along with a suite of new scenarios, enhancing the diversity
+of the training and evaluation environments. Town 12 serves as the training
+Fig.11: PDM-Lite . Our new planner which solves all 38 scenarios of CARLA Leader-
+board 2.0 has 6 stages, detailed in Section C.2.
+
+==== Page 37 ====
+DriveLM: Driving with Graph Visual Question Answering 37
+Table9:PDM-LiteonCARLAOfficialValidationRoutes .Weshowthedriving
+performance for each route, including Driving Score (DS), Infraction Score (IS), Route
+Completion (RC), Normalized Driving Score (NDS), and Normalized Infraction Score
+(NIS), as well as the average and their standard deviations for a total of 3 seeds. Routes
+0-9 are identicalto routes10-19, exceptfor the weather (which isignored byPDM-Lite)
+and traffic behaviors.
+Route DS RC IS NDS NIS
+014.0±0.0100.0±0.00.14±0.0048.2±0.00.48±0.00
+156.2±37.471.1±40.90.75±0.1861.9±42.10.69±0.32
+255.3±14.3100.0±0.00.55±0.1479.3±6.80.79±0.07
+318.4±7.874.7±35.80.34±0.2038.9±20.40.51±0.07
+459.8±13.5100.0±0.00.60±0.1480.5±6.80.81±0.07
+534.9±9.068.0±0.00.51±0.1346.2±5.60.68±0.08
+636.4±7.9100.0±0.00.36±0.0870.3±5.10.70±0.05
+73.5±1.8100.0±0.00.03±0.0225.7±5.20.26±0.05
+815.3±3.3100.0±0.00.15±0.0352.1±3.70.52±0.04
+973.3±18.9100.0±0.00.73±0.1989.8±7.20.90±0.07
+1012.8±7.6100.0±0.00.13±0.0844.0±10.20.44±0.10
+1160.5±32.0100.0±0.00.61±0.3279.5±18.10.79±0.18
+1252.0±11.3100.0±0.00.52±0.1178.9±6.50.79±0.06
+1326.3±15.949.4±35.80.58±0.0732.2±28.50.57±0.11
+1439.4±20.8100.0±0.00.39±0.2169.0±11.00.69±0.11
+1524.0±17.268.0±0.00.35±0.2535.8±13.80.53±0.20
+1642.0±0.0100.0±0.00.42±0.0073.9±0.00.74±0.00
+174.1±1.295.3±6.70.04±0.0125.6±5.50.27±0.04
+1812.1±7.9100.0±0.00.12±0.0843.7±15.60.44±0.16
+1986.7±18.9100.0±0.00.87±0.1994.9±7.20.95±0.07
+Avg.36.3±28.191.3±21.10.41±0.2858.5±25.90.63±0.22
+
+==== Page 38 ====
+38 C. Sima et al.
+town, while Town 13 is reserved for evaluation. Each town covers an area of 10
+x 10 square kilometers, encompassing varied environments such as rural, res-
+idential, and urban landscapes to replicate real-world driving conditions. The
+CARLA team provides a total of 90 training routes, spanning 780.6 kilometers,
+and 20 evaluation routes, measuring 247.6 kilometers. Every route incorporates
+multiple driving scenarios. We segmented these routes into shorter segments,
+approximately 150 meters in length and filter routes that start and end at the
+same position. The traffic manager within Leaderboard 2.0 initializes random
+background traffic around the ego vehicle comprised exclusively of ’car’ enti-
+ties. To enrich the dataset with greater diversity, we introduce additional vehicle
+classes including ’trucks’, ’vans’, ’bicycles’, and ’motorcycles’. Moreover, we im-
+plemented randomized weather configurations for each training and evaluation
+route to mimic realistic driving conditions. However, night-time settings were
+excluded from our study due to the inadequate illumination in certain map re-
+gions. Low-light conditions significantly impede the correctness of the automatic
+labeling process since it is hard to obtain information about the visibility of
+certain objects in the image.
+Data collection. We execute the expert on each of the routes and gather a
+comprehensive set of sensor data. The sensor data includes: (1) RGB image ,
+(2)LiDAR point cloud , (3)semantic segmentation images , (4)depth maps , (5)
+Bird’s Eye View (BEV) semantic segmentation . While DriveLM-Agent leverages
+only RGB images, retraining TransFuser++ needs the additional data for the
+auxiliary tasks. In addition, we extract privileged information from the simulator
+about the status of the static and dynamic objects in the scene, as follows:
+–Ego vehicle: 3D bounding box, speed, brake, id
+–Other vehicles: 3D bounding box, number of lidar points inside BB, distance
+to ego, speed, steer, throttle, brake, id, color, vehicle type, number of wheels,
+traffic light state, lane information (i.e., on which road and lane is the vehicle
+driving), vehicle in junction or not, distance to next junction, next high-level
+command
+–Pedestrians: 3D bounding box, number of lidar points inside BB, gender,
+age, distance to ego, speed, id, lane information
+–Traffic lights: 3D bounding box, distance to ego, state, affects ego vehicle
+–Stop signs: 3D bounding box, distance to ego, affects ego vehicle
+–Static cars (parked cars): 3D bounding box, lane information
+–Landmarks (e.g., speed signs): 3D bounding box, distance to ego, id, text,
+value
+–Weather: weather parameters
+Language labels. Based on the information we extract from the simulator we
+createquestionsandanswerswithhand-craftedsentencetemplates.Formorelin-
+guistic diversity andto prevent overfitting tothose sentence structures thosesen-
+tences could be further augmented with current state-of-the-art language models
+like GPT-4. However, in this work, we use a version of the dataset that is not
+augmented.
+
+==== Page 39 ====
+DriveLM: Driving with Graph Visual Question Answering 39
+D DriveLM-Metrics
+In this section, we offer a detailed introduction to DriveLM-Metrics. DriveLM-
+Metricscanbebroadlycategorizedintothreeparts: P1−3VQAMetrics,Behavior
+Task Metrics, and Motion Task Metrics.
+D.1 P1−3VQA Metrics
+We assess the performance of P1−3using common VQA metrics, and we intro-
+duce the GPT score for a more semantically comprehensive evaluation of our
+QA results. Additionally, given the graph structure of our QA, we propose the
+Completeness score to provide a thorough assessment.
+BLEU[64] measures the similarity between a generated text and one or more
+reference texts. It operates by comparing n-grams in the generated text to those
+in the reference texts, with higher precision indicating a better match. However,
+theBLEU scoreexhibitsinsensitivitytosemanticnuances andvariations inword
+order.
+ROUGE_L [52] calculates scores with the longest common sub-sequence of the
+model outputs and the reference answers. Similar to the BLEU metric, ROUGE
+is used to assess the level of matching between generated results and standard
+references, with the key difference being that ROUGE is based on recall.
+METEOR [45] takes into account precision, recall, stemming, synonymy, stem-
+ming, and word order. It establishes alignment between model outputs and refer-
+ences, computes the 1-gram matching between them, and then applies penalties
+based on chunk blocks, providing a more nuanced evaluation.
+CIDEr [86] combines elements from BLEU and vector space models. The un-
+derlying concept involves treating each sentence as a document, calculating its
+n-gram TF-IDF vector, and using cosine similarity to measure the semantic con-
+sistency between candidate and reference sentences. CIDEr captures matches
+between n-grams of different lengths and differentiates the importance of vari-
+ous n-grams through TF-IDF weighting.
+SPICE [2] first parses the text into a syntactic dependency tree using Proba-
+bilistic Context-Free Grammar [38], then maps the dependency tree into a scene
+graph in a rule-based manner. The scene graph describes the objects, attributes,
+and their relationship in the original text, and the SPICE score is computed as
+the F-score of the generated scene graphs from prediction and ground truth.
+GPT Score is a metric provided by ChatGPT. Traditional metrics mainly as-
+sess word-level performance and may not capture semantic nuances, potentially
+yielding unexpected evaluation outcomes. Leveraging ChatGPT’s robust rea-
+soning capabilities, we employ it to gauge prediction quality and derive a more
+rational score. ChatGPT is prompted to assign a numerical score between 0 and
+
+==== Page 40 ====
+40 C. Sima et al.
+100, with higher scores indicative of enhanced prediction accuracy. The detailed
+prompt for GPT score evaluation is shown in Table 10.
+Messages = [
+{ "role": "system", "content": f""" Anevaluatorwhoratesmyan-
+swer based on the correct answer. """ },
+{ "role": "user", "content": f""" Rate my answer based on the
+correct answer out of 100, with higher scores indicating that the answer
+is closer to the correct answer, and you should be accurate to single digits
+like 62, 78, 41, etc. This is the correct answer: { GT}. This is my answer:
+{Pred}. """}]
+Table 10: Prompt for GPT score. This differs from the prompt used in
+DriveGPT4 [102], but the resulting score is similar.
+Completeness provides a score that accounts for how many ground truth ques-
+tions are correctly answered associated with a frame. For each QA, if the score of
+the predicted answer is above a threshold, then this QA is considered “correctly
+answered” and is a correct prediction, otherwise an incorrect prediction. We then
+calculate the accuracy, which is the ratio of the number of correct predictions to
+the total number of predictions. In our setting, we utilize the SPICE score and
+set the threshold at 0.5.
+D.2 Behavior Task Metrics
+We evaluate behavior predictions by classification accuracy, along with a break-
+down of the overall accuracy into its steering and speed components.
+Classification Accuracy is the metric we use to evaluate Behavior Prediction
+Task,comprising accuracy of behavior, behavior speed, and behavior steer .Specif-
+ically, the ground truth of the ego vehicle future trajectory is a set of Npoints
+withcoordinates (x, y)underthebird’s-eye-view,notedas {(x0, y0),(x1, y1), ..., (xN, yN)}.
+Each point denotes the offset of the future position to the current position by a
+number of fixed interval times. Then, the distance for x, yat each time interval
+is independently computed as:
+{x, y}dist= (({x, y}1− {x, y}0), ..., ({x, y}N− {x, y}N−1)) (2)
+The mean of xdistandydistare mapped to one of the predefined bins, where
+each bin corresponds to a category in either speed or steering, noted as Bspeed
+andBsteerrespectively. Finally, the speed and steering categories for this trajec-
+tory form the behavior category as (Bspeed, Bsteer ). We compare them with the
+behaviors of our DriveLM-Agent outputs and calculate the related accuracy.
+
+==== Page 41 ====
+DriveLM: Driving with Graph Visual Question Answering 41
+D.3 Motion Task Metrics
+Formeasuringtheperformanceofthemotionstage,weusestandardmetricsfrom
+the nuScenes and Waymo benchmarks: average and final displacement error,
+(ADE, FDE), and the collision rate of the predicted trajectory.
+ADEstands for Average Displacement Error, indicating the average L2 dis-
+tance between the predicted trajectory and the ground truth trajectory over all
+predicted horizons. It is the average of the errors at 1st, 2ndand 3rdsecond.
+FDEstands for Final Displacement Error, which measures the Euclidean dis-
+tance between the predicted endpoint and the true endpoint at the last predicted
+step (the 3rdsecond).
+Collision Rate accounts for the ratio of how many test frames the predicted
+trajectory collides with objects in over all test frames. The number reported in
+Table 2 of the main paper is the average of the collision rate at 1st, 2ndand 3rd
+second.
+Note that the calculation of ADE,FDEandCollision Rate follows the
+setting used in UniAD [32] but not ST-P3 [31]. For example, in terms of the
+FDE and the collision rate at 3rdsecond, the UniAD setting will consider the
+error/collision rate at only this timestep, while the ST-P3 setting will consider
+the error/collision rate as an average over 0.5, 1, 1.5, 2, 2.5, 3 seconds. For more
+details, please refer to the UniAD repo discussion. Additionally, please note that
+errors reported on the full nuScenes validation dataset (in prior work) is not
+directly comparable to results reported on the DriveLM-nuScenes val split, a
+challenging subset of this consisting of only keyframes with intention changes.
+E DriveLM-Agent
+In this section, we introduce the details of DriveLM-Agent, including the graph
+prompting scheme and the trajectory tokenization process.
+E.1 Prompting with Context
+In terms of the implementation, the content of context differs during the train-
+ing and inference of DriveLM-Agent, following the teacher-forcing setting [44,82]
+generally adopted in recurrent networks. During training, for each edge e∈Ein
+the frame, we pick the child QA. The child questions in the edges are appended
+with the ground truth parent QA as the context. All QA pairs are used dur-
+ing training, including those without context. The objective used is next token
+prediction, the standard approach for language modeling. During inference, the
+model is applied interactively in multiple rounds to get the required context
+predictions as inputs for each child question. Specifically, the model is prompted
+with the five stages of questions in the sequential order of P1, P2, P3, B, M. In
+this order, the model can only infer the questions in the succeeding stages after
+getting the predicted answer from the preceding stages.
+
+==== Page 42 ====
+42 C. Sima et al.
+Fig.12: Detailed architecture of DriveLM-Agent. An inverse mapping is de-
+signed to embed the real-world ego-vehicle trajectory into the token space of blip-2-
+flan-t5-xl.
+E.2 Trajectory Tokenization Details
+To generate action sequences ( i.e., ego future trajectories) directly with the
+language model we use for building the graph, we adopt the method of RT-
+2 [108]. This process entails the discretization and tokenization of the continuous
+trajectory.
+Initially, we analyze the distribution of the future trajectories within the
+nuScenes dataset. To effectively convert the continuous (x, y)coordinate space
+into a discrete set of actions, we partition each coordinate axis into 256 discrete
+intervals. This granularity ensures a sufficient level of detail while maintaining
+a manageable number of tokens for the language model.
+Each discretized bin corresponds to a unique token within the vocabulary of
+the language model. We extract the token identifiers (IDs) for numeric tokens
+within the vocabulary. To ensure coherence and preserve the ability to express
+numerical values, we omit single-digit tokens from this mapping process. Out of
+the remaining numeric tokens, a subset of 256 token IDs is selected to repre-
+sent the trajectory data. In addition to these, we introduce two special tokens
+designated for marking the start and end of a trajectory sequence – the start-
+of-trajectory (SOT) token and the end-of-trajectory (EOT) token, respectively.
+Thistokenizationschemeenablesustoencodecomplextrajectoryinformationas
+a sequence of tokens that a language model can process. Using this mapped vo-
+cabulary, the language model can generate predicted future trajectory sequences
+by outputting a series of tokens, which are then translated back into the coor-
+dinate space.
+F Experiments
+Inthissection,weintroducethedetailsofexperiments,includingimplementation
+details of each subsection in Section 4 in the main paper, more metrics on the
+VQA part, more ablation and comparison on computational complexity.
+
+==== Page 43 ====
+DriveLM: Driving with Graph Visual Question Answering 43
+F.1 Implementation Details
+Here we explain the implementation details for the training and validation set-
+tings used in our experiments of each of each subsections in Section 4 in the
+main paper.
+Fine-tuning Details. We configure the learning rate as 0.0001, no learning-
+rate scheduler, random seed as 1234, and other settings following the default
+LoRA [30] configuration. For the BLIP-2 model, we use a maximal sequence
+length of 400, and other hyperparameters remain the same as the official BLIP-
+2 implementation.
+Implementation Details for Experiment in Section 4.1 & 4.3 & 4.4.
+During training, we utilize all QAs as input per frame, with a subset of them
+having contexts (questions from P2,3,B, and M). The contexts are extracted
+fromgroundtruth,followingtheteacher-forcingsetting[44,82]generallyadopted
+in recurrent networks. As for inference, due to the variant complexity of the sce-
+narios, the count of P1−3QA per frame is highly imbalanced across the dataset,
+with a variance of over 260 on DriveLM-nuScenes. To balance the impact of
+this, we compute the GVQA Scores on only a subset of QA associated with
+each frame. To extract the QA subset, we design a set of QA patterns for each
+stage based on the questions generally associated with that stage. We ensure
+that for all our validation frames, each stage has at least one question matched
+with the designed pattern. In this process, except for the questions in stage P1,
+all questions in other stages have context from the previous stage’s QA, where
+the answers are derived from the prediction in the preceding steps. Two specific
+graph structure examples can be found in Fig. 13 and Fig. 14.
+Implementation Details for Experiment in Section 4.2. The model is
+trained in the same scheme as in Section 4.1 & 4.3 & 4.4, and the training
+set is the DriveLM-nuScenes train split. During the inference, as there are no
+annotation on the Waymo (not even questions), we devise the question in a
+rule-based manner. Specifically, we re-use the general-purpose questions in the
+perception stage from DriveLM-nuScenes for Waymo as the starting questions.
+Then we try to find if there is any objects in the answer that is matched in the
+DriveLM-nuScenes annotation, such as “pedestrians”, “cars”, “trucks” and so on.
+Then, we generate the questions based on those matched objects automatically,
+which serve as the following questions in the prediction and the planning stages.
+A specific graph structure example can be found in Fig. 15.
+Implementation Details for Experiment in Section F.2. For the general-
+ization experiment in Section F.2 we add two new questions to the graph: (1) Is
+there a person in the scene? and (2) if the answer to the first question is yes we
+askWhat should the vehicle do based on the pedestrian that is crossing the road?
+if the answer is no we ask What should the ego vehicle do? . The answer to the
+second question gets concatenated to the context of the final behavior question.
+Three examples can be found in Fig. 16.
+
+==== Page 44 ====
+44 C. Sima et al.
+Table 11: Generalization in DriveLM-CARLA. All methods underperform on
+DriveLM-CARLA-ped with the novel pedestrian object, but DriveLM-Agent can be
+significantly improved by including a pedestrian-specific question in its GVQA graph.
+move this to supp??
+MethodDriveLM-CARLA (B)DriveLM-CARLA-ped (B)
+Acc.↑Spd.↑Str.↑Acc.↑Spd.↑ Str.↑
+TransFuser++ [36] 70.19 73.29 90.68 8.72 8.72 100.00
+DriveLM-Agent 59.6361.50 78.264.594.59 100.00
++ Pedestrian QA 52.1755.28 77.6427.0427.04 100.00
+DriveLM-Agent (GT) 60.25 65.22 80.12 20.92 20.92 100.00
++ Pedestrian QA 60.25 65.22 80.12 92.35 92.35 100.00
+F.2 Generalization to Unseen Objects
+Next, we evaluate zero-shot generalization to novel objects. DriveLM-CARLA
+is collected without any pedestrians in the training or validation splits. We now
+generate a new test set called DriveLM-CARLA-ped, which only consists of
+frames where a pedestrian is present in the scene. The correct behavior is to
+stop for the pedestrian.
+Baselines. Forthisexperiment,wecompareDriveLM-AgenttoTransFuser++[36],
+the state-of-the-art for CARLA. It uses a larger input image, an additional
+LiDAR sensor, and several driving-specific annotations (depth, semantics, 3D
+bounding boxes, HD map) in comparison to DriveLM-Agent. However, because
+of these task-specific inputs and outputs, TransFuser++ can only be trained
+on the base DriveLM-CARLA dataset and cannot incorporate general computer
+vision data during training, which makes generalization more challenging.
+DriveLM-Agent. TakingadvantageofthemoregeneralarchitectureofaVLM,
+we include samples from COCO [53] and GQA [34] along with DriveLM-CARLA
+during training for DriveLM-Agent. We compare several versions: (1) we inves-
+tigate the addition of a new P1question during inference, ‘Is there a person
+crossing the road?’ (‘+ Pedestrian QA’). (2) As an upper bound, we directly
+input the ground truth P1−3graph to the model during inference, instead of the
+model’spredictions.Formoredetails,pleaserefertothesupplementarymaterial.
+Results. We present our findings in Table 11. We observe that TransFuser++
+struggles on DriveLM-CARLA-ped relative to DriveLM-CARLA, with a drop
+in accuracy from 70.19to just 8.72. DriveLM-Agent experiences a similar drop
+from 59.63to4.59. However, adding the pedestrian QA significantly boosts per-
+formance on the generalization setting to 27.04, albeit with slightly reduced
+accuracy on regular scenes. This is mainly attributed to the fact that the VLM
+is not able to detect all pedestrians correctly. This indicates that the large per-
+formance gains of recently published VLMs [26,65] can support even better gen-
+eralization ability in the domain of driving. Additionally, when the pedestrian
+QA is provided in the privileged setting that assumes access to perfect context
+for each question in the graph, DriveLM-Agent achieves a near-perfect score
+
+==== Page 45 ====
+DriveLM: Driving with Graph Visual Question Answering 45
+Table 12: Graph-structured reasoning facilitates improved VQA with
+VLMs. Completeness measures how many questions are correctly answered in one
+frame of data. The improvement trends are not consisten across different conventional
+metrics, thus we need the GPT score as the main metrics as it evaluates the perfor-
+mance more comprehensively.
+ContextDriveLM-nuScenes
+Off-the-Shelf BLIP-2 DriveLM-Agent
+BLEU-4 ↑METEOR ↑CIDEr ↑ROUGE_L ↑SPICE ↑GPT↑Comp. ↑BLEU-4 ↑METEOR ↑CIDEr ↑ROUGE_L ↑SPICE ↑GPT↑Comp. ↑
+None 0.022 3.317 0.1185 7.205 4.336 42.97 1.064 51.89 35.81 2.463 66.79 42.56 71.39 30.04
+Graph 0.022 3.882 0.0771 7.397 7.710 45.21 0.859 53.09 36.19 2.786 65.58 49.54 72.51 31.66
+GT 0.022 4.397 0.0758 8.033 8.192 41.10 1.315 53.06 36.64 3.069 66.69 50.29 72.94 32.41
+(20.92→92.35) on the frames with pedestrians Note that DriveLM-CARLA-
+ped only contains pedestrians crossing a straight road, so all models obtain a
+100% accuracy on the steering class (which is always straight ).
+F.3 Results with More Metrics in VQA
+In Table 12, we provide the performance under BLEU-4 [64], METEOR [45],
+CIDEr [86] and ROUGE-L [52] of the Table 4 in the main paper. One key
+observation is that different metrics reflect different trends in the performance,
+and the improvement is not consistent across all these metrics. This brings us
+the motivation to use the GPT Score as the main metric in the VQA evaluation
+part.
+F.4 Stage-wise Ablation on Zero-shot Generalization across Sensor
+Configurations
+In Table 14, we provide more settings of context in the zero-shot generalization
+across sensor configurations as in Table 2 in the main paper. One key observation
+is that the higher the accuracy of the behavior task, the better the performance
+of the motion task. With more context in the behavior task, the accuracy im-
+provement mainly originates from the improvement of the speeding accuracy,
+which finally affects the FDE score.
+F.5 More VLMs evaluated on DriveLM-nuScenes
+Table 13: More VLMs evaluation on DriveLM-nuScenes . On the base model of
+LLaMA-Adapter V2, we observe a slight improvement by using multi-frame as input.
+Table A. Behavior Motion Behavior ( B)Motion ( M)
+Base VLM Context Context Acc.↑Speed ↑Steer↑ADE↓Col.↓
+blip-2-flan-t5-xl Graph B57.4969.8980.631.741.89
+LLaMA-Adapter V2 Graph B55.3161.9781.431.862.03
+LLaMA-Adapter V2∗Graph B57.8367.2183.49 1.751.69
+
+==== Page 46 ====
+46 C. Sima et al.
+Table 14: Zero-shot Generalization across Sensor Configurations. B* denotes
+using ground truth behavior QA as context for motion task. Results on 1k randomly
+sampled frames from the Waymo valset after training on DriveLM-nuScenes. Our
+key observation is that the higher the accuracy of the behavior task, the better the
+performance of the motion task.
+MethodBehavior Motion Behavior ( B)Motion ( M)
+Context Context Acc.↑Speed ↑Steer↑ADE↓FDE↓
+Command Mean - - - - - 7.98 11.41
+UniAD-Single - - - - - 4.16 9.31
+BLIP-RT-2 - - - - - 2.78 6.47
+None B35.70 43.90 65.20 2.76 6.59
+P1 B38.20 43.67 70.74 2.67 6.41
+DriveLM-Agent P2 B39.52 44.20 78.672.626.19
+P3 B34.62 41.28 64.55 2.85 6.89
+P1−3 B39.73 54.29 70.352.636.17
+BLIP-RT-2 - B* 100.0 100.0 100.0 2.41 5.79
+In terms of validating the generality of the proposed DriveLM-Agent and
+exploring if the video input helps the model’s performance in this task, we select
+LLaMA-Adapter V2 (7B) [I] as it is compatible with single- and multi-frame
+inputs. The results in Table 13 (within 9 training epochs) show performance
+similar to BLIP-2.
+Note that due to the large variety of question types in DriveLM-nuScenes,
+analyzing each question would be prohibitively expensive.
+Instead, we provided an ablation of the effectiveness of each stage ( P1−3) in
+Table 14, and a representative-question-wise analysis.
+We have to admit that it is non-trivial in improving the QA performance
+(P1-3) under current question setting and we found that it had little affect on
+the final task performance (behavior and motion).
+This inspired us that maybe the question setup worth more effort to ex-
+plore, and with well-set question, the model could be “prompted correctly” to
+understand the scene and perform the downstream task better.
+F.6 Computational Complexity
+In Table 5 of the main paper, we provide a comparison of the computational
+complexity of DriveLM-Agent to UniAD-Single. A future direction would be
+caching the vision tokens and batching the different question patterns, which
+can speed up the inference time fundamentally.
+G Qualitative Results
+Inthissection,weshowthequalitativeresultsoftheexperiments,includingVQA
+on our DriveLM-nuScenes, generalization results across sensor data on Waymo,
+and generalization results to unseen objects on DriveLM-CARLA.
+
+==== Page 47 ====
+DriveLM: Driving with Graph Visual Question Answering 47
+BehaviorPrediction
+PlanningBehaviorPerception"OTXFS5IFSFBSFUXPDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS2VFTUJPO8IBUBSFJNQPSUBOUPCKFDUTUPUIFGSPOUPGUIFFHPDBS 
+"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHGBTU41*$&(15TDPSFYYY"OTXFS.BOZDBSTBSFNPWJOHBOEPOFJTQBSLFE2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPO28IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS 1FSDFQUJPO"5IFSFBSFNBOZDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS28IBUJTUIFTUBUVTPGUIFUSVDLUIBUJTUPUIFGSPOUPGUIFFHPDBS 2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPO28IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS 1FSDFQUJPO"5IFSFBSFNBOZDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS28IBUJTUIFTUBUVTPGUIFQFEFTUSJBOUIBUJTUPUIFGSPOUPGUIFFHPDBS 41*$&(15TDPSFYYY
+41*$&(15TDPSFYYY
+41*$&(15TDPSFYYY(55IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHGBTUQuestion with no context: *OUIJTTDFOBSJPXIBUBSFEBOHFSPVTBDUJPOTUPUBLFGPSUIFFHPWFIJDMF "OTXFSQuestion with pred-context: This is previous question: 8IBUBSFJNQPSUBOUPCKFDUTUPUIFGSPOUPGUIFFHPDBS 5IJTJTQSFWJPVTBOTXFS5IFSFJTPOFCVTUPUIFGSPOUPGUIFFHPDBS*OUIJTTDFOBSJPXIBUBSFEBOHFSPVTBDUJPOTUPUBLFGPSUIFFHPWFIJDMF "OTXFS"DDFMFSBUFBOEHPBIFBEQuestion with gt-context: This is previous question: 8IBUBSFJNQPSUBOUPCKFDUTUPUIFGSPOUPGUIFFHPDBS 5IJTJTQSFWJPVTBOTXFS5IFSFJTPOFCVTUPUIFGSPOUPGUIFFHPDBS*OUIJTTDFOBSJPXIBUBSFEBOHFSPVTBDUJPOTUPUBLFGPSUIFFHPWFIJDMF "OTXFS41*$&(15TDPSFYYY41*$&(15TDPSFYYY41*$&(15TDPSFYYY(5"DDFMFSBUFBOEHPBIFBE
+41*$&(15TDPSF41*$&(15TDPSFYYY
+Planning
+(55IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHGBTUScene ImagePerception
+41*$&(15TDPSF(55IFSFBSFNBOZQFEFTUSJBOTPOFUSBJMFSUISFFDBSTPOFUSVDLUPUIFGSPOUPGUIFFHPDBS2VFTUJPO8IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS "OTXFS5IFSFBSFNBOZDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS
+2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPO28IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS 1FSDFQUJPO"5IFSFBSFNBOZDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS28IBUJTUIFTUBUVTPGUIFDBSTUIBUBSFUPUIFGSPOUPGUIFFHPDBS (55ISFFDBSTBSFNPWJOH"OTXFS0OFUSVDLJTNPWJOH(50OFUSVDLJTQBSLFE"OTXFS0OFQFEFTUSJBOJTNPWJOHBOEPOFJTTUBOEJOH(5.BOZQFEFTUSJBOTBSFNPWJOH2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPO28IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS 1FSDFQUJPO"5IFSFBSFNBOZDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS1SFEJDUJPO28IBUJTUIFTUBUVTPGUIFDBSTUIBUBSFUPUIFGSPOUPGUIFFHPDBS 1SFEJDUJPO".BOZDBSTBSFNPWJOHBOEPOFJTQBSLFE1SFEJDUJPO28IBUJTUIFTUBUVTPGUIFUSVDLUIBUJTUPUIFGSPOUPGUIFFHPDBS 1SFEJDUJPO"0OFUSVDLJTNPWJOH1SFEJDUJPO28IBUJTUIFTUBUVTPGUIFQFEFTUSJBOUIBUJTUPUIFGSPOUPGUIFFHPDBS 1SFEJDUJPO"0OFQFEFTUSJBOJTNPWJOHBOEPOFJTTUBOEJOH2*OUIJTTDFOBSJPXIBUBSFTBGFBDUJPOTUPUBLFGPSUIFFHPDBS (5,FFQHPJOHBUUIFTBNFTQFFEEFDFMFSBUFHSBEVBMMZXJUIPVUCSBLJOH"OTXFS,FFQHPJOHBUUIFTBNFTQFFEBDDFMFSBUFBOEHPBIFBE
+2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPO28IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS 1FSDFQUJPO"5IFSFBSFNBOZDBSTPOFUSVDLBOEPOFQFEFTUSJBOUPUIFGSPOUPGFHPDBS1SFEJDUJPO28IBUJTUIFTUBUVTPGUIFDBSTUIBUBSFUPUIFGSPOUPGUIFFHPDBS 1SFEJDUJPO".BOZDBSTBSFNPWJOHBOEPOFJTQBSLFE1SFEJDUJPO28IBUJTUIFTUBUVTPGUIFUSVDLUIBUJTUPUIFGSPOUPGUIFFHPDBS 1SFEJDUJPO"0OFUSVDLJTNPWJOH1SFEJDUJPO28IBUJTUIFTUBUVTPGUIFQFEFTUSJBOUIBUJTUPUIFGSPOUPGUIFFHPDBS 1SFEJDUJPO"0OFQFEFTUSJBOJTNPWJOHBOEPOFJTTUBOEJOH1MBOOJOH2*OUIJTTDFOBSJPXIBUBSFTBGFBDUJPOTUPUBLFGPSUIFFHPDBS 1MBOOJOH",FFQHPJOHBUUIFTBNFTQFFEBDDFMFSBUFBOEHPBIFBE21SFEJDUUIFBDUJPOUFNQMBUFPGUIFFHPDBS41*$&(15TDPSF41*$&(15TDPSF41*$&(15TDPSF41*$&(15TDPSF
+Fig.13: Detailed qualitative results on DriveLM-nuScenes. The graph prompt-
+ing process can be divided into different tasks, and different QAs in each task revolve
+around different objects.
+G.1 DriveLM-nuScenes
+ThissectionshowsthequalitativeexamplesfortheDriveLM-nuScenes.InFig.13,
+weshowcaseadetailedexampleofGVQAreasoningprocessonDriveLM-nuScenes,
+encompassing P1−3QA and the behavior task. We compare the predicted an-
+swers with ground truth and provide SPICE scores and GPT scores. In this
+figure, the second question in the prediction stage represents a typical error.
+Due to the input of single-frame images, our model often struggles to accurately
+determine the correct movement status of objects. This judgment is indeed chal-
+lenging even for humans. Furthermore, in Fig. 14, we present additional quali-
+tative results to showcase our model’s performance.
+
+==== Page 48 ====
+48 C. Sima et al.
+Perception VQA2VFTUJPOXJUIOPDPOUFYU8IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS (55IFSFBSFUISFFDBSTPOFNPUPSDZDMFUPUIFGSPOUPGUIFFHPDBS"OTXFS5IFSFBSFUXPDBSTPOFUSVDLPOFQFEFTUSJBOUPUIFGSPOUPGUIFFHPDBS
+2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT1SFEJDUJPOSFTVMUT1MBOOJOHSFTVMUT1SFEJDUUIFBDUJPOUFNQMBUFPGUIFFHPWFIJDMFPrediction VQA2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT8IBUJTUIFTUBUVTPGUIFDBSTUIBUBSFUPUIFGSPOUPGUIFFHPDBS "OTXFS5XPDBSTBSFNPWJOHBOEPOFJTQBSLFE2VFTUJPOXJUIQSFEDPOUFYU1SFEJDUJPOSFTVMUT*OUIJTTDFOBSJPXIBUBSFTBGFBDUJPOTUPUBLFGPSUIFFHPWFIJDMF (5#SBLFHFOUMZUPBTUPQ"OTXFS,FFQHPJOHBUUIFTBNFTQFFEBDDFMFSBUFBOEHPBIFBEPlanning VQABehavior VQA(55IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHGBTU"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHTMPXMZ(55XPPGUIFDBSTBSFNPWJOHBOEPOFJTQBSLFE41*$&(15TDPSF41*$&(15TDPSF41*$&(15TDPSF41*$&(15TDPSF
+(55IFSFBSFQFEFTUSJBOTUISFFUSBGGJDDPOFTUISFFDBSTUPUIFGSPOUPGUIFFHPDBS
+"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHTMPXMZ(55IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTOPUNPWJOH"OTXFS5IFSFBSFUXPDBSTPOFQFEFTUSJBOUPUIFGSPOUPGUIFFHPDBS
+2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT1SFEJDUJPOSFTVMUT1MBOOJOHSFTVMUT1SFEJDUUIFBDUJPOUFNQMBUFPGUIFFHPWFIJDMF2VFTUJPOXJUIQSFEDPOUFYU1SFEJDUJPOSFTVMUT*OUIJTTDFOBSJPXIBUBSFTBGFBDUJPOTUPUBLFGPSUIFFHPWFIJDMF 2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT8IBUJTUIFTUBUVTPGUIFDBSTUIBUBSFUPUIFGSPOUPGUIFFHPDBS 2VFTUJPOXJUIOPDPOUFYU8IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS (55XPPGUIFDBSTBSFNPWJOHBOEPOFJTQBSLFE"OTXFS5ISFFDBSTBSFNPWJOHBOEPOFJTQBSLFE(5%FDFMFSBUFHSBEVBMMZXJUIPVUCSBLJOHCSBLFHFOUMZUPBTUPQ"OTXFS,FFQHPJOHBUUIFTBNFTQFFEBDDFMFSBUFBOEHPBIFBE41*$&(15TDPSF41*$&(15TDPSF41*$&(15TDPSF41*$&(15TDPSFPerception VQAPrediction VQAPlanning VQABehavior VQA
+Fig.14: More qualitative results on DriveLM-nuScenes. The examples in the
+figure illustrate the robust ability of our DriveLM-Agent to perform VQA tasks in
+driving scenarios.
+G.2 Waymo
+This section demonstrates the generalizability of our model across sensor con-
+figurations. Fig. 15 illustrates the results of our model, trained on DriveLM-
+nuScenes, when applied to inference on Waymo. As we do not annotate data on
+Waymo, the questions are manually defined, and ground truth is not provided.
+These results showcase the robust generalization capability of our model.
+G.3 DriveLM-CARLA
+In this section, we provide qualitative examples for the CARLA dataset.
+Generalization to the unseen pedestrian scenario. Fig. 16 shows the gen-
+eratedbehaviorsforthegeneralizationtestsetontheunseenpedestrianscenario.
+The first example, illustrated on the top of Fig. 16, demonstrates a successful
+situation where DriveLM-Agent accurately recognizes a pedestrian. It subse-
+quently infers the appropriate action to undertake, which in this case, is to stop
+the vehicle. The behavior generation is able to interpret this context, resulting in
+the correct behavior pattern, as evidenced by the ego vehicle coming to a com-
+plete stop. The other two examples represent the predominant failure modes
+of DriveLM-Agent in scenarios involving pedestrians. The middle example of
+Fig. 16 shows the case where the model still detects the pedestrian. However,
+it fails to translate this detection into the correct behavior. The final exam-
+ple, shown at the bottom, highlights a more severe limitation where the model
+
+==== Page 49 ====
+DriveLM: Driving with Graph Visual Question Answering 49
+"OTXFS5IFSFBSFUXPDBSTPOFUSVDLPOFQFEFTUSJBOUPUIFGSPOUPGUIFFHPDBS"OTXFS5XPDBSTBSFQBSLFEBOEPOFJTNPWJOH2VFTUJPOXJUIOPDPOUFYU8IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS 
+2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT1SFEJDUJPOSFTVMUT1MBOOJOHSFTVMUT1SFEJDUUIFBDUJPOUFNQMBUFPGUIFFHPWFIJDMF2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT8IBUJTUIFTUBUVTPGUIFDBSTUIBUBSFUPUIFGSPOUPGUIFFHPDBS 2VFTUJPOXJUIQSFEDPOUFYU1SFEJDUJPOSFTVMUT*OUIJTTDFOBSJPXIBUBSFTBGFBDUJPOTUPUBLFGPSUIFFHPWFIJDMF "OTXFS,FFQHPJOHBUUIFTBNFTQFFEBDDFMFSBUFBOEHPBIFBE"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHGBTU
+Perception VQA Prediction VQA Planning VQA Behavior  VQA
+2VFTUJPOXJUIOPDPOUFYU8IBUBSFPCKFDUTUPUIFGSPOUPGUIFFHPDBS "OTXFS5IFSFBSFNBOZDBSTPOFQFEFTUSJBOUPUIFGSPOUPGUIFFHPDBS。
+2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT1SFEJDUJPOSFTVMUT1MBOOJOHSFTVMUT1SFEJDUUIFBDUJPOUFNQMBUFPGUIFFHPWFIJDMF2VFTUJPOXJUIQSFEDPOUFYU1FSDFQUJPOSFTVMUT8IBUJTUIFTUBUVTPGUIFQFEFTUSJBOTUIBUBSFUPUIFGSPOUPGUIFFHPDBS "OTXFS0OFQFEFTUSJBOJTNPWJOHBOEPOFJTTUBOEJOH2VFTUJPOXJUIQSFEDPOUFYU1SFEJDUJPOSFTVMUT*OUIJTTDFOBSJPXIBUBSFTBGFBDUJPOTUPUBLFGPSUIFFHPWFIJDMF "OTXFS,FFQHPJOHBUUIFTBNFTQFFEEFDFMFSBUFHSBEVBMMZXJUIPVUCSBLJOH"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHTMPXMZPerception VQA Prediction VQA Planning VQA Behavior VQA 
+Fig.15: Qualitative results on Waymo. We present two examples showcasing the
+generability of DriveLM-Agent to new sensor configurations, demonstrating the strong
+generalization capability of DriveLM-Agent.
+completely overlooks the pedestrian. In such instances, DriveLM-Agent acts as if
+the pedestrian is non-existent, which consequently results in it not executing any
+evasive or stopping maneuvers, posing a significant risk in a real-world scenario.
+Graph Visual Question Answering. This section presents two examples of
+the graph visual question answering tasks using the CARLA dataset to evaluate
+the performance of DriveLM-Agent (Fig. 17). We only show a subset of the
+evaluated questions. In the first example the ego vehicle drives behind another
+vehicle.Theprimarytaskistofollowtheroadandadjustthespeedinaccordance
+with the leading vehicle. Our results indicate that DriveLM-Agent demonstrates
+proficient scene understanding by accurately identifying all important objects
+in the scene. Despite the ground truth data indicating occasional inaccuracies
+in object color labeling by the CARLA simulator, DriveLM-Agent maintains
+reliable performance in object recognition. Additionally, the model can identify
+the vehicle in front and reason about what to do based on the leading vehicle.
+The second example takes place at an intersection regulated by a stop sign.
+DriveLM-Agent identifies all objects and can reason about the situation. It cor-
+rectly identified that it needs to stop not simply due to the stop sign, but primar-
+ily because of a motorcycle positioned ahead. This implies that DriveLM-Agent
+is capable of prioritizing dynamic obstacles over traffic control devices under
+certain circumstances.
+
+==== Page 50 ====
+50 C. Sima et al.
+Behavior"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHTMPXMZ$POUFYU5IFFHPWFIJDMFTIPVMETUPQBOEHJWFUIFQFEFTUSJBOUIFSJHIUPGXBZ2VFTUJPO1SFEJDUUIFCFIBWJPSPGUIFFHPWFIJDMFScene Image
+"OTXFS5IFFHPWFIJDMFTIPVMETUPQBOEHJWFUIFQFEFTUSJBOUIFSJHIUPGXBZPredictionPerception2VFTUJPO*TUIFSFBQFSTPOJOUIFTDFOF "OTXFS:FTUIFSFJTBQFSTPOJOUIFTDFOF$POUFYU:FTUIFSFJTBQFSTPOJOUIFTDFOF2VFTUJPO8IBUTIPVMEUIFFHPWFIJDMFEPCBTFEPOUIFQFEFTUSJBOUIBUJTDSPTTJOHUIFSPBE Behavior"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTOPUNPWJOH$POUFYU5IFFHPWFIJDMFTIPVMETUPQBOEHJWFUIFQFEFTUSJBOTQBDFUPDSPTT2VFTUJPO1SFEJDUUIFCFIBWJPSPGUIFFHPWFIJDMFScene Image
+"OTXFS5IFFHPWFIJDMFTIPVMETUPQBOEHJWFUIFQFEFTUSJBOTQBDFUPDSPTTPredictionPerception2VFTUJPO*TUIFSFBQFSTPOJOUIFTDFOF "OTXFS:FTUIFSFJTBQFSTPOJOUIFTDFOF$POUFYU:FTUIFSFJTBQFSTPOJOUIFTDFOF2VFTUJPO8IBUTIPVMEUIFFHPWFIJDMFEPCBTFEPOUIFQFEFTUSJBOUIBUJTDSPTTJOHUIFSPBE 
+Behavior"OTXFS5IFFHPWFIJDMFJTHPJOHTUSBJHIU5IFFHPWFIJDMFJTESJWJOHGBTU$POUFYU5IFFHPWFIJDMFTIPVMEGPMMPXUIFSPBEUPUIFOFYUKVODUJPO2VFTUJPO1SFEJDUUIFCFIBWJPSPGUIFFHPWFIJDMFScene Image
+"OTXFS5IFFHPWFIJDMFTIPVMEGPMMPXUIFSPBEUPUIFOFYUKVODUJPOPredictionPerception2VFTUJPO*TUIFSFBQFSTPOJOUIFTDFOF "OTXFS/PUIFSFJTOPQFSTPOJOUIFTDFOF$POUFYU/PUIFSFJTOPQFSTPOJOUIFTDFOF2VFTUJPO8IBUTIPVMEUIFFHPWFIJDMFEP 
+Fig.16: Qualitative results on the generalization test set in DriveLM-
+CARLA. We show three examples of DriveLM-Agent handling the pedestrian sce-
+nario. The first example shows a success case and the second and third show two
+common failure cases of the model.
+
+==== Page 51 ====
+DriveLM: Driving with Graph Visual Question Answering 51
+Prediction
+"OTXFS5IFFHPWFIJDMFTIPVMESFNBJOTUPQQFEBOETUBZCFIJOEPUIFSWFIJDMFTUIBUBSFTUBOEJOHBUUIFTUPQTJHO$POUFYU:FTUIFSFJTBOPUIFSDBSJOGSPOU2VFTUJPO8IBUTIPVMEUIFFHPWFIJDMFEPCBTFEPOUIFWFIJDMFJOGSPOU Perception
+(55IFJNQPSUBOUPCKFDUTJOUIFTDFOFBSFBKVODUJPOBTUPQTJHOBOEUIFHSFFONPUPSDZDMFUPUIFGSPOUPGUIFFHPWFIJDMF2VFTUJPO8IBUBSFJNQPSUBOUPCKFDUTUPUIFGSPOUPGUIFFHPDBS "OTXFS5IFJNQPSUBOUPCKFDUTJOUIFTDFOFBSFBKVODUJPOBTUPQTJHOUIFCMBDLDBSUPUIFGSPOUMFGUPGUIFFHPWFIJDMFBOEUIFHSFFONPUPSDZDMFUPUIFGSPOUPGUIFFHPWFIJDMF
+$POUFYU5IFJNQPSUBOUPCKFDUTJOUIFTDFOFBSFBKVODUJPOBTUPQTJHOUIFCMBDLDBSUPUIFGSPOUMFGUPGUIFFHPWFIJDMFBOEUIFHSFFONPUPSDZDMFUPUIFGSPOUPGUIFFHPWFIJDMF2VFTUJPO8IBUTIPVMEUIFFHPWFIJDMFEPCBTFEPOUIFTUPQTJHO (55IFFHPWFIJDMFTIPVMESFNBJOTUPQQFEBOETUBZCFIJOEPUIFSWFIJDMFTUIBUBSFTUBOEJOHBUUIFTUPQTJHO"OTXFS5IFFHPWFIJDMFTIPVMECSBLFUPNBJOUBJOBTBGFEJTUBODFUPUIFWFIJDMFJOGSPOU(55IFFHPWFIJDMFTIPVMECSBLFUPNBJOUBJOBTBGFEJTUBODFUPUIFWFIJDMFJOGSPOU"OTXFS5IFFHPWFIJDMFTIPVMETUPQCFDBVTFPGUIFHSFFONPUPSDZDMFUIBUJTJOGSPOUPGJU(55IFFHPWFIJDMFTIPVMETUPQCFDBVTFPGUIFHSFFONPUPSDZDMFUIBUJTJOGSPOUPGJUPlanning$POUFYU5IFFHPWFIJDMFTIPVMECSBLFUPNBJOUBJOBTBGFEJTUBODFUPUIFWFIJDMFJOGSPOU5IFFHPWFIJDMFTIPVMESFNBJOTUPQQFEBOETUBZCFIJOEPUIFSWFIJDMFTUIBUBSFTUBOEJOHBUUIFTUPQTJHO2VFTUJPO%PFTUIFFHPWFIJDMFOFFEUPTUPQ 8IZ Scene Image
+Prediction"OTXFS5IFFHPWFIJDMFTIPVMEESJWFXJUIUIFTBNFTQFFEBTUIFDBSJOGSPOU"TUIFZBSFDVSSFOUMZESJWJOHXJUIUIFTBNFTQFFEUIFFHPWFIJDMFDBONBJOUBJOJUTTQFFEPerception
+(55IFJNQPSUBOUPCKFDUTJOUIFTDFOFBSFUIFNBSPPODBSUPUIFGSPOUMFGUPGUIFFHPWFIJDMFBOEUIFPMJWFWBOUPUIFGSPOUPGUIFFHPWFIJDMF2VFTUJPO8IBUBSFJNQPSUBOUPCKFDUTUPUIFGSPOUPGUIFFHPDBS "OTXFS5IFJNQPSUBOUPCKFDUTJOUIFTDFOFBSFUIFNBSPPODBSUPUIFGSPOUMFGUPGUIFFHPWFIJDMFBOEUIFNBSPPOWBOUPUIFGSPOUPGUIFFHPWFIJDMF
+$POUFYU:FTUIFSFJTBOPUIFSDBSJOGSPOU2VFTUJPO8IBUTIPVMEUIFFHPWFIJDMFEPCBTFEPOUIFWFIJDMFJOGSPOU 
+(55IFFHPWFIJDMFTIPVMEESJWFXJUIUIFTBNFTQFFEBTUIFDBSJOGSPOU"TUIFZBSFDVSSFOUMZESJWJOHXJUIUIFTBNFTQFFEUIFFHPWFIJDMFDBONBJOUBJOJUTTQFFE"OTXFS:FTUIFSFJTBOPUIFSDBSJOGSPOU(5:FTUIFSFJTBOPUIFSDBSJOGSPOU"OTXFS5IFSFJTOPSFBTPOGPSUIFFHPWFIJDMFUPTUPQ(55IFSFJTOPSFBTPOGPSUIFFHPWFIJDMFUPTUPQPlanning$POUFYU5IFFHPWFIJDMFTIPVMEESJWFXJUIUIFTBNFTQFFEBTUIFDBSJOGSPOU"TUIFZBSFDVSSFOUMZESJWJOHXJUIUIFTBNFTQFFEUIFFHPWFIJDMFDBONBJOUBJOJUTTQFFE2VFTUJPO%PFTUIFFHPWFIJDMFOFFEUPTUPQ 8IZ Scene Image
+Perception$POUFYU5IFJNQPSUBOUPCKFDUTJOUIFTDFOFBSFBKVODUJPOUIFSFEUSBGGJDMJHIUUIFNBSPPODBSUPUIFGSPOUMFGUPGUIFFHPWFIJDMFBOEUIFCMBDLDBSUPUIFGSPOUPGUIFFHPWFIJDMF2VFTUJPO*TUIFSFBOPUIFSWFIJDMFSJHIUJOGSPOUPGUIFFHPWFIJDMF 
+Fig.17: Qualitative VQA results in DriveLM-CARLA. The first example shows
+how DriveLM-Agent deals with a situation with a vehicle directly in front of the ego
+vehicle. The second example shows an intersection with a stop sign and other traffic
+participants waiting in front of the ego vehicle at the stop sign.
+
+==== Page 52 ====
+52 C. Sima et al.
+H More Related Work
+In this section, we supplement the related work mentioned in the main paper.
+Reasoning Over Graph Structures. Reasoning is one of the basic forms of
+simulated human thinking, enabling the derivation of new judgments from one or
+severalexistingjudgements[12].Manypriorreasoningworkshavebeengrounded
+in graph-based approaches [5,13,75,92]. XNMs [75] employs scene graphs for
+explainableandexplicitreasoningwithstructuredknowledge.KPRN[92]utilizes
+knowledge graph for reasoning and applies it to recommender systems. GoT [5]
+models LLM-generated information as an arbitrary graph and brings the LLM
+reasoning closer to brain mechanisms. Inspired by these successful attempts, we
+try to link the stages of perception, prediction, and planning in autonomous
+driving through a graph, enabling the model to grasp the reasoning process and
+deduce unseen scenarios based on learned graph structure.
+Embodied Planning with LLMs Recent work endeavors to leverage the
+formidable reasoning and generalization capacity of LLMs [25,43,83] for embod-
+ied AI systems [23,33,35,40,51,69,108]. PaLM-E [23] trains an LLM for various
+embodied tasks including sequential robotic manipulation planning. CaP [51]
+provides a robot-centric formulation of language model generated programs ex-
+ecuted on real systems. RT-2 [108] represents robot actions as language tokens,
+training vision-language models to output robot policies. These methods show-
+case the capabilities of LLMs in embodied planning tasks, inspiring us to apply
+them to address the current shortcomings in generalization in AD, which is far
+less explored.
+Vision-language Benchmarks for Driving. An increasing number of vision-
+language datasets have been proposed for AD systems [20,41,42,56,59,67,71,
+97,98,101,107]. NuScenes-QA [67] and NuPrompt [98] provide perceptual in-
+formation as text by describing the positions and states of surrounding objects.
+BDD-X [42] provides reasons for the ego vehicle’s actions in natural language de-
+scriptions. DRAMA [56] and Rank2Tell [71] identify crucial objects and provide
+corresponding driving suggestions. However, these datasets focus on scene-level
+context or individual objects. DriveLM fills this gap in the literature by organiz-
+ing language annotations from object-level and task-level with a graph structure.
+I Broader Impact
+We believe that this approach can accelerate progress in the field of autonomous
+driving by enabling it to directly benefit from better VLMs. Our goal is to
+make progress towards autonomous driving, which will have profound impact
+if successful. We recognize that by bringing VLMs into this area, we accept
+their ethical implications, such as hallucinations and high resource use. Yet, by
+improving the interactivity between humans and autonomous driving systems,
+we can build confidence in the technology. This could hasten its acceptance and
+lead to safer transportation in the long term.
+

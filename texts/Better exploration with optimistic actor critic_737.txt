@@ -1,0 +1,609 @@
+==== Page 1 ====
+Better Exploration with Optimistic Actor-Critic
+Kamil Ciosek
+Microsoft Research Cambridge, UK
+kamil.ciosek@microsoft.comQuan Vuong∗
+University of California San Diego
+qvuong@ucsd.edu
+Robert Loftin
+Microsoft Research Cambridge, UK
+t-roloft@microsoft.comKatja Hofmann
+Microsoft Research Cambridge, UK
+katja.hofmann@microsoft.com
+Abstract
+Actor-critic methods, a type of model-free Reinforcement Learning, have been
+successfully applied to challenging tasks in continuous control, often achieving
+state-of-the art performance. However, wide-scale adoption of these methods in
+real-world domains is made difﬁcult by their poor sample efﬁciency. We address
+this problem both theoretically and empirically. On the theoretical side, we identify
+two phenomena preventing efﬁcient exploration in existing state-of-the-art algo-
+rithms such as Soft Actor Critic. First, combining a greedy actor update with a
+pessimistic estimate of the critic leads to the avoidance of actions that the agent
+does not know about, a phenomenon we call pessimistic underexploration . Sec-
+ond, current algorithms are directionally uninformed , sampling actions with equal
+probability in opposite directions from the current mean. This is wasteful, since
+we typically need actions taken along certain directions much more than others. To
+address both of these phenomena, we introduce a new algorithm, Optimistic Actor
+Critic, which approximates a lower and upper conﬁdence bound on the state-action
+value function. This allows us to apply the principle of optimism in the face of
+uncertainty to perform directed exploration using the upper bound while still using
+the lower bound to avoid overestimation. We evaluate OAC in several challenging
+continuous control tasks, achieving state-of the art sample efﬁciency.
+1 Introduction
+A major obstacle that impedes a wider adoption of actor-critic methods [ 31,40,49,44] for control
+tasks is their poor sample efﬁciency. In practice, despite impressive recent advances [ 24,17], millions
+of environment interactions are needed to obtain a reasonably performant policy for control problems
+with moderate complexity. In systems where obtaining samples is expensive, this often makes the
+deployment of these algorithms prohibitively costly.
+This paper aims at mitigating this problem by more efﬁcient exploration . We begin by examining
+the exploration behavior of SAC [ 24] and TD3 [ 17], two recent model-free algorithms with state-
+of-the-art sample efﬁciency and make two insights. First, in order to avoid overestimation [ 26,46],
+SAC and TD3 use a critic that computes an approximate lower conﬁdence bound2. The actor then
+adjusts the exploration policy to maximize this lower bound. This improves the stability of the
+updates and allows the use of larger learning rates. However, using the lower bound can also seriously
+inhibit exploration if it is far from the true Q-function. If the lower bound has a spurious maximum,
+the covariance of the policy will decrease, causing pessimistic underexploration , i.e. discouraging
+∗Work done while an intern at Microsoft Research, Cambridge.
+2See Appendix C for details.
+33rd Conference on Neural Information Processing Systems (NeurIPS 2019), Vancouver, Canada.
+
+==== Page 2 ====
+the algorithm from sampling actions that would lead to an improvement to the ﬂawed estimate of
+the critic. Moreover, Gaussian policies are directionally uninformed , sampling actions with equal
+probability in any two opposing directions from the mean. This is wasteful since some regions in the
+action space close to the current policy are likely to have already been explored by past policies and
+do not require more samples.
+We formulate Optimistic Actor-Critic (OAC), an algorithm which explores more efﬁciently by
+applying the principle of optimism in the face of uncertainty [ 9]. OAC uses an off-policy exploration
+strategy that is adjusted to maximize an upper conﬁdence bound to the critic, obtained from an
+epistemic uncertainty estimate on the Q-function computed with the bootstrap [ 35]. OAC avoids
+pessimistic underexploration because it uses an upper bound to determine exploration covariance.
+Because the exploration policy is not constrained to have the same mean as the target policy, OAC
+is directionally informed, reducing the waste arising from sampling parts of action space that have
+already been explored by past policies.
+Off-policy Reinforcement Leaning is known to be prone to instability when combined with function
+approximation, a phenomenon known as the deadly triad [43,47]. OAC achieves stability by
+enforcing a KL constraint between the exploration policy and the target policy. Moreover, similarly to
+SAC and TD3, OAC mitigates overestimation by updating its target policy using a lower conﬁdence
+bound of the critic [26, 46].
+Empirically, we evaluate Optimistic Actor Critic in several challenging continuous control tasks
+and achieve state-of-the-art sample efﬁciency on the Humanoid benchmark. We perform ablations
+and isolate the effect of bootstrapped uncertainty estimates on performance. Moreover, we perform
+hyperparameter ablations and demonstrate that OAC is stable in practice.
+2 Preliminaries
+Reinforcement learning (RL) aims to learn optimal behavior policies for an agent acting in an
+environment with a scalar reward signal. Formally, we consider a Markov decision process [ 39],
+deﬁned as a tuple (S,A,R,p,p 0,γ). An agent observes an environmental state s∈S=Rn; takes a
+sequence of actions a1,a2,..., whereat∈A⊆Rd; transitions to the next state s′∼p(·|s,a)under
+the state transition distribution p(s′|s,a); and receives a scalar reward r∈R. The agent’s initial state
+s0is distributed as s0∼p0(·).
+A policy πcan be used to generate actions a∼π(·|s). Using the policy to sequentially generate
+actions allows us to obtain a trajectory through the environment τ= (s0,a0,r0,s1,a1,r1,...). For
+any given policy, we deﬁne the action-value function as Qπ(s,a) =Eτ:s0=s,a0=a[/summationtext
+tγtrt], where
+γ∈[0,1)is a discount factor. We assume that Qπ(s,a)is differentiable with respect to the action.
+The objective of Reinforcement Learning is to ﬁnd a deployment policy πevalwhich maximizes the
+total return J=Eτ:s0∼p0[/summationtext
+tγtrt]. In order to provide regularization and aid exploration, most
+actor-critic algorithms [ 24,17,31] do not adjust πevaldirectly. Instead, they use a target policy πT,
+trained to have high entropy in addition to maximizing the expected return J.3The deployment
+policyπevalis typically deterministic and set to the mean of the stochastic target policy πT.
+Actor-critic methods [ 44,6,8,7] seek a locally optimal target policy πTby maintaining a critic ,
+learned using a value-based method, and an actor , adjusted using a policy gradient update. The
+critic is learned with a variant of SARSA [ 48,43,41]. In order to limit overestimation [ 26,46],
+modern actor-critic methods learn an approximate lower conﬁdence bound on the Q-function [ 24,17],
+obtained by using two networks ˆQ1
+LBandˆQ2
+LB, which have identical structure, but are initialized with
+different weights. In order to avoid cumbersome terminology, we refer to ˆQLBsimply as a lower
+bound in the remainder of the paper. Another set of target networks [ 33,31] slowly tracks the values
+ofˆQLBin order to improve stability.
+ˆQLB(st,at) = min( ˆQ1
+LB(st,at),ˆQ2
+LB(st,at)) (1)
+ˆQ{1,2}
+LB(st,at)←R(st,at)+γmin(˘Q1
+LB(st+1,a),˘Q2
+LB(st+1,a))wherea∼πT(·|st+1).(2)
+3Policy improvement results can still be obtained with the entropy term present, in a certain idealized setting
+[24].
+2
+
+==== Page 3 ====
+aQπ,π(a)
+ˆQLB(s,a)Qπ(s,a)
+πcurrentµ
+πpast
+(a) Pessimistic underexplorationaQπ,π(a)
+ˆQLB(s,a)Qπ(s,a)
+πcurrentsamples
+needed lesssamples
+needed more
+(b) Directional uninformedness
+Figure 1: Exploration inefﬁciencies in actor-critic methods. The state sis ﬁxed. The graph shows
+Qπ, which is unknown to the algorithm, its known lower bound ˆQLB(in red) and two policies πcurrent
+andπpastat different time-steps of the algorithm (in blue).
+Meanwhile, the actor adjusts the policy parameter vector θof the policy πTin order to maximize
+Jby following its gradient. The gradient can be written in several forms [ 44,40,13,27,22,23].
+Recent actor-critic methods use a reparametrised policy gradient [ 27,22,23]. We denote a random
+variable sampled from a standard multivariate Gaussian as ε∼N(0,I)and denote the standard
+normal density as φ(ε). The re-parametrisation function fis deﬁned such that the probability density
+of the random variable fθ(s,ε)is the same as the density of πT(a|s), whereε∼N(0,I). The
+gradient of the return can then be written as:
+∇θJ=/integraltext
+sρ(s)/integraltext
+ε∇θˆQLB(s,fθ(s,ε))φ(ε)dεds (3)
+whereρ(s)/defines/summationtext∞
+t=0γtp(st=s|s0)is the discounted-ergodic occupancy measure. In order to
+provide regularization and encourage exploration, it is common to use a gradient ∇θJαthat adds an
+additional entropy term ∇θH(π(·,s)).
+∇θJα
+ˆQLB=/integraltext
+sρ(s)/integraltext
+ε∇θˆQLB(s,fθ(s,ε))φ(ε)dε+α/integraltext
+ε−∇θlogfθ(s,ε)φ(ε)dε/bracehtipupleft /bracehtipdownright/bracehtipdownleft /bracehtipupright
+∇θH(π(·,s))ds (4)
+During training, (4)is approximated with samples by replacing integration over εwith Monte-Carlo
+estimates and integration over the state space with a sum along the trajectory.
+∇θJα
+ˆQLB≈∇θˆJα
+ˆQLB=/summationtextN
+t=0γt∇θˆQLB(st,fθ(s,εt))+α−∇θlogfθ(st,εt). (5)
+In the standard set-up, actions used in (1)and(5)are generated using πT. In the table-lookup case,
+the update can be reliably applied off-policy, using an action generated with a separate exploration
+policyπE. In the function approximation setting, this leads to updates that can be biased because of
+the changes to ρ(s). In this work, we address these issues by imposing a KL constraint between the
+exploration policy and the target policy. We give a more detailed account of addressing the associated
+stability issues in section 4.3.
+3 Existing Exploration Strategy is Inefﬁcient
+As mentioned earlier, modern actor-critic methods such as SAC [ 24] and TD3 [ 17] explore in an
+inefﬁcient way. We now give more details about the phenomena that lead to this inefﬁciency.
+Pessimistic underexploration. In order to improve sample efﬁciency by preventing the catas-
+trophic overestimation of the critic [ 26,46], SAC and TD3 [ 17,25,24] use a lower bound approxima-
+tion to the critic, similar to (1). However, relying on this lower bound for exploration is inefﬁcient. By
+greedily maximizing the lower bound, the policy becomes very concentrated near a maximum. When
+the critic is inaccurate and the maximum is spurious, this can be very harmful. This is illustrated
+in Figure 1a. At ﬁrst, the agent explores with a broad policy, denoted πpast. SinceˆQLBincreases to
+the left, the policy gradually moves in that direction, becoming πcurrent . Because ˆQLB(shown in red)
+3
+
+==== Page 4 ====
+has a maximum at the mean µofπcurrent , the policy πcurrent has a small standard deviation. This is
+suboptimal since we need to sample actions far away from the mean to ﬁnd out that the true critic Qπ
+does not have a maximum at µ. We include evidence that this problem actually happens in MuJoCo
+Ant in Appendix F.
+The phenomenon of underexploration is speciﬁc to the lower as opposed to an upper bound. An
+upper bound which is too large in certain areas of the action space encourages the agent to explore
+them and correct the critic, akin to optimistic initialization in the tabular setting [ 42,43]. We include
+more intuition about the difference between the upper and lower bound in Appendix I. Due to
+overestimation, we cannot address pessimistic underexploration by simply using the upper bound in
+the actor [ 17]. Instead, recent algorithms have used an entropy term (4)in the actor update. While
+this helps exploration somewhat by preventing the covariance from collapsing to zero, it does not
+address the core issue that we need to explore more around a spurious maximum. We propose a more
+effective solution in section 4.
+Directional uninformedness. Actor-critic algorithms that use Gaussian policies, like SAC [ 25]
+and TD3 [ 17], sample actions in opposite directions from the mean with equal probability. However,
+in a policy gradient algorithm, the current policy will have been obtained by incremental updates,
+which means that it won’t be very different from recent past policies. Therefore, exploration in both
+directions is wasteful, since the parts of the action space where past policies had high density are
+likely to have already been explored. This phenomenon is shown in Figure 1b. Since the policy
+πcurrent is Gaussian and symmetric around the mean, it is equally likely to sample actions to the left
+and to the right. However, while sampling to the left would be useful for learning an improved critic,
+sampling to the right is wasteful, since the critic estimate in that part of the action space is already
+good enough. In section 4, we address this issue by using an exploration policy shifted relative to the
+target policy.
+4 Better Exploration with Optimism
+Optimistic Actor Critic (OAC) is based on the principle of optimism in the face of uncertainty [ 50].
+Inspired by recent theoretical results about efﬁcient exploration in model-free RL [ 28], OAC obtains
+an exploration policy πEwhich locally maximizes an approximate upper conﬁdence bound of Qπ
+each time the agent enters a new state. The policy πEis separate from the target policy πTlearned
+using (5)and is used only to sample actions in the environment. Formally, the exploration policy
+πE=N(µE,ΣE), is deﬁned as
+µe,ΣE= argmax
+µ,Σ:
+KL(N(µ,Σ),N(µT,ΣT))≤δEa∼N(µ,Σ)/bracketleftbig¯QUB(s,a)/bracketrightbig
+. (6)
+Below, we derive the OAC algorithm formally. We begin by obtaining the upper bound ¯QUB(s,a)
+(section 4.1). We then motivate the optimization problem (6), in particular the use of the KL constraint
+(section 4.2). Finally, in section 4.3, we describe the OAC algorithm and outline how it mitigates
+pessimistic underexploration anddirectional uninformedness while still maintaining the stability of
+learning. In Section 4.4, we compare OAC to related work. In Appendix B, we derive an alternative
+variant of OAC that works with deterministic policies.
+4.1 Obtaining an Upper Bound
+The approximate upper conﬁdence bound ¯QUBused by OAC is derived in three stages. First, we
+obtain an epistemic uncertainty estimate σQabout the true state-action value function Q. We then use
+it to deﬁne an upper bound ˆQUB. Finally, we introduce its linear approximation ¯QUB, which allows
+us to obtain a tractable algorithm.
+Epistemic uncertainty For computational efﬁciency, we use a Gaussian distribution to model
+epistemic uncertainty. We ﬁt mean and standard deviation based on bootstraps [ 16] of the critic. The
+mean belief is deﬁned as µQ(s,a) =1
+2/parenleftBig
+ˆQ1
+LB(s,a)+ˆQ2
+LB(s,a)/parenrightBig
+,while the standard deviation is
+σQ(s,a) =/radicalbigg
+/summationtext
+i∈{1,2}1
+2/parenleftBig
+ˆQi
+LB(s,a)−µQ(s,a)/parenrightBig2
+=1
+2/vextendsingle/vextendsingle/vextendsingleˆQ1
+LB(s,a)−ˆQ2
+LB(s,a)/vextendsingle/vextendsingle/vextendsingle. (7)
+4
+
+==== Page 5 ====
+Here, the second equality is derived in appendix C. The bootstraps are obtained using (1). Since
+existing algorithms [ 24,17] already maintain two bootstraps, we can obtain µQandσQat negligible
+computational cost. Despite the fact that (1)uses the same target value for both bootstraps, we
+demonstrate in Section 5 that using a two-network bootstrap leads to a large performance improvement
+in practice. Moreover, OAC can be easily extended to to use more expensive and better uncertainty
+estimates if required.
+Upper bound. Using the uncertainty estimate (24), we deﬁne the upper bound as ˆQUB(s,a) =
+µQ(s,a)+βUBσQ(s,a). We use the parameter βUB∈R+to ﬁx the level of optimism. In order to
+obtain a tractable algorithm, we approximate ˆQUBwith a linear function ¯QUB.
+¯QUB(s,a) =a⊤/bracketleftBig
+∇aˆQUB(s,a)/bracketrightBig
+a=µT+const (8)
+By Taylor’s theorem, ¯QUB(s,a)is the best possible linear ﬁt to ˆQUB(s,a)in a sufﬁciently small
+region near the current policy mean µTfor any ﬁxed state s[10, Theorem 3.22]. Since the gradient/bracketleftBig
+∇aˆQUB(s,a)/bracketrightBig
+a=µTis computationally similar to the lower-bound gradients in (5), our upper bound
+estimate can be easily obtained in practice without additional tuning.
+4.2 Optimistic Exploration
+Our exploration policy πE, introduced in (6), trades off between two criteria: the maximization of an
+upper bound ¯QUB(s,a), deﬁned in (8), which increases our chances of executing informative actions,
+according to the principle of optimism in the face of uncertainty [9], and constraining the maximum
+KL divergence between the exploration policy and the target policy πT, which ensures the stability of
+updates. The KL constraint in (6)is crucial for two reasons. First, it guarantees that the exploration
+policyπEis not very different from the target policy πT. This allows us to preserve the stability of
+optimization and makes it less likely that we take catastrophically bad actions, ending the episode
+and preventing further learning. Second, it makes sure that the exploration policy remains within the
+action range where the approximate upper bound ¯QUBis accurate. We chose the KL divergence over
+other similarity measures for probability distributions since it leads to tractable updates.
+Thanks to the linear form on ¯QUBand because both πEandπTare Gaussian, the maximization of (6)
+can be solved in closed form. We state the solution below.
+Proposition 1. The exploration policy resulting from (6)has the form πE=N(µE,ΣE), where
+µE=µT+√
+2δ /vextenddouble/vextenddouble/vextenddouble/vextenddouble[∇aˆQUB(s,a)]a=µT/vextenddouble/vextenddouble/vextenddouble/vextenddouble
+ΣΣT[∇aˆQUB(s,a)]a=µTandΣE= ΣT. (9)
+We stress that the covariance of the exploration policy is the same as the target policy. The proof is
+deferred to Appendix A.
+4.3 The Optimistic Actor-Critic Algorithm
+Optimistic Actor Critic (see Algorithm 1) samples actions using the exploration policy (9)in line
+4 and stores it in a memory buffer. The term/bracketleftBig
+∇aˆQUB(s,a)/bracketrightBig
+a=µTin(9)is computed at minimal
+cost4using automatic differentiation, analogous to the critic derivative in the actor update (4). OAC
+then uses its memory buffer to train the critic (line 10) and the actor (line 12). We also introduced a
+modiﬁcation of the lower bound used in the actor, using ˆQ′
+LB=µQ(s,a)+βLBσQ(s,a), allowing
+us to use more conservative policy updates. The critic (1) is recovered by setting βLB=−1.
+OAC avoids the pitfalls of greedy exploration Figure 2 illustrates OAC’s exploration policy πE
+visually. Since the policy πEis far from the spurious maximum of ˆQLB(red line in ﬁgure 2), executing
+actions sampled from πEleads to a quick correction to the critic estimate. This way, OAC avoids
+pessimistic underexploration . SinceπEis not symmetric with respect to the mean of πT(dashed
+line), OAC also avoids directional uninformedness .
+4In practice, the per-iteration wall clock time it takes to run OAC is the same as SAC.
+5
+
+==== Page 6 ====
+Algorithm 1 Optimistic Actor-Critic (OAC).
+Require: w1,w2,θ ⊲ Initial parameters w1,w2of the critic and θof the target policy πT.
+1:˘w1←w1,˘w2←w2,D←∅ ⊲Initialize target network weights and replay pool
+2:foreach iteration do
+3: foreach environment step do
+4: at∼πE(at|st) ⊲Sample action from exploration policy as in (9).
+5: st+1∼p(st+1|st,at) ⊲Sample transition from the environment
+6:D←D∪{ (st,at,R(st,at),st+1)} ⊲Store the transition in the replay pool
+7: end for
+8: foreach training step do
+9: fori∈{1,2}do ⊲Update two bootstraps of the critic
+10: updatewiwithˆ∇wi/ba∇dblˆQi
+LB(st,at)−R(st,at)−γmin(˘Q1
+LB(st+1,a),˘Q2
+LB(st+1,a))/ba∇dbl2
+2
+11: end for
+12: updateθwith∇θˆJα
+ˆQ′
+LB⊲Policy gradient update.
+13: ˘w1←τw1+(1−τ)˘w1,˘w2←τw2+(1−τ)˘w2 ⊲Update target networks
+14: end for
+15:end for
+Output: w1,w2,θ ⊲Optimized parameters
+aQπ,π(a)
+ˆQLB(s,a)Qπ(s,a)ˆQUB(s,a)
+πTπEsamples
+needed lesssamples
+needed more
+Figure 2: The OAC exploration policy πEavoids pessimistic underexploration by sampling far from
+the spurious maximum of the lower bound ˆQLB. SinceπEis not symmetric wrt. the mean of the
+target policy (dashed line), it also addresses directional uninformedness.
+Stability While off-policy deep Reinforcement Learning is difﬁcult to stabilize in general [ 43,47],
+OAC is remarkably stable. Due to the KL constraint in equation (6), the exploration policy πE
+remains close to the target policy πT. In fact, despite using a separate exploration policy, OAC isn’t
+very different in this respect from SAC [ 24] or TD3 [ 17], which explore with a stochastic policy but
+use a deterministic policy for evaluation. In Section 5, we demonstrate empirically that OAC and
+SAC are equally stable in practice. Moreover, similarly to other recent state-of-the-art actor-critic
+algorithms [ 17,25], we use target networks [ 33,31] to stabilize learning. We provide the details in
+Appendix D.
+Overestimation vs Optimism While OAC is an optimistic algorithm, it does not exhibit catas-
+trophic overestimation [ 17,26,46]. OAC uses the optimistic estimate (8)for exploration only. The
+policyπEis computed from scratch (line 4 in Algorithm 1) every time the algorithm takes an action
+and is used only for exploration. The critic and actor updates (1)and(5)are still performed with
+a lower bound. This means that there is no way the upper bound can inﬂuence the critic except
+indirectly through the distribution of state-action pairs in the memory buffer.
+4.4 Related work
+OAC is distinct from other methods that maintain uncertainty estimates over the state-action value
+function. Actor-Expert [ 32] uses a point estimate of Q⋆, unlike OAC, which uses a bootstrap
+approximating Qπ. Bayesian actor-critic methods [ 19–21] model the probability distribution over Qπ,
+but unlike OAC, do not use it for exploration. Approaches combining DQN with bootstrap [ 11,36] and
+the uncertainty Bellman equation [ 34] are designed for discrete actions. Model-based reinforcement
+6
+
+==== Page 7 ====
+Figure 3: OAC versus SAC, TD3, DDPG on 5 Mujoco environments. The horizontal axis indicates
+number of environment steps. The vertical axis indicates the total undiscounted return. The shaded
+areas denote one standard deviation.
+learning methods thet involve uncertainty [ 18,15,12] are very computationally expensive due to
+the need of learning a distribution over environment models. OAC may seem superﬁcially similar
+to natural actor critic [ 5,29,37,38] due to the KL constraint in (6). In fact, it is very different.
+While natural actor critic uses KL to enforce the similarity between inﬁnitesimally small updates to
+the target policy, OAC constrains the exploration policy to be within a non-trivial distance of the
+target policy. Other approaches that deﬁne the exploration policy as a solution to a KL-constrained
+optimization problem include MOTO [ 2], MORE [ 4] and Maximum a Posteriori Policy optimization
+[3]. These methods differ from OAC in that they do not use epistemic uncertainty estimates and
+explore by enforcing entropy.
+5 Experiments
+Our experiments have three main goals. First, to test whether Optimistic Actor Critic has performance
+competitive to state-of-the art algorithms. Second, to assess whether optimistic exploration based
+on the bootstrapped uncertainty estimate (24), is sufﬁcient to produce a performance improvement.
+Third, to assess whether optimistic exploration adversely affects the stability of the learning process.
+MuJoCo Continuous Control We test OAC on the MuJoCo [ 45] continuous control benchmarks.
+We compare OAC to SAC [ 25] and TD3 [ 17], two recent model-free RL methods that achieve
+state-of-the art performance. For completeness, we also include a comparison to a tuned version of
+DDPG [ 31], an established algorithm that does not maintain multiple bootstraps of the critic network.
+OAC uses 3 hyper-parameters related to exploration. The parameters βUBandβLBcontrol the amount
+of uncertainty used to compute the upper and lower bound respectively. The parameter δcontrols the
+maximal allowed divergence between the exploration policy and the target policy. We provide the
+values of all hyper-parameters and details of the hyper-parameter tuning in Appendix D. Results in
+Figure 3 show that using optimism improves the overall performance of actor-critic methods. On
+Ant, OAC improves the performance somewhat. On Hopper, OAC achieves state-of the art ﬁnal
+performance. On Walker, we achieve the same performance as SAC while the high variance of results
+on HalfCheetah makes it difﬁcult to draw conclusions on which algorithm performs better.5.
+State-of-the art result on Humanoid The upper-right plot of Figure 3 shows that the vanilla
+version of OAC outperforms SAC the on the Humanoid task. To test the statistical signiﬁcance of our
+result, we re-ran both SAC and OAC in a setting where 4 training steps per iteration are used. By
+exploiting the memory buffer more fully, the 4-step versions show the beneﬁt of improved exploration
+5Because of this high variance, we measured a lower mean performance of SAC in Figure 3 than previously
+reported. We provide details in Appendix E.
+7
+
+==== Page 8 ====
+Figure 4: Impact of the bootstrapped uncertainty estimate on the performance of OAC.
+Figure 5: Left ﬁgure: individual runs of OAC vs SAC. Right ﬁgure: sensitivity to the KL constraint δ.
+Error bars indicate 90% conﬁdence interval.
+more clearly. The results are shown in the lower-right plot in Figure 3. At the end of training, the 90%
+conﬁdence interval6for the performance of OAC was 5033±147while the performance of SAC was
+4586±117. We stress that we did not tune hyper-parameters on the Humanoid environment. Overall,
+the fact that we are able to improve on Soft-Actor-Critic, which is currently the most sample-efﬁcient
+model-free RL algorithm for continuous tasks shows that optimism can be leveraged to beneﬁt sample
+efﬁciency. We provide an explicit plot of sample-efﬁciency in Appendix J.
+Usefulness of the Bootstrapped Uncertainty Estimate OAC uses an epistemic uncertainty esti-
+mate obtained using two bootstraps of the critic network. To investigate its beneﬁt, we compare the
+performance of OAC to a modiﬁed version of the algorithm, which adjusts the exploration policy to
+maximize the approximate lower bound, replacing ˆQUBwithˆQLBin equation (9). While the modiﬁed
+algorithm does not use the uncertainty estimate, it still uses a shifted exploration policy, preferring
+actions that achieve higher state-action values. The results is shown in Figure 4 (we include more plots
+in Figure 8 in the Appendix). Using the bootstrapped uncertainty estimate improves performance on
+the most challenging Humanoid domain, while producing either a slight improvement or a no change
+in performance on others domains. Since the upper bound is computationally very cheap to obtain,
+we conclude that it is worthwhile to use it.
+Sensitivity to the KL constraint OAC relies on the hyperparameter δ, which controls the maxi-
+mum allowed KL divergence between the exploration policy and the target policy. In Figure 5, we
+evaluate how the term√
+2δused in the the exploration policy (9)affects average performance of OAC
+trained for 1 million environment steps on the Ant-v2 domain. The results demonstrate that there is a
+broad range of settings for the hyperparameter δ, which leads to good performance.
+Learning is Stable in Practice Since OAC explores with a shifted policy, it might at ﬁrst be
+expected of having poorer learning stability relative to algorithms that use the target policy for
+exploration. While we have already shown above that the performance difference between OAC and
+SAC is statistically signiﬁcant and not due to increased variance across runs, we now investigate
+stability further. In Figure 5 we compare individual learning runs across both algorithms. We
+conclude that OAC and SAC are similarly stable, avoiding the problems associated with stabilising
+deep off-policy RL [43, 47].
+6Due to computational constraints, we used a slightly different target update rate for OAC. We describe the
+details in Appendix D.
+8
+
+==== Page 9 ====
+6 Conclusions
+We present Optimistic Actor Critic (OAC), a model-free deep reinforcement learning algorithm which
+explores by maximizing an approximate conﬁdence bound on the state-action value function. By
+addressing the inefﬁciencies of pessimistic underexploration anddirectional uninformedness , we are
+able to achieve state-of-the art sample efﬁciency in continuous control tasks. Our results suggest that
+the principle of optimism in the face of uncertainty can be used to improve the sample efﬁciency of
+policy gradient algorithms in a way which carries almost no additional computational overhead.
+References
+[1]Martín Abadi, Ashish Agarwal, Paul Barham, Eugene Brevdo, Zhifeng Chen, Craig Citro, Gregory S.
+Corrado, Andy Davis, Jeffrey Dean, Matthieu Devin, Sanjay Ghemawat, Ian J. Goodfellow, Andrew Harp,
+Geoffrey Irving, Michael Isard, Yangqing Jia, Rafal Józefowicz, Lukasz Kaiser, Manjunath Kudlur, Josh
+Levenberg, Dan Mané, Rajat Monga, Sherry Moore, Derek Gordon Murray, Chris Olah, Mike Schuster,
+Jonathon Shlens, Benoit Steiner, Ilya Sutskever, Kunal Talwar, Paul A. Tucker, Vincent Vanhoucke, Vijay
+Vasudevan, Fernanda B. Viégas, Oriol Vinyals, Pete Warden, Martin Wattenberg, Martin Wicke, Yuan Yu,
+and Xiaoqiang Zheng. Tensorﬂow: Large-scale machine learning on heterogeneous distributed systems.
+CoRR , abs/1603.04467, 2016. URL http://arxiv.org/abs/1603.04467 .
+[2]Abbas Abdolmaleki, Rudolf Lioutikov, Jan R Peters, Nuno Lau, Luis Pualo Reis, and Gerhard Neumann.
+Model-Based Relative Entropy Stochastic Search. In C. Cortes, N. D. Lawrence, D. D. Lee, M. Sugiyama,
+and R. Garnett, editors, Advances in Neural Information Processing Systems 28 , pages 3537–3545. Curran
+Associates, Inc., 2015.
+[3]Abbas Abdolmaleki, Jost Tobias Springenberg, Yuval Tassa, Rémi Munos, Nicolas Heess, and Martin A.
+Riedmiller. Maximum a Posteriori Policy Optimisation. In 6th International Conference on Learning Rep-
+resentations, ICLR 2018, Vancouver, BC, Canada, April 30 - May 3, 2018, Conference Track Proceedings .
+OpenReview.net, 2018.
+[4]Riad Akrour, Gerhard Neumann, Hany Abdulsamad, and Abbas Abdolmaleki. Model-Free Trajectory
+Optimization for Reinforcement Learning. In Maria-Florina Balcan and Kilian Q. Weinberger, editors,
+Proceedings of the 33nd International Conference on Machine Learning, ICML 2016, New York City, NY,
+USA, June 19-24, 2016 , volume 48 of JMLR Workshop and Conference Proceedings , pages 2961–2970.
+JMLR.org, 2016.
+[5]Shun-ichi Amari. Natural Gradient Works Efﬁciently in Learning. Neural Computation , 10(2):251–276,
+1998. doi: 10.1162/089976698300017746.
+[6]J. Baxter and P. L. Bartlett. Direct gradient-based reinforcement learning. In IEEE International Symposium
+on Circuits and Systems, ISCAS 2000, Emerging Technologies for the 21st Century, Geneva, Switzerland,
+28-31 May 2000, Proceedings , pages 271–274. IEEE, 2000. doi: 10.1109/ISCAS.2000.856049.
+[7]Jonathan Baxter and Peter L. Bartlett. Inﬁnite-Horizon Policy-Gradient Estimation. J. Artif. Intell. Res. ,
+15:319–350, 2001. doi: 10.1613/jair.806.
+[8]Jonathan Baxter, Peter L. Bartlett, and Lex Weaver. Experiments with Inﬁnite-Horizon, Policy-Gradient
+Estimation. J. Artif. Intell. Res. , 15:351–381, 2001. doi: 10.1613/jair.807.
+[9]Ronen I. Brafman and Moshe Tennenholtz. R-max-a general polynomial time algorithm for near-optimal
+reinforcement learning. Journal of Machine Learning Research , 3(Oct):213–231, 2002.
+[10] James J. Callahan. Advanced Calculus: A Geometric View . Springer Science & Business Media, September
+2010. ISBN 978-1-4419-7332-0.
+[11] Richard Y Chen, Szymon Sidor, Pieter Abbeel, and John Schulman. Ucb exploration via q-ensembles.
+arXiv preprint arXiv:1706.01502 , 2017.
+[12] Kurtland Chua, Roberto Calandra, Rowan McAllister, and Sergey Levine. Deep reinforcement learning in
+a handful of trials using probabilistic dynamics models. In Advances in Neural Information Processing
+Systems 31: Annual Conference on Neural Information Processing Systems 2018, NeurIPS 2018, 3-8
+December 2018, Montréal, Canada. , pages 4759–4770, 2018. URL http://papers.nips.cc/paper/
+7725-deep-reinforcement-learning-in-a-handful-of-trials-using-probabilistic-dynamics-models .
+9
+
+==== Page 10 ====
+[13] Kamil Ciosek and Shimon Whiteson. Expected Policy Gradients. In Sheila A. McIlraith and Kilian Q.
+Weinberger, editors, Proceedings of the Thirty-Second AAAI Conference on Artiﬁcial Intelligence, (AAAI-
+18), the 30th Innovative Applications of Artiﬁcial Intelligence (IAAI-18), and the 8th AAAI Symposium on
+Educational Advances in Artiﬁcial Intelligence (EAAI-18), New Orleans, Louisiana, USA, February 2-7,
+2018 , pages 2868–2875. AAAI Press, 2018.
+[14] Kamil Ciosek and Shimon Whiteson. Expected Policy Gradients for Reinforcement Learning. CoRR ,
+abs/1801.03326, 2018.
+[15] Stefan Depeweg, José Miguel Hernández-Lobato, Finale Doshi-Velez, and Steffen Udluft. Learning and pol-
+icy search in stochastic dynamical systems with bayesian neural networks. arXiv preprint arXiv:1605.07127 ,
+2016.
+[16] Bradley Efron and Robert J. Tibshirani. An Introduction to the Bootstrap. SIAM Review , 36(4):677–678,
+1994. doi: 10.1137/1036171.
+[17] Scott Fujimoto, Herke Hoof, and David Meger. Addressing Function Approximation Error in Actor-Critic
+Methods. In International Conference on Machine Learning , pages 1582–1591, 2018.
+[18] Yarin Gal, Rowan McAllister, and Carl Edward Rasmussen. Improving pilco with bayesian neural network
+dynamics models. In Data-Efﬁcient Machine Learning workshop, ICML , volume 4, 2016.
+[19] Mohammad Ghavamzadeh and Yaakov Engel. Bayesian actor-critic algorithms. In Machine Learning,
+Proceedings of the Twenty-Fourth International Conference (ICML 2007), Corvallis, Oregon, USA, June
+20-24, 2007 , pages 297–304, 2007. doi: 10.1145/1273496.1273534. URL https://doi.org/10.1145/
+1273496.1273534 .
+[20] Mohammad Ghavamzadeh, Shie Mannor, Joelle Pineau, and Aviv Tamar. Bayesian reinforcement learning:
+A survey. Foundations and Trends in Machine Learning , 8(5-6):359–483, 2015. doi: 10.1561/2200000049.
+URLhttps://doi.org/10.1561/2200000049 .
+[21] Mohammad Ghavamzadeh, Yaakov Engel, and Michal Valko. Bayesian policy gradient and actor-critic
+algorithms. Journal of Machine Learning Research , 17:66:1–66:53, 2016. URL http://jmlr.org/
+papers/v17/10-245.html .
+[22] Shixiang Gu, Tim Lillicrap, Richard E. Turner, Zoubin Ghahramani, Bernhard Schölkopf, and Sergey
+Levine. Interpolated Policy Gradient: Merging On-Policy and Off-Policy Gradient Estimation for Deep
+Reinforcement Learning. In Isabelle Guyon, Ulrike von Luxburg, Samy Bengio, Hanna M. Wallach, Rob
+Fergus, S. V . N. Vishwanathan, and Roman Garnett, editors, Advances in Neural Information Processing
+Systems 30: Annual Conference on Neural Information Processing Systems 2017, 4-9 December 2017,
+Long Beach, CA, USA , pages 3849–3858, 2017.
+[23] Shixiang Gu, Timothy P. Lillicrap, Zoubin Ghahramani, Richard E. Turner, and Sergey Levine. Q-
+Prop: Sample-Efﬁcient Policy Gradient with An Off-Policy Critic. In 5th International Conference on
+Learning Representations, ICLR 2017, Toulon, France, April 24-26, 2017, Conference Track Proceedings .
+OpenReview.net, 2017.
+[24] Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft Actor-Critic: Off-Policy Maximum
+Entropy Deep Reinforcement Learning with a Stochastic Actor. In International Conference on Machine
+Learning , pages 1856–1865, 2018.
+[25] Tuomas Haarnoja, Aurick Zhou, Kristian Hartikainen, George Tucker, Sehoon Ha, Jie Tan, Vikash Kumar,
+Henry Zhu, Abhishek Gupta, Pieter Abbeel, and Sergey Levine. Soft Actor-Critic Algorithms and
+Applications. CoRR , abs/1812.05905, 2018.
+[26] Hado V . Hasselt. Double Q-learning. In Advances in Neural Information Processing Systems , pages
+2613–2621, 2010.
+[27] Nicolas Heess, Gregory Wayne, David Silver, Timothy P. Lillicrap, Tom Erez, and Yuval Tassa. Learning
+Continuous Control Policies by Stochastic Value Gradients. In Corinna Cortes, Neil D. Lawrence, Daniel D.
+Lee, Masashi Sugiyama, and Roman Garnett, editors, Advances in Neural Information Processing Systems
+28: Annual Conference on Neural Information Processing Systems 2015, December 7-12, 2015, Montreal,
+Quebec, Canada , pages 2944–2952, 2015.
+[28] Chi Jin, Zeyuan Allen-Zhu, Sébastien Bubeck, and Michael I. Jordan. Is Q-Learning Provably Efﬁcient? In
+Samy Bengio, Hanna M. Wallach, Hugo Larochelle, Kristen Grauman, Nicolò Cesa-Bianchi, and Roman
+Garnett, editors, Advances in Neural Information Processing Systems 31: Annual Conference on Neural
+Information Processing Systems 2018, NeurIPS 2018, 3-8 December 2018, Montréal, Canada , pages
+4868–4878, 2018.
+10
+
+==== Page 11 ====
+[29] Sham Kakade. A Natural Policy Gradient. In Thomas G. Dietterich, Suzanna Becker, and Zoubin Ghahra-
+mani, editors, Advances in Neural Information Processing Systems 14 [Neural Information Processing
+Systems: Natural and Synthetic, NIPS 2001, December 3-8, 2001, Vancouver, British Columbia, Canada] ,
+pages 1531–1538. MIT Press, 2001.
+[30] Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In 3rd International
+Conference on Learning Representations, ICLR 2015, San Diego, CA, USA, May 7-9, 2015, Conference
+Track Proceedings , 2015. URL http://arxiv.org/abs/1412.6980 .
+[31] Timothy P. Lillicrap, Jonathan J. Hunt, Alexander Pritzel, Nicolas Heess, Tom Erez, Yuval Tassa, David
+Silver, and Daan Wierstra. Continuous control with deep reinforcement learning. In Yoshua Bengio and
+Yann LeCun, editors, 4th International Conference on Learning Representations, ICLR 2016, San Juan,
+Puerto Rico, May 2-4, 2016, Conference Track Proceedings , 2016.
+[32] Sungsu Lim, Ajin Joseph, Lei Le, Yangchen Pan, and Martha White. Actor-expert: A framework for
+using action-value methods in continuous action spaces. CoRR , abs/1810.09103, 2018. URL http:
+//arxiv.org/abs/1810.09103 .
+[33] V olodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel Veness, Marc G. Bellemare,
+Alex Graves, Martin A. Riedmiller, Andreas Fidjeland, Georg Ostrovski, Stig Petersen, Charles Beattie,
+Amir Sadik, Ioannis Antonoglou, Helen King, Dharshan Kumaran, Daan Wierstra, Shane Legg, and Demis
+Hassabis. Human-level control through deep reinforcement learning. Nature , 518(7540):529–533, 2015.
+doi: 10.1038/nature14236.
+[34] Brendan O’Donoghue, Ian Osband, Rémi Munos, and V olodymyr Mnih. The uncertainty bellman equation
+and exploration. In Proceedings of the 35th International Conference on Machine Learning, ICML
+2018, Stockholmsmässan, Stockholm, Sweden, July 10-15, 2018 , pages 3836–3845, 2018. URL http:
+//proceedings.mlr.press/v80/o-donoghue18a.html .
+[35] Ian Osband, Charles Blundell, Alexander Pritzel, and Benjamin Van Roy. Deep Exploration via Boot-
+strapped DQN. In Daniel D. Lee, Masashi Sugiyama, Ulrike von Luxburg, Isabelle Guyon, and Roman
+Garnett, editors, Advances in Neural Information Processing Systems 29: Annual Conference on Neural
+Information Processing Systems 2016, December 5-10, 2016, Barcelona, Spain , pages 4026–4034, 2016.
+[36] Ian Osband, John Aslanides, and Albin Cassirer. Randomized prior functions for deep re-
+inforcement learning. In Advances in Neural Information Processing Systems 31: Annual
+Conference on Neural Information Processing Systems 2018, NeurIPS 2018, 3-8 December
+2018, Montréal, Canada. , pages 8626–8638, 2018. URL http://papers.nips.cc/paper/
+8080-randomized-prior-functions-for-deep-reinforcement-learning .
+[37] Jan Peters and Stefan Schaal. Policy Gradient Methods for Robotics. In 2006 IEEE/RSJ International
+Conference on Intelligent Robots and Systems, IROS 2006, October 9-15, 2006, Beijing, China , pages
+2219–2225. IEEE, 2006. ISBN 978-1-4244-0258-8. doi: 10.1109/IROS.2006.282564.
+[38] Jan Peters and Stefan Schaal. Natural Actor-Critic. Neurocomputing , 71(7-9):1180–1190, 2008. doi:
+10.1016/j.neucom.2007.11.026.
+[39] Martin L. Puterman. Markov Decision Processes: Discrete Stochastic Dynamic Programming . John Wiley
+& Sons, 2014.
+[40] David Silver, Guy Lever, Nicolas Heess, Thomas Degris, Daan Wierstra, and Martin A. Riedmiller.
+Deterministic Policy Gradient Algorithms. In Proceedings of the 31th International Conference on
+Machine Learning, ICML 2014, Beijing, China, 21-26 June 2014 , volume 32 of JMLR Workshop and
+Conference Proceedings , pages 387–395. JMLR.org, 2014.
+[41] Richard S. Sutton. Generalization in Reinforcement Learning: Successful Examples Using Sparse Coarse
+Coding. In David S. Touretzky, Michael Mozer, and Michael E. Hasselmo, editors, Advances in Neural
+Information Processing Systems 8, NIPS, Denver, CO, USA, November 27-30, 1995 , pages 1038–1044.
+MIT Press, 1995. ISBN 978-0-262-20107-0.
+[42] Richard S Sutton. Generalization in Reinforcement Learning: Successful Examples Using Sparse Coarse
+Coding. In D. S. Touretzky, M. C. Mozer, and M. E. Hasselmo, editors, Advances in Neural Information
+Processing Systems 8 , pages 1038–1044. MIT Press, 1996.
+[43] Richard S. Sutton and Andrew G. Barto. Reinforcement Learning: An Introduction . The MIT Press, second
+edition, 2018.
+11
+
+==== Page 12 ====
+[44] Richard S. Sutton, David A. McAllester, Satinder P. Singh, and Yishay Mansour. Policy Gradient Methods
+for Reinforcement Learning with Function Approximation. In Sara A. Solla, Todd K. Leen, and Klaus-
+Robert Müller, editors, Advances in Neural Information Processing Systems 12, [NIPS Conference, Denver,
+Colorado, USA, November 29 - December 4, 1999] , pages 1057–1063. The MIT Press, 1999. ISBN
+978-0-262-19450-1.
+[45] Emanuel Todorov, Tom Erez, and Yuval Tassa. MuJoCo: A physics engine for model-based control. 2012
+IEEE/RSJ International Conference on Intelligent Robots and Systems , pages 5026–5033, 2012.
+[46] Hado van Hasselt, Arthur Guez, and David Silver. Deep Reinforcement Learning with Double Q-Learning.
+In Dale Schuurmans and Michael P. Wellman, editors, Proceedings of the Thirtieth AAAI Conference on
+Artiﬁcial Intelligence, February 12-17, 2016, Phoenix, Arizona, USA , pages 2094–2100. AAAI Press,
+2016. ISBN 978-1-57735-760-5.
+[47] Hado van Hasselt, Yotam Doron, Florian Strub, Matteo Hessel, Nicolas Sonnerat, and Joseph Modayil.
+Deep Reinforcement Learning and the Deadly Triad. CoRR , abs/1812.02648, 2018.
+[48] Harm van Seijen, Hado van Hasselt, Shimon Whiteson, and Marco A. Wiering. A theoretical and empirical
+analysis of Expected Sarsa. In IEEE Symposium on Adaptive Dynamic Programming and Reinforcement
+Learning, ADPRL 2009, Nashville, TN, USA, March 31 - April 1, 2009 , pages 177–184. IEEE, 2009. ISBN
+978-1-4244-2761-1. doi: 10.1109/ADPRL.2009.4927542.
+[49] Ronald J. Williams. Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement
+Learning. Machine Learning , 8:229–256, 1992. doi: 10.1007/BF00992696.
+[50] Brian D. Ziebart. Modeling Purposeful Adaptive Behavior with the Principle of Maximum Causal Entropy .
+PhD Thesis, Carnegie Mellon University, Pittsburgh, PA, USA, 2010.
+12
+

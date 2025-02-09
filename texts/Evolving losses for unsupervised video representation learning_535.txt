@@ -1,0 +1,1021 @@
+==== Page 1 ====
+Evolving Losses for Unsupervised Video Representation Learning
+AJ Piergiovanni, Anelia Angelova, Michael S. Ryoo
+Research at Google
+{ajpiergi,anelia,mryoo }@google.com
+Abstract
+We present a new method to learn video representations
+from large-scale unlabeled video data. Ideally, this rep-
+resentation will be generic and transferable, directly us-
+able for new tasks such as action recognition and zero or
+few-shot learning. We formulate unsupervised representa-
+tion learning as a multi-modal, multi-task learning prob-
+lem, where the representations are shared across different
+modalities via distillation. Further, we introduce the con-
+cept of loss function evolution by using an evolutionary
+search algorithm to automatically ﬁnd optimal combina-
+tion of loss functions capturing many (self-supervised) tasks
+and modalities. Thirdly, we propose an unsupervised rep-
+resentation evaluation metric using distribution matching
+to a large unlabeled dataset as a prior constraint, based
+on Zipf’s law. This unsupervised constraint, which is not
+guided by any labeling, produces similar results to weakly-
+supervised, task-speciﬁc ones. The proposed unsupervised
+representation learning results in a single RGB network and
+outperforms previous methods. Notably, it is also more ef-
+fective than several label-based methods (e.g., ImageNet),
+with the exception of large, fully labeled video datasets.
+1. Introduction
+Video representation learning is an important problem
+which beneﬁts high-level perception tasks including action
+recognition and video object detection [ 40,6,41]. It has
+many key applications, such as web-video retrieval, robot
+perception, and smart homes and cities. However, learn-
+ing visual representations generally requires a large num-
+ber of labeled training examples. This is even more so for
+videos, as videos are higher-dimensional input than images
+and video CNNs have more learnable parameters than 2D
+ones. Simultaneously, videos are more expensive to collect
+and annotate than images, as they require additional, and
+often ambiguous, temporal annotations [ 34]. Additionally,
+in rare event detection, very few examples may be available
+to begin with. Thus, obtaining a good video representation
+without relying on domain speciﬁc, annotated video sam-
+Representation space 
+from unlabeled data
+Future PredictionReconstruction
+Frame Order Detection
+=
+=Multiple 
+self-supervised tasks
+...
+In order
+Out of order
+...
+Action/event 
+clustersVideo CNNFigure 1: Overview of our unsupervised representation
+learning framework. The objective is to obtain a good rep-
+resentation (blue outlined box) from a set of self-supervised
+tasks. We use an evolutionary algorithm to automatically
+ﬁnd the optimal combination of tasks and power law distri-
+bution matching to ‘supervise’ the clustering and guide the
+evolution. No labeling or supervision is needed.
+ples, has signiﬁcant impact on real-world scenarios where
+large-scale video data curation and labeling is prohibitive.
+In this paper, we present a new, principled method for
+unsupervised learning of video representations from unla-
+beled video data. It is based on the observation that the
+optimized combination of multiple self-supervised tasks1,
+which are additionally encouraged by multi-modal distil-
+lation, is often sufﬁcient to learn good feature representa-
+tions. Importantly, we demonstrate that such combination
+could be found without per-class or per-video labeling by
+instead matching the representation statistics to a general
+power distribution of video classes, e.g., Zipf’s law [ 50].
+Our approach is to train the network so that its in-
+termediate representations reﬂect not just information di-
+rectly obtained from its own input modality (e.g., RGB im-
+age) but also information from different modalities (e.g.,
+1In this work we use unsupervised and self-supervised interchangeably.
+1
+133
+
+
+==== Page 2 ====
+...
+...
+Task 1 Task 2 Task N...Task 1 Task 2 Task N
+...Task 1 Task 2 Task N
+Optical Flow RGBAudio
+Distillation
+Losses
+EaudioxRxFxAλ1,1L1,1λ1,2L1,2λ1,NL1,Nλ2,1L2,1λ2,2L2,2λ2,NL2,NλM,1LM,1λM,2LM,2λM,NLM,N...
+...λdFigure 2: The multi-task, multi-modal, unsupervised representation learning framework. Each modality is trained to opti-
+mize a set of tasks. Distillation regularization loss terms ‘infuse’ each modality’s information into the main RGB network
+(drawn center). We evolve the loss function to automatically ﬁnd the weights for each task and distillation location, via an
+unsupervised objective. The goal is to obtain representation from a single RGB network that transfers to recognition tasks.
+grayscale, optical ﬂow, and audio). The idea is that synchro-
+nized multi-modal data sources should beneﬁt representa-
+tion learning of each other as they correspond to the same
+content. This is done by the introduction of ‘distillation’
+[16] losses between multiple streams of networks. The dis-
+tillation losses, as well as the self-supervised tasks, do not
+rely on human annotation or supervision. As a result, our
+approach is formulated as a multi-modal, multi-task unsu-
+pervised learning, where the tasks include single-modality
+tasks like frame ordering as well as multi-modality tasks
+like video-audio alignment.
+However, combining multiple different self-supervised
+task losses and distillation losses for unlabeled representa-
+tion learning is a challenging problem, as certain tasks and
+modalities are more relevant to the ﬁnal task than others
+and different loss functions have different scales. Thus, we
+newly introduce the concept of using an evolutionary algo-
+rithm to obtain a better multi-modal, multi-task loss func-
+tion that appropriately combines all the losses to train the
+network. AutoML has successfully been applied to archi-
+tecture search [ 25] and data augmentation [ 8]. Here we ex-
+tend this concept to unsupervised learning by automatically
+ﬁnding the weighting of self-supervised tasks for video rep-
+resentation learning. The ‘ﬁtness’ of this evolution could
+naturally be measured with task speciﬁc labels (e.g., ac-
+curacy). However, we instead propose a purely unsuper-
+vised alternative based on power law distribution matching
+between the datasets, by using KL divergence constraints.
+These constraints do not require any labeled data, enabling
+fully unsupervised and unlabeled learning.Our goal is to ﬁnd video feature representations, based
+on a single RGB network, that can seamlessly improve su-
+pervised or unsupervised tasks without additional annota-
+tions. The main contributions are:
+•Formulation of unsupervised learning as multi-modal,
+multi-task learning, including distillation tasks to transfer
+features across modalities into a single-stream network.
+Once learned, it allows for faster representation compu-
+tation while still capturing multi-modal features.
+•Evolutionary search for a loss function that automatically
+combines self-supervised and distillation tasks that are
+beneﬁcial for unsupervised representation learning.
+•Introduction of an unsupervised representation evalua-
+tion metric based on power law distribution matching,
+which requires no labels and performs similarly to the
+label-guided one.
+This work makes the surprising ﬁnding that large
+amounts of unlabeled data, combined with self-supervised
+tasks and the power law distribution matching, produces
+very powerful feature representations which are only ri-
+valed by large datasets with very extensive data labeling:
+Our feature representations (obtained with zero labels) out-
+perform ImageNet pre-training, and pre-training on small
+and medium-size labeled video datasets; it is only outper-
+formed by Kinetics pre-training with full annotations based
+on human labeling of more than 200,000 videos. Further,
+the proposed representations outperform Kinetics training,
+when ﬁne-tuned with Kinetics labels. We refer to the model
+as‘ELo’ , as it is based on evolving unsupervised losses.
+134
+
+
+==== Page 3 ====
+2. Related Work
+Unsupervised Video Representation Learning: Ob-
+taining labeled video data is expensive, and unlabeled video
+data is plentiful, and there have been many methods pro-
+posed for self-supervised learning of video representations.
+Some tasks take advantage of the temporal structure in
+videos, such as predicting if frames appear in order, re-
+verse order, shufﬂed, color-consistency across frames, etc.
+[12,26,30,24,31,47,19,21,45,46,42]. Other work has
+explored using the spatial structure present in images, such
+as predicting relative spatial location of image patches [ 28]
+or tracking patches over time [ 44], showing promising re-
+sults. Reconstruction or prediction of future frames[ 37], or
+time-contrastive learning[ 18,33] to obtain representations
+has also been successful. Constrastive losses are also com-
+mon [ 39]. Learning representations taking advantage of au-
+dio and video features has been explored by predicting if
+an audio clip is from a video [ 2] or if audio and video are
+temporally aligned [ 29,7,22,3].
+Multi-task self-supervised learning has also shown
+promising results [ 10,32,48], where tasks are assumed
+to have equal weights and are not multi-modal. Gener-
+ating weak labels using k-means clustering on CNN fea-
+tures [ 4,5] or using clustering with meta-learning [ 17] has
+also been explored. In this paper, we propose a generalized
+approach to unsupervised representation learning, allowing
+for multi-modal inputs and automatic discovery of the tasks
+that beneﬁt recognition performance.
+Activity Recognition: Activity recognition is a active
+area of vision research, with a variety of methods pro-
+posed [ 43,40,35,11]. With the introduction of large ac-
+tivity recognition datasets (e.g., Kinetics and Moments in
+Time [ 20,27]), much more accurate deep video CNNs are
+possible [ 6]. We here show that they can be further im-
+proved by unsupervised representation learning.
+3. Method
+We formulate unsupervised video representation learn-
+ing as a combination of multi-task, multi-modal learning.
+The objective is not only to take advantage of multiple self-
+supervised tasks for the learning of a (good) representation
+space, but also to do so across multiple modalities. The idea
+is that models from synchronized multi-modal data, sharing
+the same semantic content, will beneﬁt the representation
+learning of each other. We encourage that via introducing
+‘distillation’ losses. At the same time, each modality may
+have multiple self-supervised tasks with their corresponding
+losses. Fig. 2illustrates the multi-task, multi-modal formu-
+lation with multiple losses and distillation, Section 3.1has
+the details.
+To facilitate multi-task, multi-modal learning, impor-
+tantly, we introduce the new concept of automatically evolv-
+ingthe main loss function. Certain tasks and modalities aremore relevant to the ﬁnal task so the representation needs
+to focus on those more than the others. The idea is to com-
+putationally search for how different multi-task and distil-
+lation losses should be combined, instead of constructing
+a loss function by trial-and-error. We discuss this more in
+Section 3.2.
+One key technical question is how one can guide the evo-
+lution without a pre-deﬁned task or a ﬁtness function. We
+propose an unsupervised method to evaluate each loss func-
+tion, based on matching of the power law distribution of
+activity classes (Section 3.2.2 ).
+3.1. Unsupervised multi­modal learning
+We construct a CNN for each modality. Each network is
+trained using several tasks not requiring labeled video data,
+and the information from each modality is combined using
+distillation [ 16] (Fig. 2). More speciﬁcally, we take advan-
+tage of multiple self-supervised tasks, such as frame recon-
+struction, future frame prediction, and frame temporal or-
+dering (Section 3.3discusses them in detail). Each of these
+tasks will yield an unsupervised loss for training. Learning
+with multiple self-supervised tasks makes our representa-
+tions more generic, as they need to generalize to many tasks
+and are more transferable to unseen tasks.
+For each modality, mand its input Im, we build an em-
+bedding network, Em, which generates an embedded rep-
+resentation of the input: xm=Em(Im).xmis the fea-
+ture representation for modality m. Our embedding net-
+works are (2+1)D ResNet-50 models, which take advantage
+of both 2D spatial convolutions and 1D temporal convolu-
+tions to represent videos; they provide state-of-the-art per-
+formance on video understanding tasks. As mentioned, for
+each modality, we consider several learning tasks, for ex-
+ample, frame reconstruction. Each of the tasks per modality
+has its own loss function. Lm,tis the loss from task tand
+modality mand{t1,t2...,tNm}is the set of tasks for the
+modality.
+Further, to better take advantage of the multi-modal rep-
+resentations, we use distillation to ‘infuse’ the other modal-
+ities into the RGB network at different locations. Our ﬁnal
+objective is to train a single RGB network that provides a
+strong representation for video understanding. Our formu-
+lation allows the RGB network to learn representations from
+various tasks and modalities.
+We combine the multi-task losses for unsupervised train-
+ing, and per each modality, by a weighted sum, and we
+further combine it with a number of distillation losses Ld
+which fuse or synchronize the multiple modalities:
+L=/summationdisplay
+m/summationdisplay
+tλm,tLm,t+/summationdisplay
+dλdLd (1)
+whereλm,tandλdare the weights of the losses. The
+weighted sum Lis the loss we use to train the entire model.
+135
+
+
+==== Page 4 ====
+Evolution IterationsFigure 3: Evolution of the weights deciding our ﬁnal loss function. Each square represents a λm,tand how it changes
+over the evolutionary search. The weight symbols are as follows: the ﬁrst letter is representation modality (R=RGB,
+A=Audio, F=Flow, G=Grey), The tasks are S=Shufﬂe, C=colorize, A=Audio align, P=Future prediction, B=backward detec-
+tion, D=Distill, E=Embed. The numbers indicate the layer the distillation loss is applied.
+3.1.1 Distillation
+Distillation was introduced to train smaller networks by
+matching representation of deeper ones [ 16], or for gen-
+erally transferring knowledge from pre-trained networks.
+Here, we use distillation to ‘infuse’ representations of dif-
+ferent modalities into the main, RGB network. Note that we
+distill representations jointly while training. The distilla-
+tion losses learn features by transferring information across
+modalities. More speciﬁcally, our formulation allows for
+the distillation of audio, optical ﬂow and temporal informa-
+tion into a single, RGB-based convolutional neural network.
+The distillation loss is the L2difference between the ac-
+tivations of a layer in the main network Miand a layer in
+another network Li. Such constraint encourages the activa-
+tions of the main network to match the activations of the
+other network, infusing other features into the main net-
+work.
+Ld(Li,Mi) =||Li−Mi||2 (2)
+Distillation has previously been used for combining net-
+works such as ensembles [ 16] or learning to predict optical
+ﬂow features from RGB [ 38], here we are extending its us-
+age for multi-modal representation learning from unlabeled
+video data. While in principle distillation can happen across
+all modalities, we do distillation only into the RGB stream,
+so as to obtain a ﬁnal single-tower efﬁcient representation
+for learning subsequent tasks. Using the learned weights for
+the RGB network, we can then extract representations for a
+set of videos.
+3.2. Evolving an unsupervised loss function
+Our representation learning is governed by the weight
+coefﬁcients of the loss in Equation 1, and they need to be ap-
+propriately determined. The weighting supposedly reﬂects
+the importance or relevance of each task and modality to
+the main task; for example the optical ﬂow modality may
+be important for tracking, whereas audio may give more
+information for temporal segmentation of videos in certain
+settings.3.2.1 Unsupervised loss construction
+Instead of manually constructing a loss function, we evolve
+the loss function by taking advantage of well-established
+evolutionary algorithms, e.g., [ 13]. More speciﬁcally, our
+search space consists of all the weights of the loss function,
+both task weights and distillation weights. Each λm,tor
+λdis constrained to be in [0,1]. Our evolutionary algorithm
+maintains a pool (i.e., population) of individuals where each
+individual is a set of weight values that compose the ﬁnal
+loss function.
+3.2.2 Unsupervised Zipf distribution matching
+The evolutionary algorithm requires evaluation of the loss
+function (i.e., ﬁtness measure) at each round to optimize the
+loss weight coefﬁcients. We propose a new, unsupervised
+method for this. In order to measure the ﬁtness of each in-
+dividual (i.e., the set of weights to combine the tasks and
+modalities to form the ﬁnal loss), we apply a k-means clus-
+tering on the representation learned with the correspond-
+ing loss function, and analyze the cluster distributions. We
+ﬁrst train the network using a smaller subset (100k) of unla-
+beled, random YouTube videos for 10,000 iterations (using
+the corresponding loss function). We then use a subset of
+random YouTube videos and similarly extract representa-
+tionsxRGB=ERGB(I). Given these representations, we
+can then cluster them into kclusters.
+k-means clustering can be viewed as a Gaussian Mix-
+ture Model with ﬁxed variances and we calculate probabili-
+ties of each feature vector belonging to a cluster, which re-
+duces to computing the distance. Speciﬁcally, for the cluster
+centroids {c1,c2,...ck}whereci∈ RD(aD-dimensional
+vector), we can compute the probability of a feature vector
+x∈ RDbelonging to a cluster cias:
+p(x|ci) =1√
+2σ2πexp/parenleftbigg
+−(x−ci)2
+2σ2/parenrightbigg
+(3)
+Since we are (naively) assuming all clusters have the same
+variance (for simplicity, let 2σ2= 1) and an equal prior
+136
+
+
+==== Page 5 ====
+over all clusters, we can use Bayes rules to rewrite as:
+p(ci|x) =p(ci)p(x|ci)
+/summationtextk
+jp(cj)p(x|cj)=exp−(x−ci)2
+2σ2/summationtextk
+j=1exp−(x−cj)2
+2σ2
+=exp−(x−ci)2
+/summationtextk
+j=1exp−(x−cj)2(4)
+which we note is the standard softmax function applied to
+the squared distances from a feature xto a cluster center ci.
+As observed in many large activity recognition datasets,
+like A V A [ 14] and Kinetics [ 20], the activity classes of
+videos follow a Zipf distribution. We can use this as a prior
+constraint on the distribution of the videos in these clusters.
+Speciﬁcally, given the above probability of each video be-
+longing to each cluster, and the Zipf distribution, we com-
+pute the prior probability of each class as q(ci) =1/is
+Hk,s
+whereHis thekth harmonic number and sis some real
+constant. We then let p(ci) =1
+N/summationtext
+x∈Vp(ci|x), the average
+over all videos in the set. Using these two probability func-
+tions representing the classes/clusters, we can minimize the
+KL divergence:
+KL(p||q) =k/summationdisplay
+i=1p(ci)log/parenleftbiggp(ci)
+q(ci)/parenrightbigg
+(5)
+By using this as a ﬁtness metric, it poses a prior con-
+straint over the distribution of (learned) video representa-
+tions in clusters to follow the Zipf distribution. Note that
+this method requires no labeled data and is fully unsuper-
+vised. We refer to this entirely unsupervised method as
+‘ELo’.
+Weakly-supervised baseline: As an upper-bound and an
+alternative to our approach, we use a handful of class la-
+bels to evaluate the clustering (which is referred to as ELo-
+weak). This is done for the sake of comparison and is
+also a good alternative to align the ﬁnal loss to a down-
+stream video classiﬁcation task. A subset of HMDB is used,
+andk-means clustering is applied to the output representa-
+tion of the RGB stream. The clusters are used for nearest-
+neighbors classiﬁcation and the accuracy is the ﬁtness of
+the individual. Due to randomness in k-means clustering,
+in both settings, we run this processes 20 times and average
+ﬁtness across all trials.
+3.2.3 Loss evolution
+As is typical with evolution approaches, the evolution of
+the loss is driven by mutations. Since our search space con-
+sists of continuous values in [0,1], we compare two differ-
+ent evolutionary strategies: tournament selection [ 13] and
+CMA-ES [ 15]. For the tournament selection search, we
+mutate an individual loss function by randomly picking one
+Aligned 
+AudioRGB1
+0
+Misaligned
+AudioFigure 4: Example of the multi-modal alignment tasks. The
+networks take input of temporally aligned RGB and Audio
+(or other modalities) and a sample from one modality that
+is temporally different. The network is trained to predict if
+a pair is temporally aligned or not.
+weight and assigning new value in uniformly sampled from
+[0,1]. For CMA-ES, at each iteration, all the components
+are changed based on the ﬁtness of all the individuals in
+the evolution pool. For tournament selection, we evolve the
+loss function for 2000 rounds, generating and evaluating
+2000 different loss functions and we use 250 rounds with
+CMA-ES, ﬁnding much faster convergence. Fig. 3shows
+an example how our weights evolve over the rounds and
+Table 4compares the performance of different search meth-
+ods. Since everything is differentiable, we could learn these
+weights also with gradient descent, however, we leave this
+for future exploration as taking the derivative of the entire
+network w.r.t. to task weights is non-trivial.
+3.3. Self­supervised tasks
+Many tasks have been designed for unsupervised learn-
+ing. We describe brieﬂy the tasks we employ for our rep-
+resentation learning. Importantly, we allow many possible
+tasks and let the evolved loss function automatically dis-
+cover which tasks are important and the optimal relative
+weightings. We also use tasks like DeepCluster [ 5] and lo-
+cal aggregation [ 49].
+Reconstruction and prediction tasks: Given the repre-
+sentation for a modality, xm, we use a decoder CNN to gen-
+erate the output. As the reconstruction is only used as a su-
+pervision signal, we do not need to generate extremely high
+quality reconstructions. Thus, we use a small, cheap de-
+coder with only 6 convolutional layers, saving both memory
+and training time. Once the unsupervised learning is com-
+plete, we discard the decoders. Further, following previous
+work [ 38], our decoders have no temporal convolution, forc-
+ing the representations to contain all needed temporal infor-
+mation, which is desirable for video understanding. Each
+modality (e.g., RGB, optical ﬂow, and audio) will be recon-
+structed. We also use several cross-modality transfer tasks:
+RGB to Flow, Flow to RGB, etc.
+137
+
+
+==== Page 6 ====
+Another way to learn video temporal structure is to train
+a decoder to predict the next Nframes given Tframes. Fu-
+ture prediction of frames has previously been used for rep-
+resentation learning [ 37] and we perform this task for each
+modality. For these tasks, we minimize the L2distance be-
+tween the ground truth ( I) and predicted output ( ˆI):
+LR(ˆI,I) =||ˆI−I||2 (6)
+Temporal ordering: We use two tasks to learn repre-
+sentations that take advantage of temporal structure: binary
+classiﬁcation of ordered frames and shufﬂed frames [ 26]
+and binary classiﬁcation of forward and backward videos
+[31]. We use a single, fully-connected layer to make a bi-
+nary classiﬁcation of the representation: p=Wxm(xm
+is the representation for a modality). These are trained to
+minimize binary cross-entropy:
+LB(p,y) =−(ylog(p)+(1−y)log(1−p)) (7)
+wherepis the output of the binary classiﬁer and yis the
+ground truth.
+Multi-modal contrastive loss: As videos contain multi-
+ple modalities, we want to take advantage of these different
+representations to learn an a generic representation by using
+a multi-modal embedding space. Given the representations
+for each modality, xm, we minimize a contrastive loss be-
+tween various embedding spaces:
+Lc(x1,x2,xn) =||x1−x2||2+max(0 ,α−||x1−xn||2)
+(8)
+wherexm1andxm2are representations from the same
+video but different modalities and xnis a representation
+from a different video. This task encourages the represen-
+tations from the same video, but different modalities, to
+be close in the representation space, while representations
+from different videos are further apart.
+Multi-modal alignment: We can further take advantage
+of both the temporal information and the multi-modal data
+by performing a multi-modal alignment task, illustrated in
+Fig. 4. The networks take input of temporally aligned sam-
+ples from two modalities, and a sample from one modalitiy
+from a temporally different region. The model is trained to
+make a binary prediction if the two samples are temporally
+aligned.
+4. Experiments
+Unsupervised data source. We use two million random,
+unlabeled YouTube video clips sampled randomly from the
+Youtube-8M dataset [ 1] (limiting the size for computational
+reasons). Previous works on self-supervised learning used
+videos from datasets (e.g., Kinetics or AudioSet in [ 22])
+while ignoring the labels, leading a bias in the dataset, as
+those videos are trimmed to intervals with speciﬁc activi-
+ties. Using a random sample from Youtube is less prone toMethod k-means 1-layer ﬁne-tune
+Supervised using additional labeled data
+Scratch (No Pretraining) 15.7 17.8 35.2
+ImageNet Pretrained 32.5 37.8 49.8
+Kinetics Pretrained 68.8 71.5 74.3
+Unsupervised using unlabeled videos
+Frame Shufﬂe [ 26] 22.3 24.3 28.4
+Reverse Detection [ 31] 21.3 24.3 27.5
+Audio/RGB Align [ 29,22] 32.4 36.8 40.2
+RGB to Flow 31.5 36.4 39.9
+Predicting 4 future frames 31.8 35.8 39.2
+Joint Embedding 29.4 32.5 38.4
+Ours, weakly-sup clustering, using unlabeled videos
+Evolved Loss - ELo-weak 45.7 64.3 67.8
+Ours, unsupervised, using unlabeled videos
+Random Loss (unsup.) 26.4 26.9 31.2
+Evolved Loss - ELo (unsup.) 43.4 64.5 67.4
+Table 1: Evaluation of various self-supervised methods on
+HMDB51 [ 23]. We compare to a randomly initialized, Ima-
+geNet pretrained and Kinetics pretrained networks. We also
+compare to various single-task baselines, an average of 10
+randomly sampled loss functions, and the evolved loss func-
+tion using both ﬁtness metrics. All tasks were trained on our
+random, unlabeled YouTube videos.
+bias as the videos are user generated, the labels are automat-
+ically tagged (no human veriﬁcation), and potentially offers
+a very large set for training (up to 8M). We have veriﬁed
+there is no overlap between those datasets and the ones the
+models are evaluated on (e.g., HMDB).
+Evaluation datasets and protocols. We used the fol-
+lowing widely used datasets for evaluation: HMDB [ 23],
+UCF101 [ 36],Kinetics [ 20]. We also used Imagenet [ 9]
+and Kinetics for reporting results with pre-training, as is
+customary in previous work. We use the standard protocols
+when evaluating video classiﬁcation results on the labeled
+datasets, adopted by prior work as well. Please see the sup.
+material for dataset details.
+Implementation details. We use a (2+1)D ResNet-50
+as our backbone network. Given a loss function, we train
+the network for 100 epochs on 2 million unlabeled videos.
+The learning rate is set to 0.1 (during both the evolution and
+the ﬁnal training).
+During search, we used smaller networks, similar to a
+ResNet-18 for faster learning. For search, the ﬁtness of each
+model can be found in 4 hours using 8 GPUs. The ﬁnal
+model uses 64 GPUs for 3 days to train (equivalent time to
+training I3D/(2+1)D ResNet-50 on Kinetics).
+4.1. Comparison to previous methods
+We evaluate our method in comparison to prior unsuper-
+vised and supervised representation learning. Speciﬁcally,
+138
+
+
+==== Page 7 ====
+Method HMDB UCF101
+Supervised
+(2+1)D ResNet-50 Scratch 35.2 63.1
+(2+1)D ResNet-50 ImageNet 49.8 84.5
+(2+1)D ResNet-50 Kinetics 74.3 95.1
+Unsupervised
+Shufﬂe [ 26] 18.1 50.2
+O3N [ 12] 32.5 60.3
+OPN [ 24] 37.5 37.5
+Patch [ 44] - 41.5
+Multisensory [ 29] - 82.1
+A VTS [ 22] 61.6 89.0
+Weakly guided, HMDB
+Evolved Loss (ours) 67.8 94.1
+Unsupervised
+Evolved Loss (ours, no distiliation) 53.7 84.2
+Evolved Loss - ELo (ours) 67.4 93.8
+Table 2: Comparison to the state-of-art on HMDB51 and
+UCF101. Note that previous approaches train on activity
+recognition datasets (e.g., Kinetics) are much more aligned
+to the ﬁnal task, whereas we use random video clips. Even
+using more difﬁcult data, we outperform the previous meth-
+ods. (The top portion shows results for (2+1)D ResNet-50
+with supervised pretraining as in Table 1).
+0
+ 56k
+ 112k
+ 168k
+ 225k
+Number of Labeled Training Samples
+0
+10
+20
+30
+40
+50
+60
+70
+80Accuracy
+Randomly Initialized
+Ours (unsupervised)
+AVTS
+Shuffle
+Supervised Baseline
+Figure 5: How much labeled, supervised data is needed
+once the unsupervised representation is learned. We achieve
+comparable performance with roughly half the data and out-
+perform the supervised baselines using the entire dataset.
+we evaluate the representations in 3 settings: (1) k-means
+clustering of the representations (2) ﬁxing the weights of
+the network and training a single, fully-connected layer for
+classiﬁcation and (3) ﬁne-tuning the entire network. These
+three evaluations are done by directly evaluating the repre-
+sentation as well as ﬁnetuning the entire network.
+We ﬁnd that while all approaches outperform the ran-
+domly initialized networks, only our evolved loss function
+100k
+ 500k
+ 1m
+ 1.5m
+ 2m
+Number of Unlabeled Samples
+0
+10
+20
+30
+40
+50
+60
+70HMDB Accuracy
+Ours
+Random Initialized Baseline
+ImageNet-Pretrained Baseline
+Kinetics-Pretrained Baseline
+100k
+ 500k
+ 1m
+ 1.5m
+ 2m
+Number of Unlabeled Samples
+0
+10
+20
+30
+40
+50
+60
+70HMDB Accuracy
+Ours
+Random Initialized Baseline
+ImageNet-Pretrained Baseline
+Kinetics-Pretrained BaselineFigure 6: Comparisons of different amounts of unsuper-
+vised data. Left: Total number of training iterations ﬁxed
+(i.e., less epochs as data is added). Right : Total number of
+epochs ﬁxed (i.e., more iterations as more data is added).
+We observe that adding more data without increasing train-
+ing time improves performance, while training longer on
+more data is better. On HMDB.
+0
+ 200
+0
+1Frame
+Shuffle
+0
+ 200Flow
+Shuffle
+0
+ 200RGB/Audio
+Align
+0
+ 200Flow/Audio
+Align
+0
+ 200RGB to
+Flow
+0
+ 200Future
+RGB
+0
+ 200Future
+AudioValue of λt
+Evolution Round
+Figure 7: The values of the loss function for the various
+tasks throughout evolution. Higher weight values indicate
+the task is more important. The learned loss functions auto-
+matically ﬁnds the tasks that most beneﬁt recognition.
+outperforms ImageNet pretraining and performs compara-
+bly to the pretrained network with labeled Kinetics data (Ta-
+ble1). Furthermore, we outperform all prior unsupervised
+methods. Our approach performs similarly to the weakly
+supervised version of our evolution method, despite being
+unsupervised. We also compare to a loss function randomly
+sampled from our search space, which performs poorly.
+We ﬁnd that some tasks are not beneﬁcial to representation
+learning, thus the evolution is quite important as this allows
+automatically ﬁnding the best tasks and weightings.
+In Table 2, we compare our approach to previous re-
+ported methods. We ﬁnd that even though our approach is
+using more difﬁcult unlabeled data, we still outperform the
+exiting methods by a signiﬁcant margin.
+We also ﬁnd that distillation is extremely important.
+Without it, the RGB network can only take advantage of
+the other modalities through multi-modal tasks.
+4.2. Improving supervised learning
+Once we have learned a representation space using large
+amounts of unlabeled data, we want to determine how much
+labeled data is needed to achieve competitive performance.
+In Fig. 5and Table 3, we compare various approaches
+trained using our unlabeled videos then ﬁne-tuned on Ki-
+139
+
+
+==== Page 8 ====
+Number of Labeled Samples
+Method 400 2k 4k 8k 20k 40k 80k 120k 160k225k
+(all samples)
+Random Init 0.93 2.1 2.8 4.4 6.2 12.5 26.4 52.5 64.3 71.2
+Frame Shufﬂe 1.5 5.3 12.4 18.4 28.4 32.5 38.2 57.4 66.8 70.9
+Audio Align 2.5 9.8 17.2 28.1 36.0 46.0 54.1 64.3 69.5 71.5
+ELo (unsupervised) 3.6 15.8 24.8 47.0 58.3 67.5 69.2 70.2 72.2 74.4
+Table 3: Using different amounts of labeled samples on the currently available (March 2019) Kinetics-400 dataset using a
+(2+1)D ResNet-50. We achieve similar performance with only ∼50% of the data. Using the entire dataset, we outperform
+the randomly initialized network.
+Figure 8: Heatmap visualization of the learned loss func-
+tion. Higher values indicate the components importance.
+See Fig. 3for description.Method Num iter. Acc
+Random Search 2000 52.4
+Grid Search 2000 57.3
+Tournament Selection 2000 61.4
+CMA-ES 250 67.4
+Table 4: Comparison of best loss found with different evo-
+lutionary strategies evaluated on HMDB.
+netics using different amounts of labeled data. The Kinet-
+ics dataset has 225k labeled samples and we ﬁnd that using
+only 25k (10%) yields reasonable performance (58.1% ac-
+curacy), only 11% lower than our baseline, fully-supervised
+model using all samples.
+We are able to match performance using only 120k sam-
+ples, about half the dataset. Using the entire dataset, we
+outperform the baseline network, due to better initilizations
+and the distillation of modalities into the RGB stream.
+4.3. Beneﬁt of additional unlabeled data
+We explore the effect of using different amounts of unla-
+beled data. Given a loss function, we train a network using
+Nunlabeled samples. We compare the training both keep-
+ing the iterations ﬁxed and the number of epochs ﬁxed.
+The results on HMDB are shown in Fig. 6. When ﬁxing
+the number of iterations to 100k, the performance increases
+as we add more data, even though the number of epochs
+(e.g., number of times each sample is seen) decreases. This
+suggests that during unsupervised training, the use of more,
+diverse data is beneﬁcial, even when samples are seen fewer
+times. When ﬁxing the number of epochs to 100, we ﬁnd
+that adding more data further improves performance, sug-
+gesting that more training plus more data is best.
+0
+ 2
+ 4
+ 6
+ 8
+ 10
+ 12
+ 14
+HMDB Clustering Accuracy
+0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12Zipf Matching Score
+0
+ 20
+ 40
+ 60
+ 80
+ 100
+HMDB Clustering Rank
+0
+20
+40
+60
+80
+100Zipf Matching Rank
+Figure 9: Comparison of the two ﬁtness measures for 100
+different loss functions. The plots show HMDB clustering
+and KL-divergence to Zipf distribution on random videos.
+The measures are quite correlated. Left: Fitness value (cor-
+relationr= 0.93).Right: Ranking of each loss function
+(Spearmans’s rho ρ= 0.91).
+4.4. Additional Analysis
+Examining the weights of the evolved loss function, λm,t
+andλd, allows us to check which tasks are more important
+for the target task. Fig. 7illustrates the weights for sev-
+eral tasks ( λm,t) over the 250 evolution rounds. We observe
+tasks such as RGB frame shufﬂe get very low weights, sug-
+gesting they are not very useful for the action recognition
+task. Tasks such as audio alignment are quite important.
+The ﬁnal fully-evolved loss is shown in Fig. 8.
+Table 4compares different search methods. As seen
+CMA-ES converges the most quickly and to the best ﬁtness.
+In Fig. 9, we compare the two different ﬁtness measures,
+ﬁnding strong correlation. This suggests that Zipf matching
+is suitable for unsupervised representation evaluation.
+5. Conclusion
+We proposed a uniﬁed framework for multi-task, multi-
+modal unsupervised video representation learning and
+found it beneﬁts recognition tasks. We further introduced
+the concept of loss function evolution to automatically ﬁnd
+the weights of the self-supervised tasks and modalities,
+with unsupervised ﬁtness measure. We ﬁnd powerful un-
+supervised video representations that outperform prior self-
+supervised tasks and can match or improve the performance
+of networks trained on supervised data.
+140
+
+
+==== Page 9 ====
+References
+[1] Sami Abu-El-Haija, Nisarg Kothari, Joonseok Lee, Paul
+Natsev, George Toderici, Balakrishnan Varadarajan, and
+Sudheendra Vijayanarasimhan. Youtube-8m: A large-
+scale video classiﬁcation benchmark. arXiv preprint
+arXiv:1609.08675 , 2016. 6
+[2] Relja Arandjelovic and Andrew Zisserman. Look, listen and
+learn. In Proceedings of the IEEE International Conference
+on Computer Vision (ICCV) , pages 609–617, 2017. 3
+[3] Relja Arandjelovic and Andrew Zisserman. Objects that
+sound. In Proceedings of European Conference on Computer
+Vision (ECCV) , 2018. 3
+[4] Miguel A Bautista, Artsiom Sanakoyeu, Ekaterina
+Tikhoncheva, and Bjorn Ommer. Cliquecnn: Deep un-
+supervised exemplar learning. In Advances in Neural
+Information Processing Systems (NIPS) , pages 3846–3854,
+2016. 3
+[5] Mathilde Caron, Piotr Bojanowski, Armand Joulin, and
+Matthijs Douze. Deep clustering for unsupervised learning
+of visual features. In Proceedings of European Conference
+on Computer Vision (ECCV) , pages 132–149, 2018. 3,5
+[6] Joao Carreira and Andrew Zisserman. Quo vadis, action
+recognition? a new model and the kinetics dataset. In Pro-
+ceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR) , 2017. 1,3
+[7] J. S. Chung and A. Zisserman. Out of time: automated lip
+sync in the wild. In Workshop on Multi-view Lip-reading,
+ACCV , 2016. 3
+[8] Ekin D Cubuk, Barret Zoph, Dandelion Mane, Vijay Vasude-
+van, and Quoc V Le. Autoaugment: Learning augmentation
+policies from data. arXiv preprint arXiv:1805.09501 , 2018.
+2
+[9] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei.
+ImageNet: A Large-Scale Hierarchical Image Database. In
+CVPR09 , 2009. 6
+[10] Carl Doersch and Andrew Zisserman. Multi-task self-
+supervised visual learning. In Proceedings of the IEEE In-
+ternational Conference on Computer Vision (ICCV) , 2017.
+3
+[11] Christoph Feichtenhofer, Haoqi Fan, Jitendra Malik, and
+Kaiming He. Slowfast networks for video recognition. arXiv
+preprint arXiv:1812.03982 , 2018. 3
+[12] Basura Fernando, Hakan Bilen, Efstratios Gavves, and
+Stephen Gould. Self-supervised video representation learn-
+ing with odd-one-out networks. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition
+(CVPR) , 2017. 3,7
+[13] David E. Goldberg and Kalyanmoy Deb. A comparative
+analysis of selection schemes used in genetic algorithms. In
+Foundations of Genetic Algorithms , pages 69–93. Morgan
+Kaufmann, 1991. 4,5
+[14] Chunhui Gu, Chen Sun, Sudheendra Vijayanarasimhan, Car-
+oline Pantofaru, David A. Ross, George Toderici, Yeqing
+Li, Susanna Ricco, Rahul Sukthankar, Cordelia Schmid,
+and Jitendra Malik. A V A: A video dataset of spatio-
+temporally localized atomic visual actions. arXiv preprint
+arXiv:1705.08421 , 2017. 5[15] Nikolaus Hansen, Sibylle D M ¨uller, and Petros Koumout-
+sakos. Reducing the time complexity of the derandomized
+evolution strategy with covariance matrix adaptation (cma-
+es).Evolutionary computation , 2003. 5
+[16] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distill-
+ing the knowledge in a neural network. arXiv preprint
+arXiv:1503.02531 , 2015. 2,3,4
+[17] Kyle Hsu, Sergey Levine, and Chelsea Finn. Unsupervised
+learning via meta-learning. In International Conference on
+Learning Representations , 2019. 3
+[18] Aapo Hyvarinen and Hiroshi Morioka. Unsupervised feature
+extraction by time-contrastive learning and nonlinear ica. In
+D. D. Lee, M. Sugiyama, U. V . Luxburg, I. Guyon, and R.
+Garnett, editors, Advances in Neural Information Processing
+Systems 29 . 2016. 3
+[19] Dinesh Jayaraman and Kristen Grauman. Slow and steady
+feature analysis: higher order temporal coherence in video.
+InProceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR) , 2016. 3
+[20] Will Kay, Joao Carreira, Karen Simonyan, Brian Zhang,
+Chloe Hillier, Sudheendra Vijayanarasimhan, Fabio Viola,
+Tim Green, Trevor Back, Paul Natsev, et al. The kinetics hu-
+man action video dataset. arXiv preprint arXiv:1705.06950 ,
+2017. 3,5,6
+[21] Dahun Kim, Donghyeon Cho, and In So Kweon. Self-
+supervised video representation learning with space-time cu-
+bic puzzles. In AAAI , 2018. 3
+[22] Bruno Korbar, Du Tran, and Lorenzo Torresani. Cooperative
+learning of audio and video models from self-supervised syn-
+chronization. In Advances in Neural Information Processing
+Systems (NIPS) , pages 7774–7785, 2018. 3,6,7
+[23] Hildegard Kuehne, Hueihan Jhuang, Est ´ıbaliz Garrote,
+Tomaso Poggio, and Thomas Serre. Hmdb: a large video
+database for human motion recognition. In Proceedings
+of the IEEE International Conference on Computer Vision
+(ICCV) . IEEE, 2011. 6
+[24] Hsin-Ying Lee, Jia-Bin Huang, Maneesh Singh, and Ming-
+Hsuan Yang. Unsupervised representation learning by sort-
+ing sequences. In Proceedings of the IEEE International
+Conference on Computer Vision (ICCV) , pages 667–676,
+2017. 3,7
+[25] Chenxi Liu, Barret Zoph, Maxim Neumann, Jonathon
+Shlens, Wei Hua, Li-Jia Li, Li Fei-Fei, Alan Yuille, Jonathan
+Huang, and Kevin Murphy. Progressive neural architecture
+search. In Proceedings of European Conference on Com-
+puter Vision (ECCV) , 2018. 2
+[26] Ishan Misra, C Lawrence Zitnick, and Martial Hebert. Shuf-
+ﬂe and learn: unsupervised learning using temporal order
+veriﬁcation. In Proceedings of European Conference on
+Computer Vision (ECCV) , 2016. 3,6,7
+[27] Mathew Monfort, Alex Andonian, Bolei Zhou, Kandan Ra-
+makrishnan, Sarah Adel Bargal, Tom Yan, Lisa Brown,
+Quanfu Fan, Dan Gutfruend, Carl V ondrick, et al. Moments
+in time dataset: one million videos for event understanding.
+arXiv preprint arXiv:1801.03150 , 2018. 3
+[28] Mehdi Noroozi and Paolo Favaro. Unsupervised learning of
+visual representations by solving jigsaw puzzles. In Proceed-
+141
+
+
+==== Page 10 ====
+ings of European Conference on Computer Vision (ECCV) ,
+pages 69–84, 2016. 3
+[29] Andrew Owens and Alexei A Efros. Audio-visual scene
+analysis with self-supervised multisensory features. In
+Proceedings of European Conference on Computer Vision
+(ECCV) , 2018. 3,6,7
+[30] Dilip Krishnan Phillip Isola, Daniel Zoran and Edward H
+Adelson. Learning visual groups from co-occurrences in
+space and time. 2015. 3
+[31] Lyndsey C Pickup, Zheng Pan, Donglai Wei, YiChang Shih,
+Changshui Zhang, Andrew Zisserman, Bernhard Scholkopf,
+and William T Freeman. Seeing the arrow of time. In Pro-
+ceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR) , 2014. 3,6
+[32] Zhongzheng Ren and Yong Jae Lee. Cross-domain self-
+supervised multi-task feature learning using synthetic im-
+agery. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR) , 2018. 3
+[33] Pierre Sermanet, Corey Lynch, Yevgen Chebotar, Jasmine
+Hsu, Eric Jang, Stefan Schaal, and Sergey Levine. Time-
+contrastive networks: Self-supervised learning from pixels.
+2017. 3
+[34] Gunnar A Sigurdsson, Olga Russakovsky, and Abhinav
+Gupta. What actions are needed for understanding human
+actions in videos? arXiv preprint arXiv:1708.02696 , 2017.
+1
+[35] Karen Simonyan and Andrew Zisserman. Two-stream con-
+volutional networks for action recognition in videos. In Ad-
+vances in Neural Information Processing Systems (NIPS) ,
+pages 568–576, 2014. 3
+[36] K. Soomro, A. Roshan Zamir, and M. Shah. UCF101: A
+dataset of 101 human actions classes from videos in the wild.
+InCRCV-TR-12-01 , 2012. 6
+[37] Nitish Srivastava, Elman Mansimov, and Ruslan Salakhudi-
+nov. Unsupervised learning of video representations using
+lstms. In International Conference on Machine Learning
+(ICML) , pages 843–852, 2015. 3,6
+[38] Jonathan C Stroud, David A Ross, Chen Sun, Jia Deng, and
+Rahul Sukthankar. D3d: Distilled 3d networks for video ac-
+tion recognition. arXiv preprint arXiv:1812.08249 , 2018. 4,
+5
+[39] Yonglong Tian, Dilip Krishnan, and Phillip Isola. Con-
+trastive multiview coding. arXiv preprint arXiv:1906.05849 ,
+2019. 3
+[40] Du Tran, Lubomir D Bourdev, Rob Fergus, Lorenzo Torre-
+sani, and Manohar Paluri. C3d: generic features for video
+analysis. CoRR, abs/1412.0767 , 2(7):8, 2014. 1,3
+[41] Du Tran, Heng Wang, Lorenzo Torresani, Jamie Ray, Yann
+LeCun, and Manohar Paluri. A closer look at spatiotemporal
+convolutions for action recognition. In Proceedings of the
+IEEE Conference on Computer Vision and Pattern Recogni-
+tion (CVPR) , pages 6450–6459, 2018. 1
+[42] Carl V ondrick, Abhinav Shrivastava, Alireza Fathi, Sergio
+Guadarrama, and Kevin Murphy. Tracking emerges by col-
+orizing videos. In Proceedings of European Conference on
+Computer Vision (ECCV) , 2018. 3
+[43] Heng Wang, Alexander Kl ¨aser, Cordelia Schmid, and
+Cheng-Lin Liu. Action recognition by dense trajectories.InProceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR) , pages 3169–3176. IEEE,
+2011. 3
+[44] Xiaolong Wang and Abhinav Gupta. Unsupervised learning
+of visual representations using videos. In Proceedings of the
+IEEE International Conference on Computer Vision (ICCV) ,
+pages 2794–2802, 2015. 3,7
+[45] X. Wang, K. He, and A. Gupta. Transitive invariance for
+selfsupervised visual representation learning. In Proceedings
+of the IEEE International Conference on Computer Vision
+(ICCV) , 2017. 3
+[46] Xiaolong Wang, Allan Jabri, and Alexei A. Efros. Learning
+correspondence from the cycle-consistency of time. In Pro-
+ceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR) , 2019. 3
+[47] Donglai Wei, Joseph Lim, Andrew Zisserman, and
+William T. Freeman. Learning and using the arrow of time.
+InProceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR) , 2018. 3
+[48] Amir Zamir, Alexander Sax, William Shen, Leonidas
+Guibas, Jitendra Malik, and Silvio Savarese. Taskonomy:
+Disentangling task transfer learning. In Proceedings of the
+IEEE Conference on Computer Vision and Pattern Recogni-
+tion (CVPR) , 2018. 3
+[49] Chengxu Zhuang, Alex Lin Zhai, and Daniel Yamins. Lo-
+cal aggregation for unsupervised learning of visual embed-
+dings. In Proceedings of the IEEE International Conference
+on Computer Vision (ICCV) , pages 6002–6012, 2019. 5
+[50] George K. Zipf. Human behavior and the principle of least
+effort. In Addison-Wesley, Cambridge, Massachusetts , 1949.
+1
+142
+
+

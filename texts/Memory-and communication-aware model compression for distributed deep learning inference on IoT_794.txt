@@ -1,0 +1,989 @@
+==== Page 1 ====
+82Memory- and Communication-Aware Model Compression
+for Distributed Deep Learning Inference on IoT
+KARTIKEYABHARDWAJ,CHING-YI LIN,ANDERSON SARTOR,and
+RADUMARCULESCU, CarnegieMellon University,USA
+Model compression has emerged as an important area of research for deploying deep learning models on
+Internet-of-Things(IoT).However,forextremelymemory-constrainedscenarios,eventhecompressedmod-
+elscannotfitwithinthememoryofasingledeviceand,asaresult,mustbedistributedacrossmultipledevices.
+This leads to a distributed inference paradigm in which memory and communication costs represent a major
+bottleneck.Yet,existingmodelcompressiontechniquesarenotcommunication-aware.Therefore,wepropose
+Network of Neural Networks (NoNN), a new distributed IoT learning paradigm that compresses a large pre-
+trained‘teacher’deepnetworkintoseveraldisjointandhighly-compressed‘student’modules,withoutlossof
+accuracy. Moreover, we propose a network science-based knowledge partitioning algorithm for the teacher
+model, and then train individual students on the resulting disjoint partitions. Extensive experimentation on
+five image classification datasets, for user-defined memory/performance budgets, show that NoNN achieves
+higheraccuracythanseveralbaselinesandsimilaraccuracyastheteachermodel,whileusingminimalcom-
+municationamongstudents.Finally,asacasestudy,wedeploytheproposedmodelforCIFAR-10dataseton
+edge devices and demonstrate significant improvements in memory footprint (up to 24 ×), performance (up
+to 12×), and energy per node (up to 14 ×) compared to the large teacher model. We further show that for
+distributed inference on multiple edge devices, our proposed NoNN model results in up to 33 ×reduction in
+totallatency w.r.t. astate-of-the-artmodel compressionbaseline.
+CCS Concepts: • Computing methodologies →Object recognition ;Neural networks ;•Computer
+systems organization →Embedded systems ;•Theory of computation →Distributedalgorithms ;
+Additional KeyWords and Phrases:Network of neuralnetworks,model compression,communities
+ACM Reference format:
+Kartikeya Bhardwaj, Ching-Yi Lin, Anderson Sartor, and Radu Marculescu. 2019. Memory- and
+Communication-Aware Model Compression for Distributed Deep Learning Inference on IoT. ACM Trans.
+Embed.Comput. Syst. 18, 5s,Article82 (October 2019), 22pages.
+https://doi.org/10.1145/3358205
+1 INTRODUCTION
+Eventhoughdeeplearninghasgainedsignificantimportance,itischallengingtoimplementthese
+models on resource-constrained devices. Such devices are commonly used in the ever-growing
+Internet-of-Things (IoT) domain. For instance, microcontrollers such as Arm Cortex-M which is
+This article appears as part of the ESWEEK-TECS special issue and was presented in the International Conference on
+Hardware/SoftwareCodesign andSystem Synthesis (CODES+ISSS), 2019.
+Authors’addresses:K.Bhardwaj,C.-Y.Lin,A.Sartor,andR.Marculescu,CarnegieMellonUniversity,5000ForbesAvenue,
+Pittsburgh, PA,USA, 15213;emails:{kbhardwa,cylin,asartor, radum}@cmu.edu.
+Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee
+provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and
+the full citation on the first page. Copyrights for components of this work owned by others than ACM must be honored.
+Abstractingwithcreditispermitted.Tocopyotherwise,orrepublish,topostonserversortoredistributetolists,requires
+prior specific permission and/or a fee.Request permissions from permissions@acm.org .
+© 2019Association forComputingMachinery.
+1539-9087/2019/10-ART82$15.00
+https://doi.org/10.1145/3358205
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+
+==== Page 2 ====
+82:2 K.Bhardwaj et al.
+Fig.1. (a)Priorart:Distributinglargestudentmodelsthatdonotfitonasinglememory-limitedIoTdevice
+leadstoheavycommunicationateachlayer.Forinstance,astudentmodelthatrequires2MBtotalmemory
+cannotfitwithinanIoT-devicewhichhasonly500KBmemorybudget.(b)ProposedNoNNresultsinseveral
+disjoint students that can fit on individual IoT-devices: No communication until the very final layer (since
+NoNN studentsthat require430KB memory canfit withinthe500KB budget).
+used in many IoT applications such as Smart Healthcare, Keyword Spotting, etc., has only 500KB
+availablememory[ 27].Forsuchdevices,prominentdeepnetworkslikeAlexNet/Resnetsthatuse
+up to 60M parameters are unsuitable. Therefore, there is a fundamental need for highly-efficient
+compressed deep learning models to enable fast and computationally inexpensive inference on the
+resource-constrainedIoT-devices.
+To this end, several deep learning model compression techniques exist in the literature. The
+most common approaches are pruning [ 5,23], quantization [ 8,12], and Knowledge Distillation
+(KD) [1,6] and its variants such as Attention Transfer (AT) [ 25]. Since deep models can learn a
+largenumberofredundantoruselessweights/channels,pruningaimstoremovesuchparameters
+without sacrificing accuracy [ 5,23]. Moreover, quantization reduces the number of bits required
+torepresentweightsand/oractivationsindeepnetworks[ 8,12].Also,KD-basedapproachesrely
+onteacher-studenttraining,whereateachermodelisalargedeepnetworkwewanttocompress.
+KD trainsasignificantly smallerstudentmodelwithfarfewerlayers/width,tomimic theteacher
+network (see Figure 1(a)). Further, most prior art on model compression refers to pruning and
+quantization.However,sinceKDcanleadtosignificantlycompressedmodels,weassumethatKD
+isalsoamodelcompressiontechniquethroughoutthispaper.Ofnote,thepresentworkconsiders
+model compression and distributed inference for Convolutional Neural Networks (CNNs) used
+in image classification problems. However, distributed inference for other deep learning models
+such as Recurrent Neural Networks (RNNs) for speech/natural language applications can also be
+explored ina futurework.
+The existing approaches mentioned above cannotbe used for extremely memory-constrained
+IoT scenarios (e.g., microcontrollers with a totalmemory of 500KB [ 20,27]). Yet, a lot of smart
+home/citiesapplicationscanhaveseveralsuchconnectedbutresource-limiteddevices.Toachieve
+higheraccuracy,pruning-orKD-basedstudentmodelsoftengrowinsizeduetowhichsuchmodels
+cannot fit on an individual IoT-device and must be distributedacross multiple devices; this distri-
+bution of computation on multiple devices generates significant overhead in communication. For
+example,Figure 1(a)illustratesKDwithateachermodelcontainingaround9millionparameters,
+andalargestudentmodelcontainingabout2millionparameters.Also,supposethatwearetrying
+to deploy the student model (which will require 2MB memory after quantization) on IoT-devices
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 3 ====
+Network of Neural Networks 82:3
+with only 500KB memory budget. Distributing this student model on multiple such IoT-devices
+will incur heavy communication at each of its intermediate layers. Consequently, in addition to
+the computation cost, a major (and largely ignored) impediment for widespread deployment of
+deeplearningonIoTisthis communication costduringdistributedinference,whichoccursdueto
+extremely limited memory in IoTenvironments.
+Therefore, we need to answer the following key question :How can we compress a given deep
+learning model into multiple separate modules that: (i) fit within the memory and performance bud-
+gets per device, (ii) minimize the communication latency when distributed across a network of edge
+devices,and(iii)achievehighaccuracy?
+Toaddressthisquestion,inthispaper,wepropose NetworkofNeuralNetworks (NoNN),apara-
+digm to derive low memory-, computation-, as well as communication-cost student architectures
+from a single (powerful) but much larger teacher model. As shown in Figure 1(b), a NoNN con-
+sistsofmultiple, memory-limited studentnetworkswhichindividuallylearnonlyaspecificpartof
+teacher’sfunction.Indeed,traininganindividualstudenttomimiconlyapartofteacher’sfunction
+is a significantly simpler problem than mimicking its entire function. Since this highly-parallel
+architecture of NoNN allows us to effectively increase the overall model-size, we obtain higher
+accuracy without significantly increasing the communication costs among the disjoint students.
+These individual students can then be deployed on separate resource-constrained IoT-devices to
+performthedistributedinference(seeFigure 1(b)).Thiscanultimatelyhelppreserveuser’sprivacy
+by conductinginferenceona networkof edgedevices insteadof sendingdata tothecloud.
+Finally,todistributeknowledgefromateachertomultiplestudents,weproposeanewapproach
+basedonnetworkscience[ 16,17].Specifically,asourobjectiveistoobtainindividualstudentmod-
+els below certain memory-constraints, network science allows for significant flexibility in terms
+ofhowtheknowledgefromtheteacherisdistributedacrossmultiplestudents.Forinstance,with
+our proposed network-theoretic approach, we uniformly distribute knowledge from the teacher
+acrossthestudentstoachieve highaccuracy.
+Overall, wemake thefollowing key contributions :
+(1) Since there has been limited research on performing efficient distibuted inference on
+highlymemory-constrainedIoTdevices,weproposeanewNoNNparadigmtocompress
+a large teacher into a set of independent and highly-parallel student networks. In prior
+works,studentmodelsthatcannotfitonasingledevicecanleadtosignificantcommuni-
+cationatalllayers,whereasNoNNcommunicatesonlyatthelastlayer.ThismakesNoNN
+anidealcandidatefordistributeddeeplearning.Tothebestofourknowledge,wearethe
+firsttointroduceacommunication-awaremodelcompressionfordistributedinferenceon
+IoT-devices.
+(2) Wearealsothefirsttoformulatethemodelcompressionproblemfromanetworkscience
+angle. By building a network of filter activation patterns, we exploit principles from net-
+worksciencesuchascommunitydetection[ 17]tosplitteacher’sknowledgeintomultiple
+disjointpartitionswhich,in turn,resultsin disjointand compressedstudentmodules.
+(3) Extensive experiments on five well-known image classification tasks demonstrate that
+NoNN achieves significantly lower memory (2 .5×-24×reduction w.r.t. teacher) and com-
+putation (2×-15×fewer FLOPS w.r.t. teacher), with minimal communication costs and
+similar accuracy as the teacher model. Also, NoNN achieves higher classification accu-
+racythanpriorart[ 6,10,25].
+(4) We further deploy the proposed models for CIFAR-10 dataset on Raspberry Pi, and more
+powerful Odroid devices to evaluate several scenarios with homogeneous and heteroge-
+neousdevices.Wedemonstrate6 .22×-12.22×gaininperformanceand12 .99×-14.36×gain
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 4 ====
+82:4 K.Bhardwaj et al.
+Table 1. ComparisontoPrior Art
+AreaModel Communication- Distributed Complements
+Compression Aware Inference our work
+Quantization [ 8,12] /check × × /check
+Pruning [ 4,9,13,23] /check × × /check
+Separable convolutions[ 3,19,26] /check × × /check
+KD[1,6,25] /check × × ×
+SplitNet [ 10] × /check /check ×
+MoDNN, DeepThings [ 14,28] × /check /check /check
+Proposed NoNN /check /check /check /check
+NoNN is the most complete approach as it considers communication costs while performing model compression for dis-
+tributed inferenceonIoT.
+inpernodeenergyw.r.t.teacher.Moreover,fordistributedinferenceonmultipleedgede-
+vices,NoNNresultsinupto33 ×speedupintotallatencyw.r.t.apriormodelcompression
+baseline[ 25].Wealsoshowthattheproposedapproachisrobustandachieveshighaccu-
+racyeven witha reducednumber of devices.
+The rest of the paper is organized as follows: Section 2reviews relevant literature and back-
+ground.Theimpactofsplittingadeepnetworkhorizontallyondistributedinferenceperformance
+isdiscussedinSection 3.Section4describesourproposedapproach,whileSection 5presentsour
+detailedexperimentalresults.Section 6describesacasestudyonhardwaredeploymentofNoNN.
+Thepaperis finally concludedinSection 7withremarks onfuturework.
+2 RELATED WORK AND BACKGROUND
+We first discuss prior art on model compression and distributed inference. The relevant back-
+ground on Knowledge Distillation(KD),and networkscienceis discussedlaterin thissection.
+2.1 Model Compression/Distributed Inference
+Table1summarizesthekeydifferencesbetweenthepresentworkandtheexistingliteraturefrom
+modelcompressionanddistributedinference.Specifically,existingapproachesformodelcompres-
+sion suchas quantization[ 8,12],pruning[ 4,13,23],KD [1,6,25],and separableconvolutions [ 3,
+19,26]a r enotcommunication-aware and do notaddress the distributed inference problem. For
+instance,althoughpruningiseffectiveatreducingparameters/FLOPS,itdoes notresultinhighly-
+parallel model architectures. Clearly, pruned models that cannot fit on a single IoT-device will
+need to be distributed across multiple devices which will incur heavy communication costs (see
+Section3for details).
+On the other hand, existing distributed inference techniques such as SplitNet [ 10], MoDNN
+[14],andDeepThings[ 28]donotexploit ideasfrommodelcompression(e.g.,pruning/distillation,
+or memory-constraints). Specifically, SplitNet [ 10] splits the network into disjoint parts during
+training without any constraints on individual network partitions. This unconstrained splitting
+canresultinlargepartitionswhichmaynotconformtomemory-budgetsofindividualIoTdevices.
+Hence, taking specific memory budgets into account is more effective (and necessary) in order to
+meet hard memory-constraints of IoT-devices; such constraints are not considered by SplitNet
+[10]. Moreover, by partitioning the feature activation maps of convolutions, MoDNN [ 14]a n d
+DeepThings [ 28] successfully reduce the FLOPS and the feature activation map memory during
+distributed inference. However, both of these approaches assume that the mobile device is big
+enoughtofittheentiredeeplearningmodel,whichisastrongassumptionand,hence,theydonot
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 5 ====
+Network of Neural Networks 82:5
+Fig.2. (a)KnowledgeDistillation(KD)isbasedonasignificantlysmallerstudentmodeltrainedtomimica
+largeteachernetwork.(b)Networkcommunitiesandhubnodes.InSection 4,wewillexplainhowteacher’s
+activations from(a) can beusedtocreate anetworksimilar tothatshownin(b).
+addressthememoryduetomodel-weights.Incontrast,wetakethedistributedinferenceonestep
+furthertoanevenmoreconstrainedIoTenvironment(e.g.,500KBmemory)wherethephysicalIoT-
+devicescannotfitasinglemodel.Insuchcases,themodelitselfmustbesplitinnon-intuitiveways
+whichcanresultinheavycommunicationcostateverylayer.Therefore,inthispaper,ourproposed
+NoNN compresses the model (to reduce the memory and computation costs such that individual
+modules fiton thedevices) whileaccountingfor communicationamong thestudentnodes.
+Note that, most of the prior techniques above are complementary to our work so they can be
+usedsynergisticallyontopofourapproach.Forinstance,anotherrecentworkcalledMeDNN[ 15]
+extendsMoDNNwithapruningtechniquetoreducetheper-nodecomputation.Sincepruningcan
+stillbeperformedontopofourproposedNoNNandbecausebothMeDNNandMoDNNpartition
+thefeaturemaps(andnottheweights),ourworkiscomplementarytoMeDNN[ 15].Wealsoshow
+that we can achieve higher accuracy than several KD baselines and SplitNet in our experiments,
+i.e.,theonly twotechniquesin Table 1thatdo notcomplement ourwork.
+2.2 Knowledge Distillation Background
+KD, as shown in Figure 2(a), consists of two deep networks: ( i)Teacheris the large deep network
+which we want to compress, and ( ii)Studentis a significantly smaller neural network which is
+trained to mimic the output of the teacher network. To mimic the teacher, the simplest way is to
+directly train a student model on teacher’s logits(see Figure 2(a)) – the unnormalized outputs of
+theteachermodelbeforethesoftmax–insteadoftrainingontruelabelsfromthedataset[ 1].The
+basicideahereisthatwhiletrainingthestudentmodel,usinglogitsinsteadofdirectclassification
+probabilities can transfer more information about the teacher to the student. Hinton et al. [ 6]
+argued that we must not only train the student model on the correct predictions made by the
+teacher, but must also quantify how wrong the teacher was about the incorrect classes. Hence,
+Hintonetal.introducedKD[ 6]whichusesboththe hard-labelloss (basedontruelabelsfromthe
+dataset),aswellasthe soft-labelloss (basedonlogits)totrainasignificantlysmallerstudentmodel.
+Mathematically, let lTandlSbe the logits of teacher and student respectively, and τis a tem-
+perature parameter (see [ 6]),ybe the true labels, and Pτ
+TandPτ
+Srespectively denote the softmax
+over relaxedlogits lT/τandlS/τ.T he n ,t heK Dl o s s( Lkd)is given by:
+Lkd(θS)=(1−α)H(y,PS)+αH(Pτ
+T,Pτ
+S) (1)
+where, His the standard cross-entropy loss, θSdenotes the parameters of the student network,
+andαcontrols the weight of hard-label loss vs.soft-label loss. The temperature parameter in the
+second term of Equation ( 1) improves knowledge transfer from the teacher to the student. Other
+variants of KD like Attention Transfer-based KD (ATKD) further use intermediate outputs of
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 6 ====
+82:6 K.Bhardwaj et al.
+teacher’s convolution layers while training the student [ 25]. Of note, KD-based techniques have
+alsobeenproposedforRNNs[ 11,21].However,ourfocusinthispaperisonKD-baseddistributed
+inferencefor CNNs.
+2.3 Network Science Background
+Network science has emerged for problems such as modeling information diffusion in social net-
+works, epidemics, transportation, etc.[16]. However, to our knowledge, we are the first to utilize
+networkscienceconceptsformodelcompression.Below,wedescribethecoreideasfromnetwork
+theoryusedin thispaper.
+2.3.1 Node Degree/Hubs. Given an undirected network Gwith nodesV, linksE,a n dt h ea d -
+jacency matrixF={Fij}describing link weights between any two nodes i,j∈V.T h e n ,d e g r e e
+kiof a node irefers to total number of links connected to node i. A network can have a scale-free
+structure where some nodes have many connections but most nodes have low degree [ 16]; such
+nodeswithmanyconnectionsinscale-freenetworksactas hubsofinformation.Toillustrate,Fig-
+ure2(b) shows nodes A, B, and C as examples of hubs in a network. As evident, these nodes are
+characterizedby more connectionsthanothernodesin thenetwork.
+2.3.2 Community Structure. Many real world networks are organized into groups of tightly
+connectednodesknownasthe communitystructure [17].Forinstance,inasocialnetwork,acom-
+munitycanrefertoagroupofuserswithcommoninterestslikesportsorpolitics.Formally,acom-
+munitycanbedefinedasagroupofnodesforwhichthenumberofconnectionswithinthegroup
+is significantly higher than what one would expect at random. Figure 2(b) shows the community
+structure in a network. In contrast to older graph partitioning techniques, community detection
+automatically partitions the network into its natural groupings without requiring us to specify
+predefined parameters such as number/size of communities. Size and number of communities in
+a networkinsteaddependona user-specified resolution parameter γ.
+3 MOTIVATION
+We now discuss the impact of horizontally splitting a Convolutional Neural Network (CNN) on
+distributedinferenceperformance.Moreprecisely,whenaCNNdoesnotfitonasinglememory-
+constrained device, it must be split “horizontally” for parallel execution on multiple devices (for
+betterutilizationofallresources).However,asmentionedinSection 1,thiscanresultinsignificant
+communicationcostswheneachsplitisdeployedonaseparatedevice.Toverifythisassumption,
+we conductthefollowingexperiment.
+WestartwithalargeWideResnet(WRN40-4)teachermodelwith8.9millionparameters,trained
+on CIFAR-10 dataset1[24]. This model takes about 86ms for inference on a single powerful x86
+machine.Next,wesplittheWRN40-4modelhorizontally(e.g.,ifalayerhas32channels,wesplitit
+intotwopartswith16channelseach).Wethendeploytheindividualhorizontalsplitsontwopow-
+erful x86 machines connected via a wired point-to-point connection. As shown in Figure 3, since
+each successive convolution layer requires input from all the output channels from the previous
+layer,weneedtomaketheoutputfromalldevicesavailabletoallotherdevices.Clearly,thisresults
+in a significant communication overhead. This is why, even though the computation happens on
+twopowerfulx86machines,theinferencetimeincreases from 86ms to 1006ms (>10×increase
+inlatency).Hence,thisexperimentshowsthat,whenadeepnetworkdoesnotfitonanIoT-device,
+1The base WRN architecture consists of three groups: G0,G1,a n dG2with width (i.e., #channels) in each group as
+[16,32,64] respectively. Width multiplier is used to increase the number of channels per group [ 24]; WRN40-4 implies
+40layers andawidthmultiplierof 4which results in [64 ,128,256]channels pergroup (see Figure 5(a)).
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 7 ====
+Network of Neural Networks 82:7
+Fig.3. Splittingadeepnetworkhorizontallyleads tohugecommunicationcostat everystepsincethenext
+layerconvolutionsrequireaccesstoallthechannelsatthelastlayer.Originalcomputationisequallydivided
+between thetwodevices.
+splittingithorizontallyissimplynotanoption.Obviously,theproblemgetsexacerbatedforedge
+deviceswhichoftenoperateon low frequenciesand,hence,takeeven longer for computation.
+Asaresult,anewmemory-andcommunication-awaremodelcompressiontechniqueisimper-
+ativefordistributedinferenceonIoT-devices.Therefore,wenextdescribeourproposedapproach.
+4 PROPOSED APPROACH
+Wefirstformulateourproblem(Section 4.1),followedbyourproposedsolutionwhichconsistsof
+twostages:(1)Networkscience-basedknowledgepartitioningoftheteacher:Wefinddisjointpar-
+titions of teacher’s knowledge which lead to independent students with minimal communication
+costs (Section 4.2, Figure4(b)). (2) Proposed NoNN architecture and the training process: We first
+selectanefficientmodelarchitectureforeachstudentthatreducesitsmemoryandFLOPS,andthen
+jointlytrainindividualNoNNstudentsondisjointpartitionsfromteacher(Section 4.3;Figure4(c)).
+4.1 Problem Formulation
+Inthissection,weformulateteacher’sknowledgepartitioningsubjecttotheresource-constraints
+of individualstudents.
+As shown in Figure 4(a), the output of final convolution (fconv) layer of teacher ( Tfconv) gets
+average-pooled and passes through the fully-connected (fc) layer to yield logits. The logits then
+passthroughthesoftmaxlayertogenerateprobabilities.Sinceourgoalistobreakteacher’slearned
+functionintomultipledisjointparts,wefocusonteachernetwork’sfconv.Specifically,wepartition
+theteacher’sfconvlayerbylookingatthe patternsofactivationoffilters asvalidationimagespass
+throughtheteacher(seeSection 4.2).
+Partitioning a teacher’s fconv often uncovers a partition P0which does not contribute to
+teacher’s validation accuracy. Therefore, we should find and remove the largest set of filters
+P0⊂Tfconvthat does not contribute to teacher’s accuracy since such filters only transfer noise
+to the students during distillation (Section 4.2). Moreover, the sizes of partitions of Tfconvshould
+be almost equal so that the resulting student networks fit within a memory budget Bmem,w h i l e
+their computation costs fit a FLOP budget BFLOP.L e th:R→Rcompute the memory of stu-
+dentidependingonitspartitionsize |Pi|,andf:R→RcomputetheresultingFLOPS.Then,the
+knowledge-partitioningproblem is expressedas:
+min
+P={P0,P1,...,Pk}|Δval|−|P0|
+subjectto|P1|≈|P2|...≈|Pk|,Pi∼RuleR,Pi⊂Tfconv
+∀i∈{0,...,k}
+|Δval|<ϵ
+max(h(|P1|),h(|P2|),...,h(|Pk|))<Bmem
+max(f(|P1|),f(|P2|),...,f(|Pk|))<BFLOPS(2)
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 8 ====
+82:8 K.Bhardwaj et al.
+Fig.4. Completeflowofourapproach.(a)Thepretrainedteachermodelexhibitscertainactivationpatterns
+for the validation set. (b) We use these activation patterns to build a network of filter activity. Community
+detection on the filter network partitions teacher’s knowledge into simpler functions. (c) Train individual
+students in NoNN to mimic each partition. (d) Teacher’s knowledge can be partitioned in different ways
+dependingon howthefilteractivation networkisbuilt(e.g.,viaCo-Activation (CA)ruleor ActivationHubs
+(AH) rule). Node colors represent filters relevant to a given class, whereas node sizes represent importance
+of a filter(determined byactivation value).
+where,|Δval|denotes the absolute value of change in validation accuracy due to removal of P0
+filters. Also,|Pi|does not denote the absolute value, but rather the number of elements in the
+setPi(i.e., the cardinality of Pi). The first constraint in ( 2) aims to keep the sizes of all partitions
+(exceptP0) almost equal since the sizes of student models must be below the fixedmemory bud-
+getBmem. The objective function and the second constraint aim to minimize change in teacher’s
+validation accuracy while removing as many useless filters from Tfconvas possible. The last two
+constraints in problem ( 2) specify the per-device memory- and FLOP-budgets that must be satis-
+fied by each student (which will be deployed on individual devices). Note that, while it is always
+possibleto satisfy memory- and FLOP-constraints,therewill be a tradeoffbetweenmodel-size or
+computationandtheNoNNaccuracy.Forinstance,forfixednumberofstudents,largerindividual
+student modules can lead to higher overall accuracy. Finally, the rule Rneeded to determine how
+thepartitionsare formedis describedbelow.
+4.2 Network Science-Based Knowledge Partitioning: Filter Activation Network
+Weproposeanetworkscience-basedsolutiontotheknowledgepartitioningproblem.Theideais
+to uniformly distributeknowledge from teacher’sfconv using networksciencein order to jointly
+trainindividualstudentsin theNoNN.
+To partition teacher’s fconv, we first build a network F={Fij}of filter activation patterns,
+whereiandjare two filters. Now, let aidenote the average activity of a filter ifor a given image
+in the validation set (val). Average activity of a filter iis defined as the averaged output of the
+correspondingoutputchannelofteacher’sfconv.Forinstance,supposeateachernetwork’sfconv
+has256outputchannels,andheightandwidthofitsactivationmapis8 ×8pixels.Then,toobtain
+averageactivityoffilter i,weaveragethevalueofits8 ×8outputchannelactivationmap.Essen-
+tially,weusethisaverageactivitymetricasameasureof importance ofafilterforagivenclassof
+images;thatis,thehighertheaverageactivityofafilter,themoreimportantitisforclassification
+for some class of images. In Figure 4(d), each circle depicts a filter at teacher’s fconv, and filters
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 9 ====
+Network of Neural Networks 82:9
+shown in same color activate for similar classes. Also, the bigger the size of the circle, the more
+importantisthefilterfor thecorrespondingclass(i.e.,it hashigheraverage activity).
+Tocreatethefilteractivationnetwork,thereexistmultiplestrategies(i.e.,rules R)bywhichthe
+filters can be connected. Figure 4(d) illustrates two such strategies: (i) Activation Hubs (AH):
+Encourage connections between very important and less important filters (i.e., less number of
+high-importance filters get surrounded by many low-importance filters and thus act as hubs),
+and(ii) Co-Activation (CA): Filters that activate together for similar classes get connected. The
+former rule encourages partitions of roughly equal importance (since each partition will have a
+fewimportantfilters).Thelatterrulepartitionsthefiltersintosemanticallysimilarparts.Formally,
+Fij=⎧⎪⎨⎪⎩/summationtext
+valaiaj|ai−aj|AHRule
+/summationtext
+valaiaj
+|ai−aj|+1CARule(3)
+LetusanalyzewhathappensduringtheAHcase.If iandjaretwofilterswithaverageactivities
+aiandaj, respectively, the Fijlink weight for AH case will be high if, for a given image, either
+aiis high and ajis low, or vice versa. Note that, if either aiorajis close to zero, that link is not
+created. Further, when aiandajare both very high for the same image (i.e., both filters are im-
+portant for same class), then that link will also not be encouraged (since the link weight will be
+lowduetothe|ai−aj|part).Therefore,importantfiltersfromthesameclasswillbediscouraged
+from connecting together. Consequently, for AH Rule, highly important filters (with high ai) will
+be encouraged to connect with not-so-important filters (from same or other classes). Important
+filters from same classes will be forced to occupy separate communities; hence, the knowledge is
+distributed uniformly across the students. Similar discussion holds for CA Rule where the com-
+munities represent semantically-similar features. Of note, this flexibility in partitioning teacher’s
+fconv comesfromnetworkscienceideas.
+Ofcourse,therecanbeotherwaysfiltersmaybeconnected.Indeed,ifthedatasetcontainstoo
+many semantically similar classes, CA can lead to heterogeneous student models (because many
+filters from Tfconvwill go into a few partitions). Hence, to obtain student models of similar sizes,
+weonlyexploreAHinthispaper.Inmatrixform,adjacencymatrixofAHnetworkcanbewritten
+asfollows:
+FAH=/summationdisplay
+n∈valanaT
+n⊙|Dn−DT
+n|, (4)
+where,anisthevectorofaveragefilteractivities( ai’s)foreachimage n∈val,matrix Dncontains
+all columns as an,a n d⊙denotes element-wise multiplication. To partition this AH network, we
+need to detect communities by maximizing a modularity function as explained in the network
+scienceliterature[ 17]:
+max
+g={д0,д1,...,дl−1}1
+2m/summationdisplay
+ij⎡⎢⎢⎢⎢⎣FAH
+ij−1
+γ·kikj
+2m⎤⎥⎥⎥⎥⎦δ(дi,дj), (5)
+where,mis #edges, kiis degree (number of connections) of node i, resolution γcontrols the
+size/number of communities, and δis Kronecker delta. The idea is to find groups of tightly
+connected nodes, g={д0,д1,...,дl−1}, which map the nodes Vtolcommunities. Finally, these
+lcommunities are converted to kpartitions Piby combining the communities such that the
+partition sizes are almost equal (so that resulting students stay within the budget). This parti-
+tioningPis then used to train individual student networks. Of note, removing community д0
+(which consists of all disconnected nodes in the filter network) often has very little impact on
+teacher’s accuracy. Hence, partition P0=д0is obtained directly by community detection. Con-
+sequently, we solve problem ( 2) by detecting and removing the largest community д0that does
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 10 ====
+82:10 K.Bhardwaj et al.
+Fig. 5. (a) Selecting an individual NoNN student architecture: Reduce depth and channel-width so that it
+fitswithinthedesiredbudgets.(b)Overall,NoNNtrainsatree-shapednetwork(wherepossible)withsome
+initiallayerscommon(denotedas G0).Atinferencetime,replicatethecommongroup G0andputindividual
+studentsonseparatedevices.
+not change teacher’s validation accuracy, and then combine the rest of the communities to form
+the remaining partitions. For instance, say we have four remaining communities after removing
+д0:{|д1|=12,|д2|=14,|д3|=25,|д4|=30}(|x|indicates size of group x), and we want to com-
+bine them into two partitions of nearly equal sizes. Then, we can combine them as P={|P1|=
+|д2∪д3|=39,|P2|=|д1∪д4|=42}.Hence,weobtaintherequired kalmostequalpartitionsfrom
+lcommunities.
+4.3 Network of Neural Networks (NoNN)
+Oncewehavepartitionedtheteacher’sfconv,wejointlytrainourstudentnetworksonindividual
+partitions from Tfconvas shown in Figure 4(c). However, we must first make the following de-
+signdecisions:( i)Selectthedeepnetworkarchitectureforindividualstudents,and( ii)Selecthow
+studentsareconnectedtogetherin NoNN.
+4.3.1 Student Architecture Selection. SimilartopriorartinKD[ 6,25],weselectourindividual
+studentnetworkstobesignificantlyreducedversionsoftheteacher(i.e.,farfewerlayersandlower
+width). Specifically, we pick our individual student models based on user-defined memory- and
+FLOP-constraints for IoT-devices. For instance, for CIFAR-10 dataset, our teacher is Wide Resnet
+model WRN40-4 with 40 layers and width multiplier of 4. That is, as shown in Figure 5(a) (left),
+it has 64 channels in first group, 128 in second group, and 256 in third group. Also, suppose that
+our each individual student must have less than 500K parameters. Then, we select our individual
+student (see Figure 5(a) (right)) with 16 layers and channel-width appropriately adjusted so that
+eachstudenthaslessthan500Kparameters.Notethat,studentnetworksarenotexactlythesame
+as they mimic different partitions. Therefore, we need an additional 1 ×1 convolution layer to
+make the dimensions equal between the teacher’s knowledge partition and individual student’s
+output layer. Next, we describe the architecture of NoNN containing multiple such students, and
+thetrainingprocess.
+4.3.2 NoNN Architecture. A NoNN consisting of two students is shown in Figure 5(b). As ev-
+ident, wherever possible, we make the initial few layers from the students common (since the
+knowledge learned at initial few layers will be common for all students). Moreover, at inference
+time, the common layers between all students can be simply replicated across multiple devices
+withoutsignificantincreaseinmemoryperstudent(sincethecommongroupisnottoobig).Once
+the common group is replicated, the individual students are completely independent and do not
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 11 ====
+Network of Neural Networks 82:11
+communicate until the final fc layer (see Figure 5(b)). Hence, we obtain a final NoNN architec-
+turewhichconsistsofmultipledisjointstudents.Theoutputfromallstudentsisconcatenatedand
+passedthrougha fcto yield logits.
+4.3.3 Training Loss. To train the overall NoNN, we use the KD loss (see Equation ( 1)) and, as
+given below, we additionally propose a new loss function called activation-transfer for transfer-
+ring partitioned knowledge from the teacher to individual students. The main motivation behind
+theactivation-transferlossfunctionisthateachindividualstudentmustmimicthecorresponding
+partition of teacher’s knowledge. Specifically, for each partition of teacher’s knowledge, we want
+to minimize the error between activations of the teacher’s filters (that belong to the given parti-
+tion)andactivationsoffiltersinthecorrespondingstudent.Wedefinetheactivation-transferloss
+functionasgiven below:
+LAct(θS)=/summationdisplay
+p∈P/bardblex/bardblex/bardblex/bardblex/bardblex/bardblexvF
+T(p)
+||vF
+T(p)||−vF
+S(p)
+||vF
+S(p)||/bardblex/bardblex/bardblex/bardblex/bardblex/bardblex2
+2(6)
+where,vF
+Z(p)=vec(AF
+Z(p)),Z∈{T,S}is the vectorized fconv activations for partition p∈Pof
+teacherorforindividualstudentnetworkinNoNN,andthe ||vF
+Z(p)||,Z∈{T,S}termsdenotethe
+partition-wise normalization. Hence, the total loss is given by L=Lkd(θS)+βLAct(θS)which
+canbe minimized via stochasticgradientdescent.
+This completes our proposed NoNN. We next present detailed experimental evaluation for
+NoNN.
+5 EXPERIMENTAL SETUP AND RESULTS
+In this section, we first present our experimental setup and then results for different datasets and
+NoNNarchitectures.
+5.1 Experimental Setup
+We compress various deep networks for five well-known image classification tasks: CIFAR-10,
+CIFAR-100, Scene [ 18], Caltech-UCSD-Birds (CUB) [ 22], and Imagenet. Scene and CUB datasets
+belongtothetransferlearningdomainwhereapretrainedmodelisfinetunedonadifferentprob-
+lem.Forcomparison,weconsiderstrongteacher-studentbaselineslikeKD[ 6],Attention-transfer
+withKD(ATKD)[ 25].ForKDandATKD,weusemodelsfromtheWRNfamily[ 24]assingle,large
+students.Also, totalparameters inNoNN(i.e.,parametersinallstudentscombined)arecomparable
+to the parameters in KD/ATKD baseline models. We also show that we outperform prior models
+likeSplitnet[ 10].Further,weshowexperimentswithupto8studentnetworksforCIFAR-10/100.
+With these experiments, we thoroughly demonstrate that NoNN compresses the teacher model
+intodisjoint subsetswhichdo notcommunicate untilthefc layer.
+Wefirsttraintheteachermodelon90%oftrainingdatasetwhilesaving10%forvalidation.This
+validation set is used for building the filter activation network to partition the teacher’s knowl-
+edge. Then, we use the Activation Transfer loss given in Equation ( 6) and KD-loss to train the
+compressed NoNN model. Moreover, all the accuracies reported in the paper are on test set for
+the respective datasets. We set the number of partitions, k=2. To build more than two students,
+since our objective is to keep the individual student architectures as similar as possible, we sim-
+plyshufflethefiltersinthesetwopartitionswhiletransferringknowledgetorestofthestudents.
+This ensures that the size of students is not too diverse and limits the possible factors that can
+contribute to the improvement in accuracy of our model. Also, we set α=0.9 and selected the
+bestβ={101,102,...,104}for both ATKD [ 25] and NoNN. For training NoNN, we set the initial
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 12 ====
+82:12 K.Bhardwaj et al.
+Fig. 6. Teacher, baseline student, and NoNN models for various datasets. (a) WRN-40-4 teacher, WRN-16-2
+baseline,and2-studentNoNNforCIFAR-10.(b)Alarger2-studentNoNN(NoNN-2S-XL)canbedistributed
+onthreeseparatedevicestokeepFLOPSunderabudget.(c,d)4-studentand8-studentNoNNs.(e)CIFAR-100
+models, (f) Transfer learning models. After replicating the common groups (if any), the individual students
+inour proposedNoNN will communicate onlyat fc layer.
+learningrateas0.1andusedamomentumof0.9.Finally,ourentireframeworkisimplementedin
+Pytorchwhichis runon NVIDIAGTX 1080-Tiand TitanXpGPUs.
+5.2 Results
+We first show results on CIFAR-10/100 and transfer learning datasets (Scene, CUB), and then our
+preliminaryresultsfor Imagenet.
+5.2.1 CIFAR-10. Figure6(a)depictsourteachermodelforCIFAR-10asWRN40-4andourbase-
+linestudentforKDandATKDasWRN16-2.Asevident,knowledgefrompartitionsofonly34and
+46filtersfromteacher’sfconvistransferredtostudent-0andstudent-1,respectively(via1 ×1con-
+volutions).Therest176outof256filtersatteacher’sfconvdonotcontributetoteacher’saccuracy
+and,hence,formpartition P0(orcommunity д0)inFAH;thispartitionisnotusedfortransferring
+knowledge to NoNN students. We set BFLOPS≈200M which is close to baseline FLOPS used by
+WRN16-2 model. Further, based on our initial motivation w.r.t. Arm Cortex-M, Bmem=0.5M pa-
+rameters(sinceformodelsquantizedto8-bits,0.5Mparametersmeanlessthan500KBofmemory).
+AsshowninTable 2,ourNoNN-2Smodel(Figure 6(a))achieveshigheraccuracythanthebase-
+linestudentmodel.Notethat,eachstudentinNoNNutilizesfewerFLOPS(i.e.,167 MFLOPS)than
+the allowed budget. Moreover, although eachstudent has 0.43M parameters, due to common G0,
+total parameters for NoNN-2S in Figure 6(a) is 0.82M (comparable to 0.7M in WRN16-2). Further,
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 13 ====
+Network of Neural Networks 82:13
+Table 2. CIFAR-10Teacher-Student Results∗
+Model#parameters #FLOPSAccuracy(largeststudent) (largest student)
+TeacherWRN40-4 8.9M 2.6G 95.49%
+KD WRN16-2[ 6] 0.7M 202M 93.79±0.15%
+ATKD WRN16-2[ 25] 0.7M 202M 93.83±0.08%
+NoNN-2S 0.43M∗∗167M 94.32±0.17%
+KD: NoNN-2S-XL 0.46M 245M 93.96±0.09%
+NoNN-2S-XL 0.46M∗∗245M∗∗∗94.53±0.19%
+∗For statisticalsignificance,results arereported asmean ±standarddeviationof five experiments.
+∗∗All NoNN #parameters/FLOPS are reported for one student only. Complete NoNN has very similar
+number of parameters as baselines for fair comparison. Our contribution is to show that NoNN can be
+broken down into disjoint parts that stay below certain budgets and do not communicate until the last
+layer.
+∗∗∗NoNN-2S-XL canbedistributed onto three devicesas shownin Figure 6(b).
+after replicating G0, student-0 and student-1 will not communicate with each other until the final
+fc layer. Clearly, when quantized, our individual student models of 430K parameters can fit on a
+device with 500KB memory (430K parameters are after replicating G0). Indeed, if a device can-
+not fit more than 500K parameters, prior models such as WRN16-2 (with 700K parameters) will
+need to be distributed across multiple devices which will lead to communication at every layer;
+thatis,whendistributed,thebaselineWRN16-2willcommunicateatall16layers,whereasNoNN
+communicatesonly atthefinallayer.
+This situation gets exacerbated by higher accuracy baseline student models (e.g., 40-layer
+WRN40-2)forwhichcommunicationcostsateverylayergrowrapidly.Incontrast,asweshallsee
+shortly, our student models can be very flexible: we can have larger students (see Figure 6(b)), or
+manydisjointstudentswithoutsignificantlyincreasingthecommunicationcosts(e.g.,seeNoNN-
+4S and NoNN-8S in Figure 6(c, d)). Concrete energy and latency for CIFAR-10 experiments are
+reportedin thehardwaredeployment describedin Section 6.
+Foranevenhigherper-deviceFLOPbudget(say,250M),aNoNN-2S-XLstudentarchitecturecan
+bedistributedonthreedevices(seeFigure 6(b)).Althoughthelargerstudentinthiscasehas0.46M
+parameters ( G0→G1b→G2b), due to a bigger common G0group, total parameters for NoNN-
+2S-XL is 0.77M (again, comparable to 0.7M in WRN16-2). Also, each individual student in this
+model hashigherFLOPSbecausethecommon group G0iswiderandhas245MFLOPS.Sinceitis
+impracticaltoreplicatethisgroup,asshowninFigure 6(b),wecanassignacompletelynewdevice
+(device-0)to thisgroupand put G1a→G2a(G1b→G2b) ondevice-1 (device-2).
+Table2demonstrates that our NoNN-2S-XL achieves even better accuracy ( <1% away from
+the teacher). Moreover, this increase in accuracy is not only due to an increased FLOP budget.
+To demonstrate, we show that filter network community-based knowledge transfer from teacher
+plays a more significant role in accuracy improvement. If we simply train our NoNN-2S-XL stu-
+dentmodelviaKD,i.e.,withoutthe LActlossdefinedinEquation( 6),theaccuracyincreasesonly
+slightly over the baseline WRN16-2 (e.g., 93.96% vs.93.79%). Therefore, community-based knowl-
+edge partitioningis extremely importantfor successfullytrainingourproposedNoNN.
+Next, we show that NoNN is scalable to many datasets and model sizes for different memory
+and FLOP budgets.
+5.2.2 CIFAR-100 and Comparison with SplitNet. Table3showsresultsforCIFAR-100.Here,the
+teacherisaWRN28-10modelwith36.5MparametersandourbaselinestudentisWRN16-3model
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 14 ====
+82:14 K.Bhardwaj et al.
+Table3. CIFAR-100 Teacher-Student Results∗
+Model#parameters #FLOPSAccuracy(largeststudent) (largeststudent)
+TeacherWRN28-10 36.5M 10.48G 79.28%
+KD WRN16-3[ 6] 1.5M 446M 73.99±0.26%
+ATKD WRN16-3[ 25] 1.5M 446M 74.90±0.17%
+NoNN-2S 0.85M 345M 75.74±0.31%
+∗For statisticalsignificance,results arereported as mean ±standarddeviationof fiveexperiments.
+Table 4. Accuracy for MoreStudents∗
+#SCIFAR-10 CIFAR-100
+NoNN ΔM∗∗ΔF∗∗NoNN-XL ΔMΔF NoNN ΔMΔF
+294.32±0.17%10×7.7×94.53±0.19%11×5×75.74±0.31%24×15×
+494.64±0.16%5.1×3.9×94.87±0.14%6.3×3.3×77.07±0.18%12×7.6×
+694.90±0.06%3.5×2.6×95.02±0.10%3.9×1.7× 77.25±0.24%7.7×5×
+8 95.02±0.08%2.5×2× 95.28±0.07%2.9×1.3×77.03±0.17%5.7×3.8×
+T95.49% 1×1× 95.49% 1×1× 79.28% 1×1×
+∗For statisticalsignificance,results arereported asmean ±standard deviationof fiveexperiments.
+∗∗ΔM(ΔF)showscompressionrate,i.e., ΔMemory( ΔFLOPS)for completeNoNN(i.e.,parametersofallstudentscombined)
+w.r.t.teacher.
+containing 1.5M parameters (see Figure 6(e)). Therefore, we create a NoNN with overall 1.5M pa-
+rametersasshowninFigure 6(e);thisNoNNcanbesplitintotwostudentswherethelargerstudent
+has0.85Mparameters(afterreplicating G0).Also,theFLOPSforourlargerstudentarelowerthan
+the WRN16-3 baseline. Again, NoNN-2S model is found to be more accurate than KD and ATKD,
+while creating disjoint students that can fit within some memory budget (say, 1MB). Once our
+disjoint students fit within the 1MB budget, techniques like MoDNN [ 14] can further distribute
+ourmodel’scomputationonmoredeviceswithsimilarmemory-constraintstoreducetheFLOPS.
+MoDNN assumes that the model fits on the device, and our work makes it possible to meet the
+memory-constraints.
+We next compare our model to SplitNet [ 10] that splits a deep network into multiple disjoint
+parts (albeit without any model compression ideas such as resource-constraints). Kim et al. ob-
+tained two CIFAR-100 models via SplitNet: ( i) A 7.42M parameter WRN model with 2 sub-groups
+which achieves 76.04% accuracy, and ( ii) A 4.12M parameter model with 4 sub-groups which
+achieves 75.2% accuracy. For fair comparison with SplitNet, we create two corresponding mod-
+els:Firstwith2-students(7.42Mparameters),andthesecondwith4-students(4.13Mparameters),
+respectively.WhilekeepingtheexperimentalsetupsameasSplitNet(e.g.,samevalidationsetsize,
+etc.), we achieve 79.07%accuracy for the 7.42M parameter model, and 77.42%accuracy for the
+4.13M parameter model. Therefore, the proposed NoNN significantly outperforms SplitNet for
+similarmodel-sizes.Moreover,theNoNN-2SmodelshowninTable 3whichhasmerely1.5Mtotal
+parameters(i.e.,0.85Mparametersperstudent)achieveshigheraccuracythanthe4.13Mparameter
+SplitNetmodel.
+5.2.3 Varying Number of Students. Now, we vary students from two to eight for CIFAR
+datasets. As evident from Table 4, NoNN models achieve close to teacher’s accuracy while re-
+ducing memory/FLOPS by orders of magnitude (i.e., 2 .5×-24×reduction in #parameters and
+2×-15×reductioninFLOPSw.r.t.teacher).Specifically,theNoNN-8SmodelinFigure 6(d)achieves
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 15 ====
+Network of Neural Networks 82:15
+Table5. Transfer LearningResults∗
+Model#parameters
+(largeststudent)#FLOPS
+(largeststudent)AccuracyΔM∗∗ΔF∗∗
+Scene CUB
+TeacherResnet-152 58M 11G 79.44% 80.94% 1×1×
+KDResnet-34[ 6] 22M 4G 76.92±0.39%78.59±0.22%2.5×2.8×
+ATKDResnet-34[ 25] 22M 4G 77.63±0.94%79.10±0.56%2.5×2.8×
+NoNN-2S 11M 2G 77.48±0.76% 79.81±0.33%2.5×2.8×
+∗For statisticalsignificance,results are reported asmean ±standard deviationof fiveexperiments.
+∗∗ΔM(ΔF)showscompressionrate,i.e., ΔMemory( ΔFLOPS)for completeNoNN(i.e.,parametersofallstudentscombined)
+w.r.t.teacher.
+95.02%accuracy(i.e.,lessthan0.5%awayfromteacher)whileusingeightseparatestudents(after
+G0is replicated), each of which can fit within 167M FLOPS and 430K parameters (i.e., <500KB
+when quantized to 8-bits), and do not communicate until the final fc layer. Overall, this results in
+2600/(167×8)≈2×reduction in FLOPS, and 8 .9/(0.43×8)≈2.5×reduction in parameters over
+theteacher.
+Finally, to compare NoNN-8S for CIFAR-10, we also experimented with a larger WRN40-2 stu-
+dent(40layers,2.2Mparameters,and655MFLOPS)withATKD[ 25].Although,thismodelachieves
+similar accuracy of 95.03%, it clearly does notresult in an architecture that can be distributed on
+multiple devices (since it will require 2.2MB storage when quantized to 8-bits). As a result, dis-
+tributing this single model on multiple devices will lead to heavy inter-device communication at
+each of the 40 layers (see Section 3), whereas our model will communicate only at the final layer.
+Thisclearlyhighlightsthesignificanceof ourproposedNoNN.
+5.2.4 Transfer Learning Datasets. We now demonstrate the effectiveness of NoNN for transfer
+learning tasks where the idea is to finetune a model pretrained on Imagenet w.r.t. a new dataset.
+Table5shows results for two such datasets: ( i) Indoor Scene Classification, ( ii) Caltech-UCSD
+Birds.Forbothdatasets,weusedResnet-152asteachermodel,Resnet-34asbaselinestudent,and
+our NoNN consists of two separate Resnet-18 models with a common fc layer (see Figure 6(f)).
+As evident from Table 5and Figure 6(f), our NoNN-2S model (total 23M parameters) consists of
+disjoint parts of 11M parameters each, which do not communicate until the last layer. Also, for
+Scene dataset, NoNN-2S achieves slightly lower (but still comparable) accuracy than ATKD on
+Resnet-34.However,NoNN-2Sachievesmuch higheraccuracythanpriorapproachesfor CUB.
+5.2.5 Preliminary Imagenet Results. Weusedthefastaisetup[ 7]toobtainimagenetresultsina
+fastandinexpensiveway.OurteachermodelisResnet-34with73%top-1and91%top-5accuracy.
+WeusedResnet-18model(11.68Mparameters)asabaselineATKDstudentwhichachieved69.98%
+top-1and89.50%top-5accuracy.OurNoNNconsistsoftwostudents(eachwitharound6Mparam-
+eters; total 11.69M parameters). For training our NoNN, we use attention transfer losses [ 25]o n
+eachstudentsinceactivationtransferlossledtosomeunderflowproblems2.Evenwiththissetup,
+ourNoNNachieved comparable accuracies,i.e.,69.82%top-1,and89.61%top-5whileensuringthat
+the two students do not communicate until the last layer. With availability of more resources,we
+shouldbeable toimprove theseresultseven further.
+Sofar,wehaveshownthatNoNNachieveshigheraccuracythanseveralbaselines,andminimal
+communicationamongstudents.WehavealsodemonstratedthatNoNNachievesclosetoteacher’s
+2Fastai uses a floating point-16 (fp16) format for computation on 8 NVIDIA Volta GPUs. Due to an underflow problem on
+fp16 (which is well-known to happen with fp16 format), we couldn’t use activation transfer LActlosses for training our
+NoNN.
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 16 ====
+82:16 K.Bhardwaj et al.
+accuracy with 2 .5×-24×lower memory, and 2 ×-15×fewer FLOPS than the teacher model. Next,
+wedeployourmodelsonrealedgedevicesandshowsignificantgaininperformanceandenergy.
+6 CASE STUDY: HARDWARE DEPLOYMENT
+Inthissection,asacasestudy,wedeployourNoNNmodelsontwohardware-constraineddevices
+to quantifytheireffectivenessin termsof latencyand energyon realhardware.
+6.1 Hardware Setup
+We implement NoNN on edge devices such as Raspberry Pi (RPi) and Odroid-XU4S. We demon-
+strate an extensive exploration of two scenarios that can benefit from our approach: ( i) Homoge-
+neouscaseinwhichalldevicesareidentical,and( ii)Heterogeneouscase,wheredeviceshavedif-
+ferentresourcesandcomputingpower.Weperformdetailedevaluationofaccuracy,performance,
+and energy for each scenario. We show these results for our teacher (WRN40-4), NoNN-2S, and
+NoNN-8Smodels trainedontheCIFAR-10dataset.
+We use eight Raspberry Pi-3 Model-B and eight Odroid-XU4S boards. Each RPi has an Arm
+Cortex-A53 quad-core processor with nominal frequency of 1.2GHz and 1GB of RAM. We scaled
+thefrequencyofRPi’sdownto400MHzastheRPi’srunningatmaximumfrequencydemonstrated
+unstable behavior and would often crash due to high temperature. The XU4S boards have a Sam-
+sung Exynos5422 SoC, which has an Arm big.LITTLE architecture with 4 big Cortex-A15 and 4
+little Cortex-A7 cores, and 2GB of RAM. The Odroid is executed at the nominal frequency: 2GHz
+for the big cores and 1.4GHz for the little cores. To maximize performance, we run the inference
+on thebigcoresintheOdroids.
+In order to measure voltage, current, and power, we use the Odroid Smart Power 2 for the
+Odroid-XU4S and AVHzY USB Power Meter for the RPi’s. In addition, we use an x86 machine
+(Core i7), further referred as server, to send the images to the devices, concatenate the results,
+and apply the fc layer. Of note, the fc is small and could also be placed in another edge/mobile
+device. We perform all of our experiments with a point-to-point wired local network connecting
+alldevices together.
+Since the NoNN models were built with PyTorch, we use TVM3, a deep learning compiler that
+optimizes NN models for several hardware architectures, to deploy the trained model into the
+RPi’s and Odroid boards. To achieve this, the PyTorch models are converted into an intermediate
+representationwithOpenNeuralNetworkExchange(ONNX)[ 2].ThentheONNXrepresentation
+isusedbyTVMtogeneratethebinarythatisdeployedinthetargetdevice.Inaddition,weintegrate
+thesebinariesintoaTCP-wrappersothateachstudentcanbedistributedtoseparatedevicesand
+thecommunication isperformedthroughtheTCP protocol.
+6.2 Hardware Results
+We first show the results for NoNN when all devices are identical (i.e., the homogeneous case).
+Then, we address the heterogeneous scenario, where one device is more powerful than the rest.
+We also discussthecasewhensome devicesareunavailable forinference.
+6.2.1 Homogeneous Devices. Table6presents the evaluation of NoNN-2S, NoNN-8S, and
+teacher models for both RPi’s and Odroids. In this experiment, each student is deployed on a dif-
+ferentdevice,sointhe8-studentcasewehaveeightseparatedevices(eitherRPiorOdroid).From
+theexperimentinSection 3,sincesplittingtheteachermodelhorizontallyleadstomorethan10 ×
+increment in latency (even on powerful x86 machines), we executed the teacher on a single edge
+device,as otherwiseit would takeeven longer.
+3TVM Compiler: https://tvm.ai/ .
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 17 ====
+Network of Neural Networks 82:17
+Table 6. Accuracy, Performance,and EnergyResultsfor CIFAR-10onBoth RaspberryPiand Odroid-XU4S
+RaspberryPi Odroid-XU4S
+Teacher 2S 8SImprovement
+Teacher 2S 8SImprovement
+2S 8S 2S 8S
+Accuracy 95.49% 94.32% 95.02%−1.17%−0.47% 95.49% 94.32% 95.02%−1.17%−0.47%
+Latency(ms) 1405 115 150 12.22×9.37×224 25 36 8.96×6.22×
+Energyper node(mJ) 3430.67∗238.98 249.15 14.36×13.77×3084.08∗219.07 237.45 14.08×12.99×
+TheoreticalFLOPS per student 2.6G∗167M 167M 15.56×15.56×2.6G∗167M 167M 15.56×15.56×
+∗Teacher model is executed on a single node since splitting the teacher model onto multiple devices incurs heavy com-
+munication latency (see Section 3). NoNN energy and FLOP numbers are reported per student because we are mostly
+concerned with per node budgets for memory and FLOPS. Of note, 2S (8S) refers to the NoNN-2S (NoNN-8S) model with
+two(eight)individualstudents deployedon two(eight)separatedevices.
+Table 7. Average Latency Breakdown PerInference
+Latency(ms)RaspberryPi Odroid-XU4S x86
+2S8S2S8S2-SplitTeacher
+Computation 101.91106.24 19.0120.60 86
+Communication 13.1043.76 6.0015.40 920
+On the RPi’s, NoNN-2S improves the performance and energy per node by 12 .22×and 14.36×
+w.r.t.teacher.Also,sinceNoNN-8Ssynchronizeseightdevices,itachieves9 .37×betterlatencyand
+13.77×betterenergypernode.ThesametrendisobservedfortheOdroidboards,having8 .96×and
+14.08×improvement for NoNN-2S in performance and energy per node, respectively, and 6 .22×
+and12.99×forNoNN-8S.Notethat,thereductionintheoreticalFLOPSforNoNNw.r.t.theteacher
+is about 15×, while energy per node reduction for both RPi’s and Odroids is 13-14 ×. This shows
+verygoodagreementbetweentheoryandpractice.Further,thelatencyandenergypernodedo not
+increase significantly between NoNN-2S and NoNN-8S for both devices. Therefore, our proposed
+NoNNleadstosignificantgainsinperformanceandpernodeenergy,whilemaintainingaccuracy
+within0.5%-1.17%comparedtotheteacher.
+Table7presentstheaveragelatencybreakdownforcomputationandcommunicationperimage,
+consideringthe2Sand8Scases.Thecomputationtimeforoneimageincreasesbymerely4%and
+8% for RPi and Odroid, respectively, when going from 2S to 8S, because each device operates in
+parallel. But when communication is considered, the overhead of sending and receiving data for
+8S increases the average latency by 3 .34×for RPi’s, and 2 .57×for Odroid boards (compared to
+the 2S-case). Again, this communication cost is very small compared to the cost incurred from
+directly splitting the single, large models. For instance, we have 43ms communication latency for
+distributingNoNN-8SonRPi’s.Incontrast,splittingtheteacheronx86incurs1006 −86=920ms
+communicationlatency (seeSection 3),whichis 21×higherthanNoNN-8S.
+6.2.2 Comparison of Latency for Distributed Inference w.r.t. a Model Compression Baseline. Next,
+wepresentaconcrete,side-by-sidecomparisonbetweenthedistributedinferencelatencyincurred
+by our proposed NoNN and ATKD [ 25], a traditional model compression baseline. Note that, we
+comparethelatencyofNoNNagainstATKD[ 25]asitachievesthebestbaselineaccuracyresults.
+Consequently, for this experiment, we use the ATKD model WRN40-2 (2.2M parameters, 95.03%
+accuracy on CIFAR-10 dataset) distilled from the same teacher model as above (i.e., WRN40-4,
+8.9Mparameters,95.49%accuracy).Toachievehigheraccuracy,thesizeofthemodelcompressed
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 18 ====
+82:18 K.Bhardwaj et al.
+Table 8. NoNN andSplit-ATKDLatency onRPi’s(Pytorch)
+Split-ATKD (WRN40-2) NoNN-8S
+8R P i ’ s 4R P i ’ s 8RPi’s
+Accuracy 95.03% 95.03% 95.02%
+Parametersperdevice 550K 275K 430K
+FLOPS perdevice 163M 82M 167M
+Totallatencyperinference(s) 23 28.5 0.85
+SpeedupwithNoNN 27× 33×−
+via ATKD grows significantly and, therefore, it must be distributed across multiple resource-
+constrained devices as it may not fit within the given per-device memory budget (henceforth
+knownasthe split-ATKD experiment);similartothesplit-teacherexperimentabove(seeSection 3
+and Table 7), ATKD baseline incurs communication at each intermediate layer. Since TVM gen-
+erates a single binary file for the entire deep network, models compiled in TVM cannot be used
+to perform such split-teacher or split-ATKD experiments on RPi’s (as we need to extract the in-
+termediateoutputsateachlayerandcommunicatethemacrossdevices).Hence,forthefollowing
+split-ATKDexperiments,weinstallPytorch0.4.1onalleightRPi’storundistributedinferencefor
+bothsplit-ATKD and NoNN-8S.
+Table8showstheaccuracy,parametersperdevice,FLOPSexecutedperdevice,andtotallatency
+forNoNN-8Sandsplit-ATKDmodelsinpytorchonRPi’s.WedistributetheATKDbaselineintwo
+different ways:
+(1)ATKD split on four RPi’s (split-ATKD-4S): Each RPi for this case stores about 550K
+(2.2M/4)parametersandexecutesabout163M(655M/4)FLOPS.Thisexperimentsimulates
+thescenariowhereeachdevicehas,say,closeto500K-parametermemory-budget(similar
+to the430K parameter-budgetconsideredinNoNNfor theCIFAR-10dataset).
+(2)ATKD split on eight RPi’s (split-ATKD-8S): EachRPiforthiscasestoresaround275K
+(2.2M/8)parametersandexecutesmerely82M(655M/8)FLOPS.SimilartoNoNN-8S,this
+casecomparestheperformanceof split-ATKD oneight separatedevices.
+Notethat,thesplit-ATKD-4ScasehasslightlymoreparametersthanthesingleNoNN-8Sstudent
+(550Kvs.430K) but executes slightly fewer FLOPS than NoNN-8S (163M vs.167M). On the other
+hand, the split-ATKD-8S case executes far fewer FLOPS than a single NoNN-8S student (82M vs.
+167M) and also stores fewer parameters than NoNN-8S (275K vs. 430K). As evident from Table 8,
+despite the lower computation involved in both the split-ATKD cases, the heavy communication
+at each layer incurred by split-ATKD-4S (split-ATKD-8S) results in a total latency of 23s (28.5s).
+Incontrast,NoNN-8Stakesonly0.85s(inpytorch)toperformthedistributedinference4,whichis
+27×(33×)betterthanthesplit-ATKD-4S(split-ATKD-8S)baseline,whileachievingnearlythesame
+accuracy.Hence,thisresultemphasizestheimportanceofourproposedNoNNfordistributeddeep
+learninginferenceon IoT.
+6.2.3 Heterogeneous Devices. TodemonstrateNoNN’sflexibility,weperformthefollowingex-
+periment:westartwithahomogeneousscenariofortheRPi’s,then,graduallymoveeachstudent
+toanOdroidboard,depictinganenvironmentwherewehaveseveralsmalldevices(RPi’s)andone
+4The total latency for distributed inference via NoNN-8S increases from 150ms in TVM (see Table 6) to 850ms in pytorch.
+This shows that the device-level optimizations performed by TVM are important for deep learning inference on edge
+devices.
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 19 ====
+Network of Neural Networks 82:19
+Fig. 7. Performance and energy as the number of Raspberry devices is reduced and the workload for the
+Odroidboardis increased, always executing a totalof eight students.
+slightly more powerful device (Odroid), the latter running on the big cores to maximize perfor-
+mance.Eachsmalldevice(RPi)executesonlyonestudent,whilethemorepowerfuldevice(Odroid)
+executesmultiplestudents.
+Figure7(a) breaks down the latency into three parts: latency of RPi’s, the single Odroid, and
+thetotal latency including the server. The total latency represents the execution time, starting
+whentheservertransmitsthefirstimageandendingwhenfclayerisapplied(afterreceivingand
+concatenating results from all students). The RPi performance represents the latency (i.e., both
+computationandcommunication time)for the slowestdevice.
+As the Odroids are considerably faster than the RPi’s in the current setup, a single Odroid is
+abletoexecutefourstudentsinthesameamountoftimeaRPitakestocomputeonestudent(Fig-
+ure7(a)). As the number of students in the Odroid increases even further, its latency becomes a
+bottleneckandthetotallatencyincreases.Thedifferencebetweenthetotallatencyandtheslow-
+est device is the communication time between the server and the devices, which is 30.65ms on
+average.Theserver(x86machine)takes0.1mstoconcatenateandapplythefclayer,whichisneg-
+ligible.Notethat,untilfourstudentsaredeployedinOdroid,thetotallatencyinFigure 7(a)keeps
+on reducing since the server can process the Odroid results while the RPi’s are still running the
+individualstudents.Hence,performingthistaskinparallelreducesthecriticalpath.
+Figure7(b) depicts the energy consumption for allRPi devices and the single Odroid device.
+Asevident,wehaveatrade-offamongperformance,energy,andnumberofdevices.Forinstance,
+when the Odroid runs just one student, the total energy gets minimized because Odroid is more
+energy-efficient than the RPi for the one student case. However, as we increase the workload for
+theOdroid(i.e.,numberofstudents),thetotalenergyincreaseseventhoughthenumberofdevices
+(RPi’s)decreases.Inthecurrentsetup,inferenceoneightseparateRPi’sconsumesthesameamount
+of energy as using six RPi’s plus two students on the Odroid. Comparing the two extreme cases
+(eight students in eight RPi’s, or all eight students in a single Odroid), the Odroid consumes 25%
+more energy.
+Therefore, this evaluation demonstrates three important aspects: ( i) NoNN approach demon-
+stratesgoodperformanceinbothhomogeneousandheterogeneousenvironments,( ii)Intermsof
+energy, distributing the students on several devices instead of using a single more powerful de-
+vice can reduce the total energy consumption for inference. ( iii) Finally, to maximize the energy
+savings for the entire system, deploying NoNN on a combination of several devices can trade-off
+betweenenergy dissipationand number ofdevices.
+6.2.4 Robustness of NoNN. We now evaluate a scenario where some devices may become un-
+available due to a variety of reasons such as power depletion or processor/network failure. We
+evaluateallpossiblecasesinwhichsuchdevicesmayfail.Forinstance,forsixactivedevices,any
+twodevices may fail, resultingin 28possiblescenarios,and soon fortheremainingcases.
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 20 ====
+82:20 K.Bhardwaj et al.
+Fig.8. Accuracyassomedevicesbecomeunavailableduetodevicefailures(e.g.,duetoprocessorornetwork
+failures,andbatterydepletion).NoNNachievesmorethan91%accuracy,onaverage,whenonlythreedevices
+are available. When four devices areavailable, NoNN achieves morethan 93% accuracy.
+Figure8showstheaccuracydropasweremovesomedevices.Onanaverage,NoNNisstillable
+toachievemorethan91%accuracywhenonlythreedevicesareavailable.Moreover,ifaminimum
+of four devices are available, the average accuracy is more than 93%. As more devices become
+unavailable,thedifferencebetweentheminimumandthemaximumaccuracyincreasessincethe
+finaldecisiondependsonoutputfromalldevices.Whenonlyafewdevicesareavailable,thefinal
+result depends on the characteristics of each student, some being able to deliver higher accuracy
+than others. For instance, one of the students is able to achieve 82.82% accuracy alone (i.e., the
+maximumpointwhenonlyonestudentisactiveinFigure 8).Therefore,deployingthisstudenton
+theprimarydevice(whichwillalwaysbeavailable)willguaranteeatleast82.82%accuracy.Other
+devices can then be used to further improve the accuracy of the system. Hence, NoNN is robust
+to random device failures. Of note, robustness can also be formulated as part of the partitioning
+problemitself;this,however,is left asafuturework.
+7 CONCLUSION AND FUTURE WORK
+In this paper, we have proposed a new NoNN paradigm to compress a large teacher model into
+multiple highly-compressed student modules that can be distributed across a network of edge
+devices with minimal communication overhead. To this end, we have first proposed a network
+science-based partitioning of teacher’s knowledge, and then trained individual students on the
+correspondingpartitions.
+With extensive experiments, we have demonstrated that NoNN achieves close to teacher’s ac-
+curacy with significantly lower memory (2 .5×-24×gain w.r.t. teacher) and computation (2 ×-15×
+fewerFLOPSw.r.t.teacher),whileguaranteeingthatindividualmodulesofNoNNfitwithinsome
+given memory/FLOP budget. We have also shown thatNoNN achieves higher accuracythan sev-
+eralbaselineswithno communicationamong studentsuntilthelastlayer.
+Finally, we have deployed the proposed models for CIFAR-10 dataset on Raspberry Pi and
+Odroid, and have demonstrated 6 .22×-12.22×improvement in performance and 12 .99×-14.36×
+in energy per node w.r.t. teacher. We have further shown that NoNN model results in up to 33 ×
+reduction in total latency for distributed inference on multiple edge devices w.r.t. a state-of-the-
+art model compression baseline. Hence, the proposed communication-aware model compression
+can ultimately lead to effective deployment of deep networks on multiple memory-constrained
+IoT-devices.
+The current work opens up several new directions. In future, we plan to address problems like
+how to accurately map deep network partitions to heterogeneous devices, and also make robust-
+ness as a primary objective of NoNN. We further plan to explore NoNN for other types of deep
+learningmodels suchasRNNs.
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 21 ====
+Network of Neural Networks 82:21
+ACKNOWLEDGMENTS
+This material is based on research sponsored in part by Air Force Research Laboratory (AFRL)
+andDefenseAdvancedResearchProjectsAgency(DARPA)underagreementnumberFA8650-18-
+2-7860.TheU.S.GovernmentisauthorizedtoreproduceanddistributereprintsforGovernmental
+purposes notwithstanding any copyright notation thereon. The views and conclusions contained
+hereinarethoseoftheauthorsandshouldnotbeinterpretedasnecessarilyrepresentingtheofficial
+policies or endorsements, either expressed or implied, of Air Force Research Laboratory (AFRL)
+and DefenseAdvancedResearchProjectsAgency (DARPA)or theU.S.Government.
+Wethanktheanonymousreviewersfor theirusefulsuggestionswhichhelpedimprovethepa-
+per.Also,wethankProf.VirginiaSmithofCarnegieMellonUniversityforusefuldiscussions.We
+further thank J. Wang, I. Pardesi, and W. Chen of Carnegie Mellon University for their help with
+the experimental part. We also thank NVIDIA Corporation for donating a Titan Xp GPU which
+was used for conducting some experiments. Finally, we acknowledge Amazon support through
+theAWSMLResearchProgram,andFastAI( https://www.fast.ai/ )forreleasingcodetoaccelerate
+trainingonImagenet datasetusingAWS machines.
+REFERENCES
+[1] JimmyBaandRichCaruana.2014.Dodeepnetsreallyneedtobedeep?In AdvancesinNeuralInformationProcessing
+Systems.2654–2662.
+[2] Facebook. 2017.ONNX: OpenNeural NetworkExchange Format. https://onnx.ai/
+[3] HongyangGao,ZhengyangWang,andShuiwangJi.2018.ChannelNets:Compactandefficientconvolutionalneural
+networks via channel-wiseconvolutions. In Advances in Neural Information ProcessingSystems . 5203–5211.
+[4] SongHan,HuiziMao,andWilliamJ.Dally.2015.Deepcompression:Compressingdeepneuralnetworkswithprun-
+ing,trainedquantization andHuffman coding. arXiv:1510.00149 (2015).
+[5] SongHan,JeffPool,JohnTran,andWilliamDally.2015.Learningbothweightsandconnectionsforefficientneural
+network.In NIPS.1135–1143.
+[6] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. 2015. Distilling the knowledge in a neural network. arXiv:1503.02531
+(2015).
+[7] JeremyHoward.2018.Imagenetin18minutes. https://www.fast.ai/2018/08/10/fastai-diu-imagenet/ .(2018).Accessed:
+2018-10-01.
+[8] Itay Hubara et al. 2017. Quantized neural networks: Training neural networks with low precision weights and acti-
+vations.JMLR18,1(2017),6869–6898.
+[9] Forrest N. Iandola, Song Han, Matthew W. Moskewicz, Khalid Ashraf, William J. Dally, and Kurt Keutzer. 2016.
+SqueezeNet: AlexNet-levelaccuracy with50xfewerparametersand <0.5MBmodelsize. arXiv:1602.07360 (2016).
+[10] Juyong Kim, Yookoon Park, Gunhee Kim, and Sung Ju Hwang. 2017. SplitNet: Learning to semantically split deep
+networksforparameterreductionandmodelparallelization.In InternationalConferenceonMachineLearning .1866–
+1874.
+[11] YoonKimandAlexanderM.Rush.2016.Sequence-levelknowledgedistillation. arXivpreprintarXiv:1606.07947 (2016).
+[12] Liangzhen Lai, Naveen Suda, and Vikas Chandra. 2017. Deep convolutional neural network inference with floating-
+pointweightsandfixed-point activations. arXiv:1703.03073 (2017).
+[13] HaoLi,AsimKadav,IgorDurdanovic,HananSamet,andHansPeterGraf.2016.Pruningfiltersforefficientconvnets.
+arXiv:1608.08710 (2016).
+[14] Jiachen Mao et al. 2017. Modnn: Local distributed mobile computing system for deep neural network. In 2017 DATE
+Conference .IEEE, 1396–1401.
+[15] JiachenMao,ZhongdaYang,WeiWen,ChunpengWu,LinghaoSong,KentW.Nixon,XiangChen,HaiLi,andYiran
+Chen. 2017. Mednn: A distributed mobile system with enhanced partition and deployment for large-scale dnns. In
+Proceedings of the36th International ConferenceonComputer-Aided Design . IEEE Press, 751–756.
+[16] Mark Newman,Albert-Laszlo Barabasi,andDuncan J. Watts.2011. The Structure and Dynamics of Networks .V o l .1 9 .
+PrincetonUniversity Press.
+[17] MarkE.J.Newman.2006.Modularityandcommunitystructureinnetworks. ProceedingsoftheNationalAcademyof
+Sciences103,23(2006),8577–8582.
+[18] AriadnaQuattoniandAntonioTorralba.2009.Recognizingindoorscenes.In 2009IEEEConferenceonComputerVision
+andPattern Recognition . IEEE, 413–420.
+ACM Transactions on EmbeddedComputingSystems,Vol. 18,No. 5s,Article 82.Publicationdate:October2019.
+
+==== Page 22 ====
+82:22 K.Bhardwaj et al.
+[19] MarkSandleretal.2018.Invertedresidualsandlinearbottlenecks:Mobilenetworksforclassification,detectionand
+segmentation. arXiv:1801.04381 (2018).
+[20] STMicro.2018.DatasheetforArm-BasedMicrocontrollerwithupto512KBtotalstorage(includingFLASHmemory).
+Product Page: https://bit.ly/2I5ZSMR .Datasheet. https://bit.ly/2Kz8ehD
+[21] Zhiyuan Tang, Dong Wang, and Zhiyong Zhang. 2016. Recurrent neural network training with dark knowledge
+transfer.In 2016 IEEEInternational ConferenceonAcoustics, Speech and Signal Processing (ICASSP) .IEEE, 5900–5904.
+[22] Peter Welinder, Steve Branson, Takeshi Mita, Catherine Wah, Florian Schroff, Serge Belongie, and Pietro Perona.
+2010.Caltech-UCSD birds200.(2010).
+[23] Tien-Ju Yang et al. 2016. Designing energy-efficient convolutional neural networks using energy-aware pruning.
+arXiv:1611.05128 (2016).
+[24] Sergey Zagoruyko andNikos Komodakis. 2016.Wideresidual networks. BMVC(2016).
+[25] Sergey Zagoruyko and Nikos Komodakis. 2017. Improving the performance of convolutional neural networks via
+attentiontransfer. ICLR(2017).
+[26] XiangyuZhangetal.2017.ShuffleNet:Anextremelyefficientconvolutionalneuralnetworkformobiledevices. CoRR
+abs/1707.01083(2017).
+[27] YundongZhang,NaveenSuda,LiangzhenLai,andVikasChandra.2017.Helloedge:Keywordspottingonmicrocon-
+trollers.arXiv:1711.07128 (2017).
+[28] Zhuoran Zhao, Kamyar Mirzazad Barijough, and Andreas Gerstlauer. 2018. DeepThings: Distributed adaptive deep
+learning inference on resource-constrained IoT edge clusters. IEEE Transactions on Computer-Aided Design of Inte-
+grated Circuits andSystems 37,11(2018),2348–2359.
+Received April 2019; revisedJune2019; accepted July2019
+ACM Transactions on EmbeddedComputingSystems, Vol.18,No. 5s,Article 82.Publicationdate:October2019.
+

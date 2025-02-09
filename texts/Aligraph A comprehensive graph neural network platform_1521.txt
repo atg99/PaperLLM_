@@ -1,0 +1,1515 @@
+==== Page 1 ====
+AliGraph : A Comprehensive Graph Neural Network
+Platform
+Rong Zhu, Kun Zhao, Hongxia Y ang, Wei Lin, Chang Zhou, Baole Ai, Y ong Li, Jingren Zhou
+Alibaba Group
+ABSTRACT
+An increasing number of machine learning tasks require dealing
+with large graph datasets, which capture rich and complex relation-
+ship among potentially billions of elements. Graph Neural Network
+(GNN) becomes an effective way to address the graph learning
+problem by converting the graph data into a low dimensional space
+while keeping both the structural and property information to the
+maximum extent and constructing a neural network for training
+and referencing. However, it is challenging to provide an efﬁcient
+graph storage and computation capabilities to facilitate GNN train-
+ing and enable development of new GNN algorithms. In this paper,
+we present a comprehensive graph neural network system, namely
+AliGraph , which consists of distributed graph storage, optimized
+sampling operators and runtime to efﬁciently support not only exist-
+ing popular GNNs but also a series of in-house developed ones for
+different scenarios. The system is currently deployed at Alibaba to
+support a variety of business scenarios, including product recommen-
+dation and personalized search at Alibaba’s E-Commerce platform.
+By conducting extensive experiments on a real-world dataset with
+492.90 million vertices, 6.82 billion edges and rich attributes, Ali-
+Graph performs an order of magnitude faster in terms of graph
+building (5 minutes vs hours reported from the state-of-the-art Pow-
+erGraph platform). At training, AliGraph runs 40%-50% faster with
+the novel caching strategy and demonstrates around 12 times speed
+up with the improved runtime. In addition, our in-house developed
+GNN models all showcase their statistically signiﬁcant superiorities
+in terms of both effectiveness and efﬁciency (e.g., 4.12%–17.19%
+lift by F1 scores).
+1. INTRODUCTION
+As a sophisticated model, graph has been widely used to model
+and manage data in a wide variety of real-world applications. Typi-
+cal examples include social networks [21, 30], physical systems [1,
+43], biological networks [14], knowledge graphs [19] and etc [28].
+Graph analytics, which explore underlying insights hidden in graph
+data, have drawn signiﬁcant research attention in the last decade.
+They have been witnessed to play important roles in numerous areas,
+i.e., node classiﬁcation [2], link prediction [35], graph clustering [4],
+recommendation [51], among many others.
+As conventional graph analytic tasks often suffer from high com-
+putation and space costs [9, 21], a new paradigm, called graph
+embedding (GE), paves an efﬁcient yet effective way to address
+such problems. Speciﬁcally, GE converts the graph data into a low-
+dimensional space such that the structural and content information
+in the graph can be preserved to the maximum extent. After that,
+the generated embeddings are fed as features into the downstream
+machine learning tasks. Furthermore, by incorporating with deep
+learning techniques, graph neural networks (GNN) are proposedby integrating GE with convolutional neural network (CNN) [30,
+7, 24, 22]. In CNN, shared weights and multi-layered structure are
+applied to enhance its learning power [31]. And graphs are the most
+typical locally connected structures, with shared weights to reduce
+the computational cost and the multi-layer structure being the key to
+deal with hierarchical patterns while capturing features of various
+sizes. GNNs ﬁnd such generalizations of CNNs to graphs. Thus,
+GNN not only embraces the ﬂexibility of GE but also showcases
+its superiority in terms of both effectiveness and robustness with
+generalizations of CNNs.
+Challenges. In the literature, considerable research efforts have
+been devoted in developing GE and GNN algorithms. These works
+mainly concentrate on simple graphs with no or little auxiliary in-
+formation. However, the rising of big data and complex systems
+reveal new insights in graph data. As a consensus [9, 21, 5, 17],
+the vast majority of graph data related to real-world commercial
+scenarios exhibits four properties, namely large-scale ,heteroge-
+neous ,attributed anddynamic . For example, nowadays e-commerce
+graphs often contain billions of vertices and edges with various types
+and rich attributes, and quickly evolve over time. These properties
+bring great challenges for embedding and representing graph data
+as follows:
+The core steps in GNN are particularly optimized for grid struc-
+tures, such as images, but not feasible for graphs in irregular
+Euclidean space. Thus, existing GNN methods can not scale on
+real-world graphs with exceedingly large sizes. The ﬁrst prob-
+lem is how to improve the time and space efﬁciencies of GNN
+on large-scale graphs ?
+Different types of objects characterize the data from multiple
+perspectives. They provide richer information but increase the
+difﬁculty to map the graph information into a singleton space.
+Thus, the second problem is how to elegantly integrate the het-
+erogeneous information to be an uniﬁed embedding result ?
+The attribute information can further enhance the power of the
+embedding results and make inductive GE possible [9, 21, 5, 17].
+Without considering attribute information, the algorithms can
+only consider the transductive settings and ignore the need for
+predicting unseen instances. However, the topological structure
+information and unstructured attribute information are usually
+presented in two different spaces. Thus, the third problem is how
+to unify them to deﬁne the information to be preserved ?
+As GNN suffers from low efﬁciency, recomputing the embedding
+results from scratch with respect to structural and contextual up-
+dates are expensive. Thus, the fourth problem is how to design
+efﬁcient incremental GNN methods on dynamic graphs ?
+1arXiv:1902.08730v1  [cs.DC]  23 Feb 2019
+
+==== Page 2 ====
+Contributions. To tackle with the above challenges, considerable
+research efforts have been devoted to design efﬁcient yet effective
+GNN methods. In Table 1, we categorize a series of popular GE
+and GNN models according to the aspects that they focus on, as
+well as our in-house developed models shaded in yellow. As shown,
+most existing methods concentrate on one or two properties at the
+same time. However, real-world commercial data usually faces
+more challenges. To mitigate this situation, in this paper, we present
+a comprehensive and systemic solution to GNN. We design and
+implement a platform, called AliGraph , which provides both system
+and algorithms to tackle more practical problems that exhibit the
+four summarized arising problems, to well support a variety of GNN
+methods and applications. The main contributions are summarized
+as follows.
+System. In the underlying components of AliGraph , we build a
+system to support GNN algorithms and applications. The system
+architecture is abstracted from general GNN methods, which con-
+sists of a storage layer, a sampling layer and an operator layer.
+Speciﬁcally, the storage layer applies three novel techniques, namely
+structural and attributed speciﬁc storage, graph partition and caching
+neighbors of some important vertices, to store large-scale raw data
+to fulﬁll the fast data access requirements of high-level operations
+and algorithms. The sampling layer optimizes the key sampling
+operation in GNN methods. We categorize sampling methods into
+three classes, namely TRAVERSE ,NEIGHBORHOOD and NEGATIVE
+sampling, and propose lock-free methods to perform sampling op-
+erations in distributed environment. The operator layer provides
+optimized implementation of two common applied operators in
+GNN algorithms, namely AGGREGATE and COMBINE . We apply
+a cache strategy to store some intermediate results to accelerate
+the computation process. These components are co-designed and
+co-optimized to make the whole system effective and scalable.
+Algorithms. The system provides a ﬂexible interface to design GNN
+algorithms. We show that all existing GNN methods can be easily
+implemented upon our system. Besides, we also in-house developed
+several new GNNs for practical requirement and detail six here. As
+illustrated in Table 1, our in-house developed methods are shaded in
+yellow and each of them are more ﬂexible and practical to deal with
+real-world problems.
+Evaluation. Our AliGraph platform is practically deployed in the
+Alibaba company. The experimental results verify its effectiveness
+and efﬁciency from both the system and algorithm aspects. As
+shown in Figure 1, our in-house developed GNN models on the
+AliGraph platform improves the normalized evaluation metrics by
+4:12% –17:19% . The data are collected from Alibaba’s e-commerce
+platform Taobao and we contribute this dataset to the community to
+nourish further development1.
+Normalized	Evaluation	Metric
+0.8
+0.85
+0.9
+0.95
+1
+1.05
+GATNE
+Mixture	GNN
+Hierarchical	GNN
+Evolving	GNN
+Bayesian	GNN
+	AliGraph	
+(
+Our	Method
+)
+					
+	
+	
+	
+	Other	Competitors
++4.12%~16.43%
++8.73%~15.58%
++13.99%
++5.72%~17.19%
++15.48%
+Figure 1: Comparison of normalized evaluation metric on the
+effectiveness of different methods. The red text indicates the
+lifting range of each in-house developed method w.r.t. its com-
+petitors.1https://tianchi.aliyun.com/dataset/
+dataDetail?dataId=9716.Table 1: The property of different methods.
+HeterogeneousCategory MethodNode EdgeAttributed Dynamic Large-Scale
+Classic
+Graph
+EmbeddingDeepWalk $ $ $ $ $
+Node2Vec $ $ $ $ $
+LINE $ $ $ $ $
+NetMF $ $ $ $ $
+TADW $ $ " $ $
+LANE $ $ " $ $
+ASNE $ $ " $ $
+DANE $ $ " $ $
+ANRL $ $ " $ $
+PTE $ " $ $ $
+Methpath2Vec $ " $ $ $
+HERec $ " $ $ $
+HNE $ $ $ $ $
+PMNE $ " " $ $
+MVE $ " " $ $
+MNE $ " " $ $
+Mvn2Vec $ " " $ $
+GNNStructural2Vec $ $ " $ $
+GCN $ $ " $ $
+FastGCN $ $ " $ $
+AS-GCN $ $ " $ $
+GraphSAGE $ $ " $ $
+HEP " " " $ $
+AHEP " " " $ "
+GATNE " " " $ "
+Mixture GNN " " " $ $
+Hierarchical GNN " " " $ $
+Bayesian GNN $ " " $ $
+Evolving GNN $ " " " $
+Table 2: Summarization of symbols and notations.
+Symbols or Notations Description
+G graph or attributed heterogeneous graph
+G(t)the graph at the timestamp t
+V(V(t)) vertex set (at timestamp t)
+E(E(t)) edge set (at timestamp t)
+n;m number of vertices and edges
+W(W(t)) edge weight assigning function (at timestamp t)
+TV vertex type mapping function
+TE edge type mapping function
+AV vertex attributes mapping function
+AE edge attributes mapping function
+xv;i thei-th feature vector of vertex v
+we;i thei-th feature vector of edge e
+d the embedding dimension
+Nb(v) neighbors set of vertex v
+hv the embedding vector of vertex v
+hv;c the embedding vector of vertex vw.r.t. typec
+D(t)
+i(v) number oft-hop in-neighbors of v
+D(t)
+o(v) number oft-hop out-neighbors of v
+Imp(t)(v) importance of vertex v
+2. PRELIMINARIES
+In this section, we introduce the basic concepts and formalize the
+graph embedding problem. The symbols and notations frequently
+used throughout this paper are summarized in Table 2. We start with
+the acyclic, simple graph G= (V;E;W)whereVandErepresent
+the set of vertices and edges, respectively; and W:E ! R+
+is a function assigning each edge (u;v)2E a weightW(u;v)
+indicating the strength of relationships between vertex uandv. Let
+n=jVjandm=jEjdenote the number of vertices and edges
+inG, respectively. Notice that, the graph Gcan be either directed
+or undirected. IfGis directed, (u;v)and(v;u)represent two
+different edges and may have different weights; otherwise, (u;v)
+and(v;u)are the same edge and we have W(u;v) =W(v;u). For
+each vertexu, we useNb(u)to denote the set of its (in and out)
+neighbors.
+Attributed Heterogeneous Graph. To comprehensively character-
+ize the real-world commercial data, the practical graphs often con-
+tain rich content information, e.g., multiple types of vertices, mul-
+tiple types of edges, attributes and etc. Thus, we further deﬁne
+2
+
+==== Page 3 ====
+theAttributed Heterogeneous Graph (AHG). An AHGGis a tu-
+ple(V;E;W;TV;TE;AV;AE)whereV,EandWhave the same
+meaning as the simple graphs. TV:V!FVandTE:E!FE
+represent the vertex type and edge type mapping functions, where
+FVandFEare the set of vertex types and edge types, respectively.
+To ensure the heterogeneity, we request jFVj2and/orjFEj2.
+AVandAEare two functions assigning each vertex v2V and
+each edgee2E some feature vectors representing its attributes.
+We denote the i-th feature vector of vertex vand edgeeasxv;iand
+we;i, respectively. An example of AHG is shown in Figure 2, which
+contains two types of vertices, namely users and items, and four
+types of edges connecting them.
+usersitemsclickcollectcartbuy*HQGHUPDOH$JH/RFDWLRQ%HLMLQJŏPrice: $1000Brand: Lenovo…*HQGHUPDOH$JH/RFDWLRQ%RVWRQŏ*HQGHUIHPDOH$JH/RFDWLRQ%DQJDORUHŏPrice: $800Brand:Apple…Price: $50Brand: Nike…
+Figure 2: Illustrative example of AHG with multiple types of
+edges, nodes and rich attributes.
+Dynamic Graph. Real-world graphs usually evolve with time. Given
+a time interval [1;T], adynamic graph is a series of graphsG(1);G(2);
+:::;G(T). For each 1tT,G(t)can be a simple graph or an
+AHG. For ease of notation, we add a superscript (t)to represent
+the corresponding state of the objects at timestamp t. For example,
+V(t)andE(t)represent the vertex set and edge set of graph G(t),
+respectively.
+Problem Deﬁnition. Given an input graph G, which is a simple
+graph or an AHG, and a predeﬁned number d2Non the dimension
+of embedding where d<<jVj, the embedding problem is to con-
+vert the graphGinto thed-dimensional space such that the graph
+property is preserved as much as possible. GNN is a special kind of
+graph embedding method, which learns the embedding results by
+applying neural networks on graphs. Notice that, in this paper, we
+concentrate on the vertex-level embedding. That is, the embedding
+output is ad-dimensional vector hv2Rdfor each vertex v2V. In
+our future work as discussed in Section 7, we will also consider the
+embedding on edges, subgraphs or even the whole graph.
+3. SYSTEM
+In our AliGraph platform, whose architecture is shown in Figure 3,
+we design and implement an underlying system (marked in blue
+square) to well support high-level GNN algorithms and applications.
+The details of this system will be described in this section. To start
+with, in Section 3.1, we abstract a general framework of GNNs to
+explain why our system is designed in this way. Sections 3.2 to
+3.5 introduce the design and implementation details of each key
+component in the system.
+3.1 Framework of GNN Algorithms
+In this subsection, we abstract a general framework to GNN
+algorithms. A series of classic GNNs such as Structure2Vec [42],
+GCN [30], FastGCN [7],AS-GCN [24] and GraphSAGE [20]
+can be characterized by instantiating the operators in the framework.
+The input of the GNN framework includes a graph G, the embedding
+dimensiond2N, a vertex feature xvfor each vertex v2V and the
+Figure 3: Architecture of the AliGraph system.
+Algorithm 1: GNN Framework
+Input: networkG, embedding dimension d2N, a vertex feature xvfor each
+vertexv2V and the maximum hops of neighbors kmax2N.
+Output: embedding result hvof each vertex v2V
+1h(0)
+v xv
+2fork 1tokmax do
+3 foreach vertexv2V do
+4Sv SAMPLE (Nb(v))
+5 h0
+v AGGREGATE (h(k 1)
+u;8u2S)
+6 h(k)
+v COMBINE (h(k 1)
+v;h0
+v)
+7 normalize all embedding vectors h(k)
+vfor allv2V
+8hv h(kmax )
+v for allv2V return hvas the embedding result for all
+v2V
+maximum hops of neighbors kmax2N. The output of the GNN is
+an embedding vector hv2Rdfor each vertex v2V and will be fed
+into the downstream machine learning tasks, such as classiﬁcation,
+link prediction and etc.
+The GNN framework is described in Algorithm 1. At the very
+beginning, the vertex embedding h(0)
+vof vertexvis initialized to
+be equal to the input attribute vector xv. Then, at each k, each
+vertexvaggregates the embeddings of its neighbors to update the
+embedding of itself. Speciﬁcally, we apply the SAMPLE function
+to fetch a subset Sof vertices based on the neighbor set Nb(v)of
+vertexv, aggregate the embeddings of all vertices u2Sby the
+AGGREGATE function to obtain a vector h0
+v, and combine h0
+vwith
+h(k 1)
+v to generate the embedding vector h(k)
+vby the COMBINE
+function. After processing all vertices, the embedding vectors are
+normalized. Finally, after kmax hops, h(kmax)
+v is returned as the
+embedding result hvof vertexv.
+System Architecture. Based on the GNN framework described
+above, we naturally construct the system architecture of the Ali-
+Graph platform, as shown in Figure 3. Notice that, the platform
+consists of ﬁve layers on the whole, where the three underlying
+layers form the system to support the algorithm layer and the ap-
+plication layer. Inside the system, the storage layer organizes and
+stores different kinds of raw data to fulﬁll the fast data access re-
+quirements of high-level operations and algorithms. Upon this, by
+Algorithm 1, we ﬁnd that three main operators, namely SAMPLE ,
+AGGREGATE andCOMBINE , play important roles in various GNN
+algorithms. Among them, the SAMPLE operator lays foundation for
+AGGREGATE andCOMBINE since it directly controls the scope of
+information to be processed by them. Therefore, we design the sam-
+pling layer to access the storage for fast and accurate generation of
+training samples. Above it, the operator layer speciﬁcally optimizes
+theAGGREGATE andCOMBINE functions. On top of the system,
+the GNN algorithms can be constructed in the algorithm layer to
+serve real-world tasks in the application layer.
+3
+
+==== Page 4 ====
+3.2 Storage
+In this subsection, we discuss how to store and organize the raw
+data. Notice that, the space cost to store the real-world graphs is very
+large. Common e-commerce graphs can contain tens of billions of
+nodes and hundreds of billions of edges with storage cost over 10TB
+easily. The large graph size brings great challenges for efﬁcient
+graph access, especially in a distributed environment of clusters. To
+well support the high-level operators and algorithms, we apply the
+following three strategies in the storage layer of AliGraph .
+Graph Partition. Our AliGraph platform is build on a distributed
+environment, thus the whole graph is divided and separately stored
+in different workers. The goal of graph partition is to minimize the
+number of crossing edges whose endpoints are in different workers.
+To this end, literature work has proposed a series of algorithms. In
+our system, as recommended in [13], we implement four built-in
+graph partition algorithms: 1) METIS [27]; 2) Vertex cut and edge
+cut partitions [16]; 3) 2-D partition [3]; and 4) Streaming-style par-
+tition strategy [45]. These four algorithms are suitable to different
+circumstances. In short, the METIS method is specialized in pro-
+cessing sparse graphs; the vertex and edge cut method performs
+much better on dense graphs; 2-D partition is often used when the
+number of workers is ﬁxed; and streaming-style partition method
+are often applied on graphs with frequently edge updates. Users
+can choose the best partition strategy based on their own needs,
+moreover, they can also implement other graph partition algorithms
+as plugins in the system.
+In Algorithm 2, lines 1–4 present the interface of graph parti-
+tion. For each edge e2E, the general function ASSIGN in line 4
+computes which worker ewill be in based on its endpoints.
+Separate Storage of Attributes. Notice that, for AHGs, we need
+to store both the structural and attributes of the partitioned graphs
+in each worker. The structural information of graph can be simply
+stored by an adjacency table. That is, for each vertex v, we store
+its neighbor set Nb(v). Whereas, for the attributes on both vertices
+and edges, it is inadvisable to store them together in the adjacency
+table. The reasons are two-fold: 1) Attributes often cost more
+spaces. For example, the space cost to store a vertex id is at most
+8bytes while the attributes on a vertex may range from 0:1KB to
+1KB. 2) Attributes among different vertices or edges have largely
+overlaps. For example, many vertices may have the same tag “man”
+indicating its gender. Therefore, it is more reasonable to separately
+store attributes.
+In our system, we do so by building two indices IVandIEto
+store the attributes on vertices and edges, respectively. Each entry in
+IV(IEresp.) is a unique attribute associated on vertex (edge resp.).
+As illustrated in Figure 4, in the adjacency table, for each vertex
+u, we store the index of attribute AV(u)inIV, and for each edge
+(u;v), we also store the index of attribute AE(u;v)inIE. LetND
+andNLbe the average number of neighbors and average length of
+attributes. Let NAbe the number of distinct attributes on vertices
+and edges. Obviously, our separate storage strategy decreases the
+space cost from O(nNDNL)toO(nND+NANL).
+Undoubtedly, separate storage of the attributes will increase the
+access time for retrieving the attributes. On average, each vertex
+will need to access the index IEat mostNDtimes to collects the
+attributes of all of its neighbors. To mitigate this, we add two cache
+components to reside the frequently accessed items in IVandIE,
+respectively. We adopt the least recently used (LRU) replacing
+strategy [8] in each cache.
+Caching Neighbors of Important Vertices. In each worker, we fur-
+ther propose a method to locally cache the neighbors of some impor-
+tant vertices to reduce the communication cost. The intuitive idea
+Figure 4: Index structure of graph storage.
+is that if a vertex vis frequently accessed by other vertices, we can
+storev’s out-neighbors in each partition it occurs. By doing this,
+the visiting cost of other vertices to their neighbors via vcan be
+greatly reduced. However, if the number of neighbors of vis large,
+storing multiple copies of v’s neighbors will also incur huge storage
+cost. To make a better trade-off, we deﬁne a metric to evaluate the
+importance of each vertex, which decides whether a vertex is worth
+to cache or not.
+LetD(k)
+i(v)andD(k)
+o(v)denote the number of k-hop in and
+out-neighbors of the vertex v, respectively. Certainly, D(k)
+i(v)
+andD(k)
+o(v)can measure the beneﬁt and cost of caching the out-
+neighbors of v, respectively. Thus, the k-thimportance ofv, denoted
+asImp(k)(v), is deﬁned as
+Imp(k)(v) =D(k)
+i(v)
+D(k)
+o(v): (1)
+We only cache the out-neighbors of a vertex vif its importance value
+Imp(k)(v)is sufﬁciently large. In Algorithm 2, lines 5–9 present
+the process of caching neighbors of important vertices. Let hdenote
+the maximum depth of neighbors we consider. For each vertex v, we
+cache the 1tok-hop out-neighbors of vifImp(k)(v)k, where
+kis a user-speciﬁed threshold. Notice that, setting hto a small
+number, usually 2, is enough to support a series of practical GNN
+algorithms. Practically, we ﬁnd that kis not a sensitive parameter.
+By experimental evaluation, setting kto a small value around 0:2
+can make the best trade-off between cache cost and beneﬁt.
+Interestingly, we ﬁnd that the vertices to be cached is only a very
+small part of the whole graph. As analyzed in [48], the direct in
+and out-degree of vertices in real-world graphs, i.e., D(1)
+i(v)and
+D(1)
+o(v), often obey the power-law distribution. That is, only a very
+few vertices in the graph have large in and out-degree. Based on
+this, we derive the following two theorems. The proof can be found
+in the appendix.
+THEOREM 1.If the in and out-degree distribution of the graph
+obey the power-law distribution, for any k1, the number of
+k-hop in and out-neighbors of the vertices in the graph also obey
+the power-law distribution.
+THEOREM 2.If the in and out-degree distribution of the graph
+obey the power-law distribution, the importance value of the vertices
+in the graph also obey the power-law distribution.
+Theorem 2 indicates that only a very few vertices in the graph
+have large importance values. That means, we only need to cache
+a small number of important vertices to achieve a signiﬁcant cost
+decrease of graph traversals.
+4
+
+==== Page 5 ====
+Algorithm 2: Partition and Caching
+Input: graphG, partition number p, cache depthh, threshold1;2;:::; h
+Output:psubgraphs
+1Initializepgraph servers
+2foreach edgee= (u;v)2E do
+3j=ASSIGN (u)
+4 Send edgeeto thej-th partition
+5foreach vertexv2Vdo
+6 fork 1tohdo
+7 ComputeD(k)
+i(v)andD(k)
+o(v)
+8 ifD(k)
+i(v)
+D(k)
+o(v)kthen
+9 Cache the 1tok-hop out-neighbors of von each partition where
+vexists
+3.3 Sampling
+Recall that, GNN algorithms rely on aggregating neighborhood
+information to generate embeddings of each vertex. However, the
+degree distribution of real-world graphs is often skewed [48], which
+makes the convolution operation hard to operate. To tackle this,
+existing GNNs usually adopt various sampling strategies to sample
+a subset of neighbors with aligned sizes. Due to its importance, in
+our system, we abstract a sampling layer speciﬁed to optimize the
+sampling strategies.
+Abstraction. Formally, the sampling function takes input a vertex
+subsetVTand extracts a small subset VSVTsuch thatjVSj<<
+jVTj. By taking a thorough overview of current GNN models,
+we abstract three kinds of different samplers, namely TRAVERSE ,
+NEIGHBORHOOD and N EGATIVE .
+TRAVERSE : is used to sampling a batch of vertices or edges
+from the whole partitioned subgraphs.
+NEIGHBORHOOD : will generate the context for a vertex. The
+context of this vertex may be one or multi hop neighbors,
+which are used to encode this vertex.
+NEGATIVE : is used to generate negative samples to accelerate
+the convergence of the training process.
+Implementation. In the literature, the sampling method plays an
+important role to enhance the efﬁciency and accuracy of the GNN
+algorithms [22, 21, 5, 17]. In our system, we treat all samplers as
+plugins. Each of them can be implemented independently. The three
+types of samplers can be implemented as follows.
+ForTRAVERSE samplers, they get data from the local subgraphs.
+ForNEIGHBORHOOD samplers, they can get one-hop neighbors
+from local storage as well as multi-hop neighbors from local cache.
+If the neighbors of a vertex are not cached, a call to remote graph
+server is needed. When getting the context of a batch of vertices, we
+ﬁrst partition the vertices into sub-batches, and the context of each
+sub-batch will be stitched together after being returned from the
+corresponding graph server. NEGATIVE samplers usually generate
+samples from local graph server. For some special cases, negative
+sampling from other graph server may be needed. Negative sampling
+is ﬂexible in algorithm, and we do not need to call all graph servers
+in a batch. In summary, a typical sampling stage can be achieved as
+illustrated in Figure 5.
+We can accelerate training by adopting several efﬁcient sampling
+strategies with dynamic weights. We implement the update opera-
+tion in a sampler’s backward computation, just like gradient back
+propagation [26] of an operator. So when updating needed, what
+we should do is to register a gradient function for the sampler. TheDefine a TRAVERSE sampler as s1
+Define a NEIGHBORHOOD sampler as s2
+Define a NEGATIVE sampler as s3
+...
+def sampling(s1, s2, s3, batch_size):
+vertex = s1.sample(edge_type, batch_size)
+# hop_nums contains neighbor count at each hop
+context = s2.sample(edge_type, vertex, hop_nums)
+neg = s3.sample(edge_type, vertex, neg_num)
+return vertex, context, neg
+Figure 5: Sampling stage using three kinds of samplers
+updating mode, synchronous or asynchronous, is due to the training
+algorithm.
+Till now, both reading and updating will be operated on the graph
+storage in memory, which may lead to weak performance. Accord-
+ing to the neighborhood requirement, the graph is partitioned by
+source vertices. Based on this, we split the vertices on a graph server
+into groups. Each group will be related with a request-ﬂow bucket,
+in which the operations, including reading and updating, are all
+about the vertices in this group. The bucket is a lock-free queue.
+As shown in Figure 6, we bind each bucket to a CPU core and then
+each operation in the bucket will be processed sequentially without
+locking, which will further enhance the efﬁciency of the system.
+Figure 6: Lock-free graph operations
+3.4 Operator
+Abstraction. After sampling, the output data is aligned, and we can
+process it easily. Upon samplers, we need some GNN-like operators
+to consume them. In our system, we abstract two kinds of operators,
+namely AGGREGATE andCOMBINE [30, 7, 24, 22]. Their roles are
+as follows.
+AGGREGATE : collects the information of each vertex’s neigh-
+bors to produce a uniﬁed result. For example, the AGGRE -
+GATE function in Algorithm 1 maps a series of vectors hu2
+Rdto a single vector h0
+v2Rd, whereubelongs to sampled
+neighborhood nodes of v.h0
+vis an intermediate result to
+further generate h(k)
+v. The AGGREGATE function acts as the
+convolution operation since it collects the information from
+its surrounding neighborhoods. In different GNN methods, a
+variety of aggregating methods are applied, such as element-
+wise mean, max-pooling neural network and long short-term
+memory (LSTMs) [22, 21].
+COMBINE : takes care of how to use neighbors of a vertex to
+describe the vertex. In Algorithm 1, the COMBINE function
+5
+
+==== Page 6 ====
+maps the two vectors h(k 1)
+v andh0
+v2Rdinto a single
+vector h(k)
+v2Rd. The COMBINE function can integrate the
+information of the previous hop and the neighborhoods into an
+uniﬁed space. Usually, in existing GNN methods, h(k 1)
+v and
+h0
+vare summed together to fed into a deep neural network.
+Implementation. Notice that, both samplers and GNN-like oper-
+ators not only do computations forward, but also take charge of
+parameters updating backward if needed. So that we can make the
+whole model as a network for an end-to-end training. Considering
+the characteristics of graph data, a lot of optimization can be taken
+into account to achieve better performances. Similar to SAMPLE ,
+AGGREGATE andCOMBINE are plugins of AliGraph , which can be
+implemented independently. A typical operator is made up of for-
+ward and backward computations to be easy to be involved in a deep
+network. Based on operators, users can set up a GNN algorithm
+quickly.
+To further accelerate the computation of the two operators, we
+applying strategies by materialization of intermediate vectors h(k)
+v.
+Notice that, as shown in [7], in each mini-batch during the training
+process, we can share the set of sampled neighbors for all vertices
+in the mini-batch. As well, we can also share the vectors h(k)
+v
+for all 1kkmax among vertices in the same mini-batch.
+To this end, we store kmax vectors ^h(1)
+v;^h(2)
+v;:::;^h(kmax)
+v to be
+the newest vectors of all vertices in the mini-batch. Then, in the
+AGGREGATE function, we apply vectors in ^h(1)
+v;^h(2)
+v;:::;^h(kmax)
+v
+to obtain ^h0
+v. After that, we apply ^h0
+vandh(k 1)
+v to compute ^h(k)
+v
+by the COMBINE function. Finally, the stored vector ^h(k)is updated
+by^h(k)
+v. By this strategy, the computation cost on the operators can
+be greatly reduced.
+4. METHODOLOGY
+On top of the system, we discuss the design of algorithms in
+this section. We show that existing GNNs can be easily built on
+AliGraph . Besides, we also propose a bunch of new GNN algorithms
+to tackle the four newly arisen challenges of embedding real-world
+graph data as summarized in Section 1. All of them are plugins in
+thealgorithm layer of the AliGraph platform.
+4.1 State-of-the-Art GNNs
+As our AliGraph platform is abstracted from upon the general
+GNN algorithms, existing GNNs can be easily implemented on this
+platform. Speciﬁcally, the GNNs listed in Table 1 can all be built in
+AliGraph by following the framework in Algorithm 1. Here we take
+theGraphSAGE as an example. Other GNNs can be implemented
+in a similar way. We omit them due to space limitations. Notice
+that, for GraphSAGE , it applies a simple node-wise sampling to
+extract a small subset from the neighbor set of each vertex. Obvi-
+ously, its sampling strategy can be easily implemented by using our
+SAMPLING operator. Then, we need to instantiate the AGGREGATE
+andCOMBINE functions in Algorithm 1. The GraphSAGE can
+apply the weighted element-wise mean in the AGGREGATE function
+in line 4. Besides, other more complex functions such as the max-
+pooling neural network and LSTM can also be used. In other GNN
+methods such as GCN ,FastGCN andAS-GCN , we can replace
+different strategies on S AMPLING , AGGREGATE and C OMBINE .
+4.2 In-House Developed GNNs
+Our in-house developed GNNs focus on various aspects, e.g.,
+sampling ( AHEP ), multiplex ( GATNE ), multimode ( Mixture GNN ),
+hierarchy ( Hierarchical GNN ), dynamic ( Evolving GNN ) and
+multi-sourced information ( Bayesian GNN ).AHEP Algorithm. This algorithm is designed to mitigate the heavy
+computation and storage costs of the traditional embedding propa-
+gation ( EP) algorithm [12] on heterogeneous networks, HEP [56].
+HEP follows the general framework of GNN with minor modiﬁca-
+tions adapted to AHG. Speciﬁcally, in HEP , the embeddings of all
+vertices are generated in an iterative manner. In the k-th hop, for
+each vertexvand each node-type c, all neighbors uofvin type
+cpropagate its embedding hu;ctovto reconstruct an embedding
+h0
+v;c. The embedding of vis then updated by concatenating h0
+v;c
+across all node types. Whereas, in AHEP (HEP with adaptive sam-
+pling), we sample important neighbors instead of considering the
+whole set of neighbors. During this process, we design a metric to
+evaluate the importance of each vertex by incorporating its structural
+information and features. After that, all neighbors in different types
+are separately sampled according to their corresponding probability
+distributions. We carefully design the probability distributions to
+minimize the sampling variance. In a speciﬁc task, to optimize the
+AHEP algorithm, the loss function can be generally described as
+L=LSL+LEP+
+(); (2)
+whereLSLis the loss from supervised learning in the batch, LEPis
+the embedding propagation loss with sampling in the batch, 
+()
+is the regularizer of all trainable parameters, and ; are two hyper-
+parameters. As veriﬁed by experimental results in Section 5, AHEP
+runs much faster than HEP while achieving comparable accuracies.
+GATNE Algorithm. This algorithm is designed to cope with graphs
+with heterogeneous and attribute information on both vertices and
+edges. To address the above challenges, we propose a novel ap-
+proach to capture both rich attributed information and to utilize
+multiplex topological structures from different node types, namely
+General Attributed Multiplex He Terogeneous Network Embedding,
+or abbreviated as GATNE . The overall embedding result of each
+vertex consists of three parts: the general embedding, the speciﬁc
+embedding and the attribute embedding, which correspondingly
+characterize the structural information, the heterogeneous informa-
+tion and the attribute information, respectively. For each vertex v
+and any node type c, the general embedding bvand the attribute
+embedding fvkeep the same. Let tbe an adjustable hyper-parameter
+andgv;t0where 1t0tbe meta-speciﬁc embeddings. The spe-
+ciﬁc embedding gvis obtained by concatenating all gv;t0. Then, for
+each typec, the overall embedding of hv;cw.r.t.ccan be written as
+hv;c=bv+cMT
+cgvac+cDTxv; (3)
+wherecandcare two adjustable coefﬁcients reﬂecting the im-
+portance of the speciﬁc embedding and the attribute embedding;
+the matrix ac2Rmof coefﬁcients are computed by using the
+self-attention mechanism in [36]; and McandDare two trainable
+transformation matrices. The ﬁnal embedding result hvcan then be
+obtained by concatenating all hv;c.
+The embeddings can be learned by applying the random walk
+based methods similar to [39, 18]. Speciﬁcally, given a vertex vin
+typecin a random walk and the window size p, letv p;v p+1;:::;
+v;v1;:::;vpdenote its context. We need to minimize the negative
+log-likelihood as
+ logPc 
+v p;:::;vpjv
+=X
+1jp0jp logPc(vp0jv);(4)
+wherecdenotes all the parameters w.r.t. type candPc(vp0jv)is de-
+ﬁned by the softmax function. The objective function  logPc(ujv)
+for each pair of vertices uandvcan be easily approximated by the
+negative sampling method.
+6
+
+==== Page 7 ====
+Mixture GNN .This model is a mixture GNN model to tackle with
+the heterogeneous graphs with multi-modes. In this model, we
+extend the skip-gram model on homogeneous graphs [39] to ﬁt the
+polysemous situation on heterogeneous graphs. In the traditional
+skip-gram model, we try to ﬁnd the embedding of graphs with
+parametersthrough maximizing the likelihood as
+L= log Pr(Nb(v)jv) =X
+u2Nb(v)log Pr(ujv); (5)
+whereNb(v)denotes the neighbors of vandPr(ujv)is a soft-
+max function. In our setting on heterogeneous graphs, each node
+owns multiple senses. To differentiate them, let Pbe the known
+distribution of node senses. We can rewrite the objective function as
+Lpoly; = log PrP;(Nb(v)jv) =X
+u2Nb(v)log PrP;(ujv):(6)
+At this time, it is hard to incorporate the negative sampling metod
+to directly optimize Equation (6). Alternatively, we derive a novel
+lower bound Llowof Equation (6)and try to maximize Llow. We
+ﬁnd that the terms in the lower bound Llowcan be approximated by
+the negative sampling. As a result, the training process can be easily
+implemented by slightly modifying the sampling process in existing
+work such as Deepwalk [39] and node2vec [18].
+Hierarchical GNN .Current GNN methods are inherently ﬂat and
+do not learn hierarchical representations of graphs: a limitation that
+is especially problematic to explicitly investigate such similarities
+of various types of user behaviors. This model combines the hier-
+archical structure to strengthen the expression power of GNN. Let
+H(k)2RjVjddenote the matrix of node embeddings computed
+afterksteps of the GNN and Abe the adjacency matrix of the
+graphG. In Algorithm 1, traditional GNN iteratively learns H(k)by
+combining H(k 1),Aand some trainable parameters (k). Initially,
+we have H(0)=X, where Xrepresent matrix of the node features.
+In our hierarchical GNN, we learn the embedding result in a layer-
+to-layer fashion. Speciﬁcally, let A(l)andX(l)denote the adjacency
+matrix and the node feature matrix in the l-th layer, respectively.
+The vertex embedding result matrix Z(l)in thel-th layer is learned
+by feedingA(l)andX(l)into the single-layer GNN method. After
+that, we cluster some vertices in the graph and update the adjacency
+matrixAltoAl+1. LetS(l)denote the learned assignment matrix
+in thel-th layer. Each row and column in S(l)corresponds to a
+cluster in the l-th and (l+ 1) -th layer, respectively. S(l)can be
+obtained by a softmax function applied on another pooling GNN
+uponA(l)andX(l). Taking Z(l)andS(l)in hand, we can obtain
+the new coarsened adjacency matrix A(l+1)=S(l)TA(l)S(l)and
+the new feature matrix X(l+1)=S(l)TZ(l)for the next (l+ 1) -th
+layer. As veriﬁed in Section 5, the multi-layer hierarchical GNN is
+more effective than the single-layer traditional GNNs.
+Evolving GNN .This model is proposed to embedding vertices in
+the dynamic network setting. Our goal is to learn the representations
+of vertices in a sequential of graphs G(1);G(2);:::;G(T). To capture
+the evolving nature of dynamic graphs, we divide the evolving links
+into two types: 1) the normal evolution representing the majority
+of reasonable changes of edges; and 2) burst links representing
+rare and abnormal evolving edges. Based on them, the embedding
+of all vertices in the dynamic graphs are learned in an interleave
+manner. Speciﬁcally, at timestamp t, the normal and burst links
+found on graphG(t)are integrated with the GraphSAGE model [22]
+to generate embedding results hvof each vertex vinG(t). Then,
+we apply a method to predict the normal and burst information
+on the graphG(t+1)by using Variational Autoencoder and RNNTable 3: Datasets used in system experiments. Taobao-large is
+six times large than Taobao-small .
+Dataset# user
+vertices# item
+vertices# user-item
+edges# item-item
+edges# attributes
+of user# attributes
+of item
+Taobao-small 147,970,118 9,017,903 442,068,516 224,129,155 27 32
+Taobao-large 483,214,916 9,683,310 6,587,662,098 231,085,487 27 32
+model [29]. This process is executed in iterations to output the
+embedding results of each vertex vat each timestamp t.
+Bayesian GNN .This model integrates two sources of information,
+knowledge graph embedding (e.g., symbolic) or behavior graph
+embedding (e.g., relations), through the Bayesian framework. To
+be more speciﬁc, it mimics the human understanding process in the
+cognitive science, in which each cognition is driven by adjusting
+the prior knowledge under a speciﬁc task. Speciﬁcally, given a
+knowledge graphGand an entity (vertex) vinG, its basic embedding
+hvis learned by purely considering Gitself, which characterizes
+the prior knowledge in G. Then, a task-speciﬁc embedding zvis
+generated according to hvand a correction term vrespect to the
+task. That is,
+zvf(hv+v); (7)
+where fis a non-linear function that projects hv+vaszv.
+Notice that, learning exact vandfseems infeasible since each
+entityvhas a different vand the ffunction is very complex. To
+address this problem, we apply a generation model from hvto
+zvby considering the second-order information. Speciﬁcally, for
+each entityv, we sample its correction variable vfrom a Guassian
+distributionN(0;s2
+v), wheresvis determined by the coefﬁcients of
+hv. Then, for each pair of entities v1andv2, we sample zv1 zv2
+according to another Guassian distribution
+N 
+f(hv1+v1) f(hv2+v2);diag(2
+v1+2
+v2)
+;
+whererepresenting the trainable parameters for the function f. Let
+the posterior mean of vbe^vand^be the resulting parameters, we
+ﬁnally apply hv+ ^vas the corrected embedding for the knowledge
+graph, and f^(hv+ ^v)as the corrected task-speciﬁc embedding.
+5. EXPERIMENTS
+We conducted extensive experiments to evaluate our AliGraph
+platform, including both system and algorithms.
+5.1 System Evaluation
+In this subsection, we evaluate the performance of the underlying
+system in the AliGraph platform from the perspectives of storage
+(graph building and caching neighbors), sampling andoperator . All
+experiments are carried on two datasets Taobao-small andTaobao-
+large described in Table 3, where the storage size of the latter is
+six times larger. Both of them represent the subgraphs of users and
+items extracted from the Taobao e-commerce Platform.
+Graph Building. The performance of graph building plays a central
+role in a graph computation platform. AliGraph supports various
+kinds of raw data from different ﬁle systems, partitioned or not.
+Figure 7 presents the time cost of graph building w.r.t. the number
+of workers on the two datasets. We have the following two obser-
+vations: 1) the graph building time explicitly decreases w.r.t. the
+number of workers; 2) AliGraph can build large-scale graphs in
+minutes, e.g. 5 minutes for Taobao-large . This is much more efﬁ-
+cient than most state-of-the-arts (e.g., PowerGraph [16]) that usually
+takes several hours).
+Effects of Caching Neighbors. We examine the effects of caching
+k-hop neighbors of important vertices. In our caching algorithm, we
+7
+
+==== Page 8 ====
+	
+Time	Cost	
+(
+Sec
+)
+10
+100
+1
+,
+000
+Number	of	Workers
+0
+50
+100
+150
+200
+250
+300
+350
+400
+450
+	Taobao-large
+	Taobao-smallFigure 7: Graph building time w.r.t. number of workers. The
+graph could be built in several minutes on two datasets.
+need to set threshold for Imp(v)as deﬁned in Equation (1)with the
+analysis ofD(k)
+iandD(k)
+o. In the experiments, we locally cache the
+1-hop (direct) neighbors of all vertices and vary the threshold con-
+trolling for caching the 2-hop neighbors. We gradually increase the
+threshold from 0:05to0:45to test its sensitivity and effectiveness.
+Figure 8 illustrates the percentage of vertices being cached w.r.t. the
+threshold. We observe that the percentage of cached vertices de-
+creases w.r.t. the threshold. When the threshold is smaller than 0:2,
+it decreases drastically and becomes relatively stable after that. This
+is because the importance of vertices obey the power-law distribu-
+tion as we prove in Theorem 2. To make a good trade-off between
+the cache cost and the beneﬁt, we set the threshold as 0:2based on
+Figure 9 and only need to cache around 20% of extra vertices. We
+also compare our importance-based caching strategy w.r.t. two other
+strategies, namely the random strategy which caches the neighbors
+of a fraction of vertices selected at random and the LRU replacing
+strategy [8]. Figure 9 illustrates the cost time w.r.t. the percentage
+of cached vertices. We ﬁnd that our method saves about 40 %–50%
+time w.r.t. the random strategy and about 50 %–60%time w.r.t. the
+LRU strategy, respectively. This is simply due to: 1) the randomly
+selected vertices are less likely to be accessed; and 2) the LRU
+strategy incurs additional cost since it frequently replaces cached
+vertices. Whereas, our importance-based cached vertices are more
+likely to be accessed by others.
+	
+Percentage	of	Cached	Vertices	
+(
+%
+)
+0
+10
+20
+30
+40
+50
+0
+10
+20
+30
+40
+50
+Threshold
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+	AliGraph
+Figure 8: Cache rate w.r.t. threshold. Setting the threshold near
+0:15makes the best trade-off.
+Time	Cost	
+(
+ms
+)
+0
+20
+40
+60
+80
+100
+Percentage	of	Caches	Vertices
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+	AliGraph
+	Random	Cache
+	LRU	Cache
+Figure 9: Cost time w.r.t. percentage of cached vertices. Our
+method saves much time than other cache strategies.
+Effects of Sampling. We test the effects of our optimized imple-
+mentation on sampling with the batch size of 512and cache rateTable 4: Effects of optimized Sampling . All sampling methods
+can ﬁnish in no more than 60ms.
+Setting Time (ms)Dataset#of workers Cache Rate TRAVERSE NEIGHBORHOOD NEGATIVE
+Taobao-small 25 18:46% 2.59 45.31 6.22
+Taobao-large 100 17:68% 2.62 52.53 7.52
+Table 5: Effects of optimized Operators with an order of mag-
+nitude of time speed up.
+Dataset W/O Our Implementation (ms) Our Implementation (ms) Speedup Ratio
+Taobao-small 7.33 0.57 12.9
+Taobao-large 17.21 1.26 13.7
+20%. Table 4 shows the time cost of the three types of sampling
+methods. We ﬁnd that: 1) Sampling methods are very efﬁcient
+which ﬁnish between a few milliseconds to no more than 60ms; 2)
+The sampling time grows slowly w.r.t. the graph size. Although
+the storage size of Taobao-large is six times larger compared to
+Taobao-small , the sampling time on the two datasets is quite close.
+These observations verify that our implementations of the sampling
+methods are efﬁcient and scalable.
+Effects of Operators. We further examine the effects of our imple-
+mentation on the operators AGGREGATE andCOMBINE . Table 5
+shows the time cost of the two operators and the time costs can
+speed up by an order of magnitude with our proposed implemen-
+tations. This is simply because we apply the caching strategy to
+eliminate the redundant computation of intermediate embedding
+vectors. Once again, this veriﬁes the superiority of our AliGraph
+platform.
+5.2 Algorithm Evaluations
+In this subsection, we evaluate the performance of our proposed
+GNNs compared to state-of-the-arts. We ﬁrst describe the experi-
+mental settings including the datasets, competitors and evaluation
+metrics. Then, we examine the efﬁciency and effectiveness of each
+proposed GNN.
+5.2.1 Experimental Settings
+Datasets. We employ two datasets in our experiments, including a
+public dataset from Amazon andTaobao-small . We choose Taobao-
+small due to the reason of the scalability of several competitors.
+The statistics of the datasets are summarized in Table 6. Both of
+them are AHGs. The public dataset Amazon extracted from [38,
+23] is the product metadata under the electronics category of the
+Amazon company. In this graph, each vertex represents a product
+with its attributes and each edge connects two products co-viewed
+or co-bought by the same user. It has two types of vertices, namely
+user and item, and four types of edges between users and items,
+namely click, add-to-preference, add-to-cart and buy.
+Algorithms. We implement all of our proposed algorithms in this
+paper. For comparison, we also implement some representative
+graph embedding algorithms in different categories as follows:
+C1: Homogeneous GE Methods. The compared methods include
+DeepWalk [39], LINE [47], and Node2Vec [18]. These methods
+can only be applied on plain graphs with purely structural informa-
+tion.
+C2: Attributed GE Methods. The compared method includes
+ANRL [55], which can generate embeddings capturing both struc-
+tural and attributed information.
+C3: Heterogeneous GE Methods. The compared methods include
+Methpath2Vec [10], PMNE [37], MVE [41] and MNE [54]. Meth-
+path2Vec can only process graphs with multiple types of vertices
+while the other three methods can only process graphs with mul-
+tiple types of edges. The PMNE involves three different kinds of
+8
+
+==== Page 9 ====
+Table 6: Statistics of datasets used in experiments.
+Dataset# of
+vertices# of
+edges# of
+vertex type# of
+edge type
+Amazon 10,166 148,865 1 2
+Taobao-small 156,988,021 666,197,671 2 4
+approaches to extend the Node2Vec method, which are denoted as
+PMNE-n ,PMNE-r andPMNE-c , respectively.
+C4: GNN Based Methods. The comparison methods include Struc-
+tural2Vec [42], GCN [30], Fast-GCN [7],AS-GCN [24], Graph-
+SAGE [22] and HEP [56].
+For fairness, all algorithms are implemented by applying the
+optimized operators on our system. If a method cannot process
+attributes and/or multiple types of vertices, we simply ignore these
+information in the embedding. We generate the embedding for each
+subgraph with the same type of edges and concatenate them together
+to be the ﬁnal result for homogeneous based GNN. Notice that, in
+our examination, we do not compare each of our proposed GNN
+algorithms w.r.t. all competitors. This is because each algorithm
+is designed with different focus. We will detail the competitors of
+each GNN algorithm in reporting its experimental results.
+Metrics. We evaluate both the efﬁciency and effectiveness of the
+proposed methods. The efﬁciency can be simply measured by the
+execution time of the algorithm. To measure effectiveness, follow-
+ing previous work [5, 9, 21], we apply the algorithm on the widely
+adopted link prediction task, which plays important roles in real-
+world scenarios such as recommendation. We randomly extract a
+portion of the data as the training data and reserve the remaining
+part as test data. To measure the quality of the results, four com-
+monly used metrics are applied, namely the area under ROC curve
+(ROC-AUC ), the PR curve ( PR-AUC ), theF1-score and the hit
+recall rate ( HR Rate ). Notably, each metric is averaged among
+different types of edges.
+Parameters. We setd, the dimension of embedding vectors, to be
+200for all algorithms.
+5.2.2 Experimental Results
+We report the detailed experimental results of each proposed
+GNN algorithm here.
+AHEP Algorithm. The goal of the AHEP algorithm is to fast obtain
+the embedding result while does not sacriﬁce too much accuracy. In
+Table 7, we show the comparison results on result quality of AHEP
+w.r.t. its competitors on the Taobao-small dataset. In Figure 10, we
+illustrate time and space cost of different algorithms. Obviously,
+we have the following observations: 1) On the large Taobao-small
+dataset, HEP andAHEP are the only two algorithms that can pro-
+duce results in reasonable time and space limits. However, AHEP is
+about 2–3faster than HEP and uses much less memory than HEP .
+2) In terms of the result quality, the ROC-AUC andF1-score of
+AHEP is comparable to HEP . These verify that AHEP can produce
+similar results of HEP by using much less time and space.
+GATNE Algorithm. The goal of GATNE is designed to process
+graphs with heterogeneous and attributed information on both ver-
+tices and edges. We show the comparison results of the GATNE
+algorithm w.r.t. its competitors in Table 8. Obviously we ﬁnd that
+GATNE outperforms all existing methods in terms of all metrics.
+For example, on the Taobao-small dataset, GATNE improves the
+ROC-AUC ,PR-AUC andF1-score by4:6%,1:84% and5:08%,
+respectively. This is simply due to that GATNE simultaneously
+captures both the heterogenous information of vertices and edges
+and the attributes information. Meanwhile, we ﬁnd that training
+Figure 10: Average memory cost and running time of per batch.
+indicates the algorithm can not terminate in reasonable time.
+AHEP is 2–3 faster than HEP and uses much less memory on
+Taobao-small .
+Table 7: Effectiveness comparison of AHEP w.r.t. its competi-
+tors. AHEP is close to HEP onTaobao-small .
+Method ROC-AUC( %)F1-score( %)
+Structural2Vec N.A. N.A.
+GCN N.A. N.A.
+FastGCN N.A. N.A.
+GraphSAGE N.A. N.A.
+AS-GCN O.O.M O.O.M
+HEP 77.77 57.93
+AHEP 75.51 50.97
+“N.A.” indicates the algorithm can not terminate in reasonable time.
+“O.O.M.” indicates that the algorithm terminates due to out of memory.
+time of GATNE decreases almost linearly w.r.t. the number of work-
+ers. The GATNE model converges in less than 2 hours with 150
+distributed workers. The veriﬁes the high efﬁciency and scalability
+of the GATNE method.
+Mixture GNN .We compare our Mixture GNN method w.r.t. DAE
+[49] and-VAE [33] methods. The hit recall rate of applying the
+embedding results into the recommendation task is shown in Table 9.
+Notice that, by applying our model, the hit recall rates have been
+improved by around 2%. Similarly, this improvement also makes
+signiﬁcant contributions in a large network.
+Hierarchical GNN .We compare our Hierarchical GNN method
+w.r.t. GraphSAGE . The results is shown in Table 10. The F1-score
+is signiﬁcantly improved by around 7:5%. This indicates that our
+Hierarchical GNN can generate more promising embedding results.
+Evolving GNN .We compare our Evolving GNN method w.r.t.
+other methods on the multi-class link prediction task. The com-
+petitors include the representative algorithms DeepWalk ,DANE ,
+DNE ,TNE andGraphSAGE . These competitor algorithms can not
+handle dynamic graphs, thus we run the algorithm on each snapshot
+of the dynamic graphs and report the average performance over all
+timestamps. The comparison results on the Taobao-small dataset are
+shown in Table 11. We easily ﬁnd that, Evolving GNN outperforms
+all other methods in terms of all metrics. For example, with burst
+change, Evolving GNN improves the micro and macro F1-score
+by4:2%and3:6%. This is simply because our proposed method
+can better capture the dynamic changes of real-world networks, thus
+can produce more promising results.
+Bayesian GNN .The goal of this model is to combine Bayesian
+method with the traditional GNN model. We use GraphSAGE as
+the baseline and compare the results with and without incorporating
+the proposed Bayesian model. We present the hit recall rate of the
+recommendation result in Table 12. Notice that, we considerthe
+granularity of both item brands and categories. Obviously, when
+applying our Bayesian model, the hit recall rates have been increased
+by1%to3%respectively. Notice that, this improvement can bring
+signiﬁcant beneﬁts on our network containing 9 million items.
+6. RELATED WORK
+9
+
+==== Page 10 ====
+Table 8: Effectiveness comparison of GATNE w.r.t. its competitors. GATNE outperforms all competitors in terms of all metrics on
+both Amazon andTaobao-small .GATNE lifts theF1-score by16:43% on the Amazon dataset.
+Amazon Taobao-smallMethodROC-AUC( %)PR-AUC( %)F1-score( %)ROC-AUC( %)PR-AUC( %)F1-score( %)
+DeepWalk 94.20 94.03 87.38 65.58 78.13 70.14
+Node2Vec 94.47 94.30 87.88 N.A. N.A. N.A.
+LINE 81.45 74.97 76.35 N.A. N.A. N.A.
+ANRL 95.41 94.19 89.60 N.A. N.A. N.A.
+Metapath2Vec 94.15 94.01 87.48 N.A. N.A. N.A.
+PMNE-n 95.59 95.48 89.37 N.A. N.A. N.A.
+PMNE-r 88.38 88.56 79.67 N.A. N.A. N.A.
+PMNE-c 93.55 93.46 86.42 N.A. N.A. N.A.
+MVE 92.98 93.05 87.80 66.32 80.12 72.14
+MNE 91.62 92.46 84.44 79.60 93.01 84.86
+GATNE 96.25 94.77 91.36 84.20 95.04 89.94
+Table 9: Effectiveness comparison of Mixture GNN w.r.t. its
+competitors. Mixture GNN improves the hit recall rate by
+around 2%onTaobao-small .
+Method HR Rate @20 HR Rate @50
+DAE 0.12622 0.21619
+-VAE 0.11767 0.19997
+Mixture GNN 0.14317 0.23680
+Table 10: Effectiveness comparison of Hierarchical GNN
+w.r.t. its competitors. Hierarchical GNN improves the hit re-
+call rate by 7:5%onTaobao-small .
+Method ROC-AUC (%) PR-AUC (%)F1-score (%)
+GraphSAGE 82.89 44.45 45.76
+Hierarchical GNN 87.34 54.87 53.20
+In this section, we brieﬂy review the state-of-the-arts on GE
+and GNN methods. Based on the four challenges summarized in
+Section 1, we categorize existing methods as follows.
+Homogeneous. DeepWalk [39] ﬁrst generates a corpus on graphs
+by random walk and then trains a skip-gram model on the cor-
+pus. LINE [47] learns node presentations by preserving both ﬁrst-
+order and second-order proximities. NetMF [40] is a uniﬁed matrix
+factorization framework for theoretically understanding and im-
+proving DeepWalk and LINE. Node2Vec [18] adds two parameters
+to control the random walk process while SDNE [50] proposes a
+structure-preserving embedding method. GCN [30] incorporates
+neighbors’ feature representations using convolutional operations.
+GraphSAGE [22] provides an inductive approach to combine struc-
+tural information with node features.
+Heterogeneous. For graph with multiple types of vertices and/or
+edges, PMNE [37] proposes three methods to project a multiplex
+network into a continuous vector space. MVE [41] embeds net-
+works with multiple views in a single collaborated embedding using
+the attention mechanism. MNE [54] uses one common embedding
+and several additional embeddings of each edge-type for each node,
+which are jointly learned by a uniﬁed network embedding model.
+Mvn2Vec [52] explores the embedding results by simultaneously
+modeling preservation and collaboration. HNE [6] jointly considers
+the contents and topological structures to be uniﬁed vector rep-
+resentations. PTE [46] constructs large-scale heterogeneous text
+network from labeled information, which is then embedded into a
+low-dimensional space. Metapath2Vec [10] and HERec [44] formal-
+ize meta-path based random-walks to construct the heterogeneous
+neighborhood of a node and then leverage skip-gram models to
+perform node embeddings.
+Attributed. Attributed network embedding aims to seek for low-
+dimensional vector representations to preserve both topological
+and attribute information. TADW [53] incorporates text features
+of vertices into network representation learning by matrix factor-
+ization. LANE [25] smoothly incorporates label information intothe attributed network embedding while preserving their correla-
+tions. AANE [24] enables joint learning process to be done in a
+distributed manner for accelerated attributed network embedding.
+SNE [34] proposes a generic framework for embedding social net-
+works by capturing both the structural proximity and attribute prox-
+imity. DANE [15] can capture the high nonlinearity and preserve
+various proximities in both topological structure and node attributes.
+ANRL [55] uses a neighbor enhancement autoencoder to model the
+node attribute information and a skip-gram model to capture the
+network structure.
+Dynamic. Actually, some static methods [39, 47] can also handle
+dynamic network by updating the new vertices based on static em-
+bedding. Considering the new vertices’ inﬂuence on the original
+networks, [11] extends the skip-gram methods to update the original
+vertices’ embedding. [57] focuses on capturing the triadic structure
+properties for learning network embedding. Considering both the
+network structure and node attributes, [32] focuses on updating the
+top eigenvectors and eigenvalues for the streaming network.
+7. CONCLUSIONS AND FUTURE WORK
+We summarize four challenges from the current practical graph
+data problems, namely large-scale ,heterogeneous ,attributed and
+dynamic . Based on these challenges, we design and implement a
+platform, AliGraph , which provides both system and algorithms to
+tackle more practical problems. In the future, we will focus on but
+not limited to the following directions: 1) GNN for edge-level and
+subgraph-level embeddings; 2) More execution optimizations, such
+as co-location of computation variables in GNN with graph data
+to reduce the cross network trafﬁc, introduction of new gradient
+optimization to leverage the trait of GNN to speed up the distributed
+training without accuracy loss, and better assignment of the workers
+in multi-GPU architectures; 3) Early-stop mechanism, which can
+help to terminate training tasks earlier when no promising results
+can generate; 4) Auto-ML, which can help to select the optimal
+method from a variety of GNNs.
+8. REFERENCES
+[1] P. Battaglia, R. Pascanu, M. Lai, and D. J. Rezende.
+Interaction networks for learning about objects, relations and
+physics. In NIPS , pages 4502—-4510, 2016.
+[2] S. Bhagat, G. Cormode, and S. Muthukrishnan. Node
+classiﬁcation in social networks. Computer Science ,
+16(3):115–148, 2011.
+[3] E. G. Boman, K. D. Devine, and S. Rajamanickam. Scalable
+matrix computations on large scale-free graphs using 2d graph
+partitioning. 2013.
+[4] U. Brandes, M. Gaertler, and D. Wagner. Experiments on
+graph clustering algorithms. LNCS , 2832:568–579, 2003.
+10
+
+==== Page 11 ====
+Table 11: Effectiveness comparison of Evolving GNN w.r.t. its competitors. Evolving GNN improves the F1-score by about 4%
+onTaobao-small .
+Normal Evolution burst ChangeMethodMicroF1-score( %) MacroF1-score( %) MicroF1-score( %) MacroF1-score( %)
+DeepWalk N.A. N.A. N.A. N.A.
+DANE N.A. N.A. N.A. N.A.
+TNE 79.9 71.9 69.1 67.2
+GraphSAGE 71.4 70.4 60.7 60.5
+Evolving GNN 81.4 77.7 73.3 70.8
+Table 12: Effectiveness comparison of Bayesian GNN w.r.t. its competitors. Bayasian GNN improves the hit recall rate by 1%–3%
+onTaobao-small .
+Click BuyGranularity HR RateGraphSAGE GraphSAGE + Bayesian GraphSAGE GraphSAGE + Bayesian
+10 15.97 16.14 24.87 25.10
+Brand 30 16.65 17.12 25.70 26.57
+50 17.26 17.90 26.39 27.33
+10 27.46 27.49 27.85 27.91
+Category 30 28.43 29.99 28.50 29.45
+50 29.58 32.88 26.26 31.47
+[5] H. Cai, V . W. Zheng, C. C. Chang, H. Cai, V . W. Zheng, and
+C. C. Chang. A comprehensive survey of graph embedding:
+Problems, techniques and applications. TKDE ,
+30(9):1616–1637, 2017.
+[6]S. Chang, W. Han, J. Tang, G.-J. Qi, C. C. Aggarwal, and T. S.
+Huang. Heterogeneous network embedding via deep
+architectures. In KDD , pages 119–128, 2015.
+[7]J. Chen, T. Ma, and C. Xiao. Fastgcn: fast learning with graph
+convolutional networks via importance sampling.
+arXiv:1801.10247 , 2018.
+[8] M. Chrobak and J. Noga. Lru is better than ﬁfo. In Acm-siam
+Symposium on Discrete Algorithms , 1998.
+[9] P. Cui, X. Wang, J. Pei, and W. Zhu. A survey on network
+embedding. TKDE , 2018.
+[10] Y . Dong, N. V . Chawla, and A. Swami. metapath2vec:
+Scalable representation learning for heterogeneous networks.
+InKDD , pages 135–144, 2017.
+[11] L. Du, Y . Wang, G. Song, Z. Lu, and J. Wang. Dynamic
+network embedding: An extended approach for skip-gram
+based network embedding. In IJCAI , pages 2086–2092, 2018.
+[12] A. G. Duran and M. Niepert. Learning graph representations
+with embedding propagation. In Advances in Neural
+Information Processing Systems , pages 5119–5130, 2017.
+[13] W. Fan, J. Xu, Y . Wu, W. Yu, J. Jiang, Z. Zheng, B. Zhang,
+Y . Cao, and C. Tian. Parallelizing sequential graph
+computations. In SIGMOD , pages 495–510, 2017.
+[14] A. Fout, J. Byrd, B. Shariat, and A. Ben-Hur. Protein interface
+prediction using graph convolutional networks. In NIPS ,
+pages 6530—-6539, 2017.
+[15] H. Gao and H. Huang. Deep attributed network embedding. In
+IJCAI , pages 3364–3370, 2018.
+[16] J. E. Gonzalez, Y . Low, H. Gu, D. Bickson, and C. Guestrin.
+Powergraph: Distributed graph-parallel computation on
+natural graphs. In OSDI , 2012.
+[17] P. Goyal and E. Ferrara. Graph embedding techniques,
+applications, and performance: A survey. Knowledge-Based
+Systems , 2018.
+[18] A. Grover and J. Leskovec. node2vec: Scalable feature
+learning for networks. In KDD , pages 855–864, 2016.
+[19] T. Hamaguchi, H. Oiwa, M. Shimbo, and Y . Matsumoto.
+Knowledge transfer for out-of-knowledge-base entities : A
+graph neural network approach. In IJCAI , pages 1802—-1808,
+2017.[20] W. Hamilton, Z. Ying, and J. Leskovec. Inductive
+representation learning on large graphs. In Advances in Neural
+Information Processing Systems , pages 1024–1034, 2017.
+[21] W. L. Hamilton, R. Ying, and J. Leskovec. Representation
+learning on graphs: Methods and applications. 2017.
+[22] W. L. Hamilton, Z. Ying, and J. Leskovec. Inductive
+representation learning on large graphs. In NIPS , pages
+1025–1035, 2017.
+[23] R. He and J. McAuley. Ups and downs: Modeling the visual
+evolution of fashion trends with one-class collaborative
+ﬁltering. In WWW , pages 507–517. International World Wide
+Web Conferences Steering Committee, 2016.
+[24] X. Huang, J. Li, and X. Hu. Accelerated attributed network
+embedding. In SDM , pages 633–641. SIAM, 2017.
+[25] X. Huang, J. Li, and X. Hu. Label informed attributed
+network embedding. In WSDM , pages 731–739, 2017.
+[26] D. R. Hush and J. M. Salas. Improving the learning rate of
+back-propagation with the gradient reuse algorithm. In IEEE
+International Conference on Neural Networks , 1988.
+[27] G. Karypis and V . Kumar. Metis–unstructured graph
+partitioning and sparse matrix ordering system. Technical
+Report .
+[28] E. Khalil, H. Dai, Y . Zhang, B. Dilkina, and L. Song.
+Learning combinatorial optimization algorithms over graphs.
+InAdvances in Neural Information Processing Systems , pages
+6348–6358. 2017.
+[29] D. P. Kingma and M. Welling. Auto-encoding variational
+bayes. arXiv:1312.6114 , 2013.
+[30] T. N. Kipf and M. Welling. Semi-supervised classiﬁcation
+with graph convolutional networks. In ICLR , 2017.
+[31] Y . LeCun, Y . Bengio, and G. Hinton. Deep learning. In
+Nature , pages 521–436. 2015.
+[32] J. Li, H. Dani, X. Hu, J. Tang, Y . Chang, and H. Liu.
+Attributed network embedding for learning in a dynamic
+environment. In CIKM , pages 387–396. ACM, 2017.
+[33] D. Liang, R. G. Krishnan, M. D. Hoffman, and T. Jebara.
+Variational autoencoders for collaborative ﬁltering. 2018.
+[34] L. Liao, X. He, H. Zhang, and T.-S. Chua. Attributed social
+network embedding. TKDE , 30(12):2257–2270, 2018.
+[35] D. Liben-Nowell and J. Kleinberg. The link prediction
+problem for social networks. 2003.
+[36] Z. Lin, M. Feng, C. N. d. Santos, M. Yu, B. Xiang, B. Zhou,
+and Y . Bengio. A structured self-attentive sentence embedding.
+11
+
+==== Page 12 ====
+arXiv:1703.03130 , 2017.
+[37] W. Liu, P.-Y . Chen, S. Yeung, T. Suzumura, and L. Chen.
+Principled multilayer network embedding. In ICDM , pages
+134–141. IEEE, 2017.
+[38] J. McAuley, C. Targett, Q. Shi, and A. Van Den Hengel.
+Image-based recommendations on styles and substitutes. In
+SIGIR , pages 43–52. ACM, 2015.
+[39] B. Perozzi, R. Al-Rfou, and S. Skiena. Deepwalk: Online
+learning of social representations. In KDD , pages 701–710.
+ACM, 2014.
+[40] J. Qiu, Y . Dong, H. Ma, J. Li, K. Wang, and J. Tang. Network
+embedding as matrix factorization: Unifying deepwalk, line,
+pte, and node2vec. In WSDM , pages 459–467, 2018.
+[41] M. Qu, J. Tang, J. Shang, X. Ren, M. Zhang, and J. Han. An
+attention-based collaboration framework for multi-view
+network representation learning. In CIKM , pages 1767–1776.
+ACM, 2017.
+[42] L. F. R. Ribeiro, P. H. P. Saverese, and D. R. Figueiredo.
+struc2vec : Learning node representations from structural
+identity. 2017.
+[43] A. Sanchez-Gonzalez, N. Heess, J. T. Springenberg, J. Merel,
+M. Riedmiller, R. Hadsell, and P. Battaglia. Graph networks
+as learnable physics engines for inference and control. In
+arXiv preprint: 1806.01242 , 2018.
+[44] C. Shi, B. Hu, X. Zhao, and P. Yu. Heterogeneous information
+network embedding for recommendation. TKDE , 2018.
+[45] I. Stanton and G. Kliot. Streaming graph partitioning for large
+distributed graphs. In KDD , 2013.
+[46] J. Tang, M. Qu, and Q. Mei. Pte: Predictive text embedding
+through large-scale heterogeneous text networks. In KDD ,
+pages 1165–1174. ACM, 2015.
+[47] J. Tang, M. Qu, M. Wang, M. Zhang, J. Yan, and Q. Mei.
+Line: Large-scale information network embedding. In WWW ,
+pages 1067–1077, 2015.
+[48] S. Tanimoto. Power laws of the in-degree and out-degree
+distributions of complex networks. Physics , 2009.
+[49] P. Vincent, H. Larochelle, Y . Bengio, and P. A. Manzagol.
+Extracting and composing robust features with denoising
+autoencoders. In ICML , 2008.
+[50] D. Wang, P. Cui, and W. Zhu. Structural deep network
+embedding. In KDD , pages 1225–1234, 2016.
+[51] Z. Wang, Y . Tan, and Z. Ming. Graph-based recommendation
+on social networks. In APWeb , 2010.
+[52] W. Xiong, M. Yu, S. Chang, X. Guo, and W. Y . Wang.
+One-shot relational learning for knowledge graphs. In
+EMNLP , pages 1980–1990, 2018.
+[53] C. Yang, Z. Liu, D. Zhao, M. Sun, and E. Y . Chang. Network
+representation learning with rich text information. In IJCAI ,
+2015.
+[54] H. Zhang, L. Qiu, L. Yi, and Y . Song. Scalable multiplex
+network embedding. In IJCAI , pages 3082–3088, 2018.
+[55] Z. Zhang, H. Yang, J. Bu, S. Zhou, P. Yu, J. Zhang, M. Ester,
+and C. Wang. Anrl: Attributed network representation
+learning via deep neural networks. In IJCAI , pages
+3155–3161, 2018.
+[56] V . W. ZHENG, M. SHA, Y . LI, H. YANG, Z. ZHANG, and
+K.-L. TAN. Heterogeneous embedding propagation for
+large-scale e-commerce user alignment. 2018.
+[57] L. Zhou, Y . Yang, X. Ren, F. Wu, and Y . Zhuang. Dynamic
+network embedding by modeling triadic closure process.
+2018.Appendix
+Proof of Theorem 1 LetD(k)
+iandD(k)
+obe two random variables
+representing the number of k-hop in and out-neighbors of a ran-
+domly chosen vertex from the graph, respectively. We derive the
+probability distribution of D(k)
+iandD(k)
+ofor eachk1by induc-
+tion.
+1. Following previous work [48], when k= 1, the in-degree D(1)
+i
+and out-degree D(t)
+oboth obey the power-law distribution. Specif-
+ically, let(1)
+oand(1)
+idenote the exponent, we have Pr(D(1)
+i=
+q)/q (1)
+iandPr(D(1)
+o=q)/q (1)
+o.
+2. Then, we consider the probability distribution of D(k)
+iand
+D(k)
+owherek2. Assume that D(k 1)
+i andD(k 1)
+o obey the
+power-law distribution with exponent (k 1)
+i and(k 1)
+o , respec-
+tively. Letube a randomly chosen vertex from the graph. If we
+randomly chose a (k 1)-hop in-neighbor sofuand a one-hop
+out-neighbor vofu,vis obviously a k-hop out-neighbor of s. Since
+sis chosen randomly, we have
+Pr(D(k)
+o=q) =nX
+j=1Pr(D(1)
+o=j)Pr(D(k)
+i=q
+j)
+/nX
+j=1j (1)
+o(q
+j) (k 1)
+i/q (k 1)
+inX
+j=1j(k 1)
+i (1)
+o:
+Sincen,(t 1)
+i and(1)
+oare all ﬁxed, the last term is a constant
+value. As a result, we have Pr(D(k)
+o=q)/q (k)
+o, where(k)
+ois
+a term determined by (k 1)
+i and the last term. In similar, we also
+havePr(D(k)
+i=q)/q (k)
+i. This indicates both D(k)
+oandD(k)
+i
+obey the power-law distribution.
+By summarizing 1 and 2, we ﬁnd that both D(k)
+iandD(k)
+oobey
+the power-law distribution for each k1.
+Proof of Theorem 2 LetImp(k)=D(k)
+i=D(k)
+obe a random
+variable denoting the importance of a randomly chosen vertex. We
+have
+Pr(Imp(k)=`) =nX
+j=1Pr(D(k)
+o=j) Pr(D(k)
+i=`j)
+=nX
+j=1j (k)
+o(`j) (k)
+i=` (k)
+inX
+j=1j ((k)
+i+(k)
+o):
+Since the last term is also a constant value, we ﬁnd that Imp(k)also
+obeys the power-law distribution. This analysis result indicates that
+the importance Imp(k)of most vertices is very small. Thus, we
+only need to cache a small number of vertices with large importance
+values. Intuitively, for any vertex whose importance is large, it has a
+large number of in-neighbors and a small number of out-neighbors.
+12
+

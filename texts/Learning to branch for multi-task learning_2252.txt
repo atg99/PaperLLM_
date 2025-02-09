@@ -1,0 +1,863 @@
+==== Page 1 ====
+Learning to Branch for Multi-Task Learning
+Pengsheng Guo1Chen-Yu Lee1Daniel Ulbricht1
+Abstract
+Training multiple tasks jointly in one deep net-
+work yields reduced latency during inference and
+better performance over the single-task counter-
+part by sharing certain layers of a network. How-
+ever, over-sharing a network could erroneously en-
+force over-generalization, causing negative knowl-
+edge transfer across tasks. Prior works rely on
+human intuition or pre-computed task relatedness
+scores for ad hoc branching structures. They pro-
+vide sub-optimal end results and often require
+huge efforts for the trial-and-error process.
+In this work, we present an automated multi-task
+learning algorithm that learns where to share or
+branch within a network, designing an effective
+network topology that is directly optimized for
+multiple objectives across tasks. Speciﬁcally, we
+propose a novel tree-structured design space that
+casts a tree branching operation as a gumbel-
+softmax sampling procedure. This enables dif-
+ferentiable network splitting that is end-to-end
+trainable. We validate the proposed method on
+controlled synthetic data, CelebA, and Taskon-
+omy.
+1. Introduction
+Multi-task learning ( Caruana ,1997 ) has experienced rapid
+growth in recent years. Because of the breakthroughs in
+the performance of individually trained single-task neural
+networks, researchers have shifted their attention towards
+training networks that are able to solve multiple tasks at the
+same time. One clear beneﬁt of such a system is reduced
+latency where one network can produce multiple predictions
+in one forward propagation. This is particularly critical for
+portable devices that have limited computational budget.
+Moreover, when training with various supervisory signals,
+it induces inductive bias ( Mitchell ,1980 ) where a network
+1Apple. Correspondence to: Pengsheng Guo <peng-
+sheng guo@apple.com >.
+Proceedings of the 37thInternational Conference on Machine
+Learning , Online, PMLR 119, 2020. Copyright 2020 by the au-
+thor(s).prefers some hypotheses over other hypotheses. From the
+point of view of any single task, the other tasks serve as
+regularizers in a sense that the network is asked to form
+representations that explain well for more than needed for
+solving one task, potentially improving generalization.
+Contrary to the conventional single-task paradigm, training
+multiple tasks simultaneously in one network often encoun-
+ters many challenges: some tasks are easier to train than
+others, some tasks have noisier ground truth labels than
+others, and some tasks are equipped with loss functions
+that have drastically different scales than others such as
+L1 vs cross-entropy. Most of the work done in this ﬁeld
+has focused on establishing some sort of parameter sharing
+mechanism by either sharing the whole network across all
+tasks or by assigning each task an individual set of parame-
+ters with crosstalk connections between tasks ( Ruder ,2017).
+However, it is prohibitively expensive to design an optimal
+parameter sharing schema based on human intuition. An-
+other line of work has tried to balance the importance of
+different tasks by manipulating relative weighting between
+each task’s loss ( Kendall et al. ,2018 ;Guo et al. ,2018 ;
+Chen et al. ,2018 ). But weight balancing alone also limits
+the potential performance gain under a ﬁxed pre-deﬁned
+network architecture.
+There are many ways a network can invest its capacity for
+different tasks, and the design choice has a fundamental
+impact on its learning dynamics and ﬁnal performance. Note
+that an exhaustive search of an optimal parameter sharing
+schema has combinatorial complexity as the number of tasks
+grows. Prior literature has presented evidence that multi-
+task learning in back-propagation networks discovers task
+relatedness without the need of supervisory signals, and
+has presented results with k-nearest neighbor and kernel
+regression models ( Caruana ,1997). In this work we ask the
+following question: is it possible to automatically search
+a network topology based on the back-propagation signals
+computed from the multi-task objective?
+Typical neural networks learn the hierarchical nature of the
+feature representations. Speciﬁcally for computer vision
+applications, convolutional neural networks tend to learn
+more general feature representations in earlier layers such
+as edges, corners, and conjunctions ( Zeiler & Fergus ,2014).
+We therefore expect a network at least shares the ﬁrst few
+
+==== Page 2 ====
+Learning to Branch for Multi-Task Learning
+layers across tasks. A key challenge towards answering
+the question is then deciding what layers should be shared
+across tasks and what layers should be untied. Over-sharing
+a network could erroneously enforce over-generalization,
+causing negative knowledge transfer across tasks. In this
+work, we propose a tree-structured network design space
+that can automatically learn how to branch a network such
+that the overall multi-task loss is minimized. The branching
+operation is executed by sampling from a categorical latent
+variable formed by gumbel-softmax distribution ( Jang et al. ,
+2017 ). This data-driven network structure searching ap-
+proach does not require prior knowledge of the relationship
+between tasks nor human intuition on what layers capture
+task-speciﬁc features and should be split.
+2. Related Work
+Thanks to the genericness and the transferability of a number
+of off-the-shelf neural networks ( Simonyan & Zisserman ,
+2015;Szegedy et al. ,2015;He et al. ,2016) pre-trained on a
+large collection of samples, most of the prior works in the
+domain of multi-task learning are based on these popular
+backbone architectures and can be commonly categorized
+into either soft parameter sharing or hard parameter sharing
+(Ruder ,2017 ).
+In the soft sharing setting, each task has its own set of
+backbone parameters with some sort of regularization mech-
+anisms to enforce the distance between weights of the model
+to be close. Neural Network Parser ( Duong et al. ,2015 )
+uses two backbones, one for source language and one for
+target language, to perform multi-task learning. An extra
+set of weights are used for cross-lingual knowledge sharing
+by connecting activations between the source and target lan-
+guage model. Cross-Stitch Networks ( Misra et al. ,2016 )
+utilize an extra set of shared units to combine the activa-
+tions between backbones from multiple tasks and learn the
+strength of information ﬂow between tasks from data. How-
+ever, the total number of parameters in a soft parameter
+sharing system grows linearly with the number of tasks in
+general. Such approaches may encounter over-ﬁtting due to
+lack of sufﬁcient training samples to support the parameter
+space of multiple full-size backbones across all modalities
+or require higher computational cost during inference.
+In the hard sharing setting, all tasks share the same set of
+backbone parameters, or at least share part of the back-
+bone with branches toward the outputs. Deep Relationship
+Networks ( Long & Wang ,2015 ) share the ﬁrst ﬁve convo-
+lutional layers of AlexNet ( Krizhevsky et al. ,2012) among
+the tasks and use task-speciﬁc fully-connected layers tai-
+lored to ﬁt different tasks. Fully-Adaptive Feature Sharing
+method ( Lu et al. ,2017 ) starts with a thin network and ex-
+pands it layer-by-layer based on the difﬁculty of the training
+set in a greedy fashion. UberNet ( Kokkinos ,2017 ) jointlysolves seven labelling tasks by sharing an image pyramid
+architecture with tied weights. Meta Multi-Task Learning
+(Ruder et al. ,2019 ) uses a shared input layer and two task-
+speciﬁc output layers. Nonetheless, it is still unclear how
+to effectively decide what weights to share given a network
+with a set of tasks in interest.
+Instead of choosing between soft sharing or hard sharing
+approach, a new effort in tackling the multi-task learn-
+ing problem is to consider the dynamics between different
+losses across tasks. Uncertainty-based weighting approach
+(Kendall et al. ,2018 ) weighs multiple loss functions by
+utilizing the homoscedastic uncertainty of each task. Grad-
+Norm ( Chen et al. ,2018 ) manipulates the magnitude of
+gradients from different loss functions to balance the learn-
+ing speed between tasks. Task Prioritization ( Guo et al. ,
+2018 ) emphasizes more difﬁcult tasks by adjusting the mix-
+ing weight of each task’s loss objective. Multi-Objective
+Optimization approach ( Sener & Koltun ,2018 ) casts the
+multi-task learning problem as ﬁnding a set of solutions
+that lies on the Pareto optimal boundary. These methods
+can automatically tune the weightings between tasks and
+are especially effective when dealing with loss functions
+with different scales such as L1, L2, cross-entropy, etc. Yet,
+they use pre-deﬁned network structures that might lead to
+sub-optimal solutions when the network topologies remain
+static.
+The general focus in Neural Architecture Search (NAS) lit-
+erature ( Zoph & Le ,2017 ;Zoph et al. ,2018 ;Liu et al. ,
+2018;Wong et al. ,2018;Liu et al. ,2019a ;Shaw et al. ,2019;
+Pasunuru & Bansal ,2019) is on ﬁnding a repetitive cell or a
+global structure that is optimized over a single classiﬁcation
+loss with a few exceptions that include memory or power
+constraint. To better utilize the parameters of a network for
+multiple tasks, recently some works present methods to dy-
+namically distribute the network capacity based on the com-
+plexities of the tasks and relatedness between the tasks. Soft
+Layer Ordering ( Meyerson & Miikkulainen ,2018 ) learns
+to generate a task-speciﬁc scaling tensor to manipulate the
+magnitude of feature activations at different layers. Evolu-
+tionary Architecture Search ( Liang et al. ,2018 ) improves
+upon the Soft Layer Ordering by a synergetic approach of
+evolving custom shared routing units. Soft attention used in
+(Liu et al. ,2019b ) allows learning of task-speciﬁc feature-
+level weighting for each task. AdaShare ( Sun et al. ,2019 )
+learns the sharing pattern through a task-speciﬁc policy that
+selectively chooses which layers to execute for a given task
+in a multi-task setting. The authors in ( Standley et al. ,2019)
+propose to discover an optimal network splitting structure
+for different tasks by approximating the enumerative search
+process so that the test performances are maximized given
+a ﬁxed testing resource budget. Branched Multi-task Net-
+works ( Vandenhende et al. ,2019) pre-compute a collection
+of task relatedness scores based on the usefulness of a set of
+
+==== Page 3 ====
+Learning to Branch for Multi-Task Learning
+features of one task for the other. Gumbel-Matrix Routing
+(Maziarz et al. ,2019) stacks a ﬁxed set of operations in each
+layer and learns the connectivities between layers. These
+works do not rely on ﬁxed network connectivities and start
+to explore the potential of more dynamic network wirings
+tailored to multiple tasks. But on the other hand, additional
+computation is often required for obtaining task relatedness
+scores in order to perform task grouping or splitting.
+In this paper we propose a new end-to-end trainable algo-
+rithm that can automatically design a hard parameter sharing
+multi-task network, sharing and splitting network branches
+based on the update gradients back-propagated from the
+overall losses across all tasks. The proposed method by-
+passes the need of pre-computed task relatedness scores
+and directly optimizes over the end outputs, saving tedious
+computation and producing effective network topologies.
+3. Method
+We introduce the formal problem deﬁnition in Section 3.1.
+We present the proposed network design space in Section
+3.2and the differentiable branching operation formulation
+in Section 3.3. Finally we show how the ﬁnal network
+architecture is selected after training in Section 3.4.
+3.1. Formulation Setup
+Given a set of Ntasks T={t1,t2,. . . ,t N}, the goal of the
+proposed method is to learn a tree-structured ( Lee et al. ,
+2016 ) network architecture ⌦and the weight values !of
+the network that minimize the overall loss Ltotalacross all
+tasks,
+!⇤,⌦⇤= arg min
+!,⌦Ltotal(!,⌦)
+= arg min
+!,⌦X
+k↵kLk(!,⌦)(1)
+where Lkis the loss for task kand↵kis the task-speciﬁc
+weighting. The tree structure in the network is realized by
+branching operations at certain layers. Each branching layer
+can have an arbitrary number of child (next) layers up to the
+computational budget available.
+During training, we ﬁrst sample a network conﬁguration ⌦
+from the design space distribution and then perform forward
+propagation to compute the overall loss value Ltotal. We then
+obtain corresponding gradients to update both the design
+space distribution and the weight matrices !in the network
+in backward fashion. We iterate through the process until
+the overall validation loss converges and then we sample
+our ﬁnal network conﬁguration using the converged design
+space distribution.
+3.2. Network Topological Space
+The key ingredient for effective and efﬁcient network con-
+ﬁguration sampling is our proposed differentiable tree-xiyixjyjiparentjchild…
+……    …
+…opiopjFigure 1. Illustration of the proposed branching block. Each child
+node jis equipped with a categorical distribution so it can sample
+a parent node to receive input data after the training.
+structured network topology. The topological space is repre-
+sented as a Directed Acyclic Graph (DAG) where the nodes
+represent computational operations and the edges denote
+data ﬂows. Figure 1illustrates a certain block of a DAG
+which contains parent nodes ifori2{1,. . . ,I }and child
+nodes jforj2{1,. . . ,J }. The nodes can perform any com-
+mon operations of choice such as convolution or pooling.
+The input to a certain node is denoted as xand the output is
+denoted as y.
+Speciﬁcally, we construct multiple parent nodes and child
+nodes for each block and allow a child node to sample a path
+from all the paths between it and all its parent nodes. The
+selected connectivities therefore deﬁne the tree structure by
+such sampling (branching) procedure. We formulate the
+branching operation at layer las:
+xl+1
+j=Edj⇠p✓j[dj·Yl] (2)
+where Yl=[yl
+1,. . . ,yl
+I]concatenates outputs from all par-
+ent nodes at layer l, and djis an indicator vector sampled
+from a certain distribution p✓j. The indicator djis a one-hot
+vector. Hence the dot product in Eq 2essentially assigns
+one of the parent nodes to each child node j. In other words,
+each parent node at layer lpropagates its output activations
+as input xl+1
+jto one or more child nodes jbased on the
+sampling distributions. The sampling distribution is param-
+eterized by ✓j. The proposed topological space degenerates
+into a conventional single-path (convolutional) neural net-
+work if each block only contains one parent node and one
+child node.
+We update the parameter ✓jof the sampling distribution p✓j
+using the chain rule with respect to the ﬁnal loss,
+@Ltotal
+@✓j=@Ltotal
+@xl+1
+j@xl+1
+j
+@✓j
+=@Ltotal
+@xl+1
+j@
+@✓jEdj⇠p✓j[dj·Yl](3)
+the backward pass then adjusts the sampling distribution p✓j
+to make it more likely to generate network conﬁgurations ⌦
+toward the direction of minimizing the overall loss Ltotal.
+The branching blocks in Figure 1can be stacked to form
+a deeper tree-structured neural network (illustrated in Fig-
+ure2(d)) and the number of parent nodes and the number
+
+==== Page 4 ====
+Learning to Branch for Multi-Task LearningFramework
+63x33x33x33x33x33x33x3(a)Framework
+73x33x33x33x33x33x33x3(b)Framework
+83x33x33x33x33x33x33x3(c)Framework
+93x33x33x33x33x33x33x33x33x33x33x33x33x33x33x33x3(d)
+Figure 2. Illustrations of the proposed learning to branch pipeline. (a) We initialize the sampling probability with a uniform distribution so
+each parent node has an equal chance to send its activation values to a child node. (b) The computed update gradients then increase the
+probability of sampling certain paths that are more likely to reduce the overall loss. (c) Once the overall validation loss converges, each
+child node selects one parent node with the highest sampling probability while removing unselected paths and parent nodes. (d) We can
+construct a deeper tree-structured multi-task neural network by stacking such branching blocks.
+of child nodes can be adjusted based on the desired model
+capacity. Different from the greedy layer-wise optimization
+approach in GNAS ( Huang et al. ,2018 ), our proposed tree-
+structured network topology is end-to-end trainable – the
+network architecture ⌦and the weight matrices !of the
+network are jointly optimized during training.
+3.3. Differentiable Branching Operation
+To sample a categorical value from the continuous sam-
+pling distribution, we utilize the gumbel-softmax estimator
+trick ( Jang et al. ,2017 ;Shazeer et al. ,2017 ;Rosenbaum
+et al.,2018 ;Veit & Belongie ,2018 ;Xie et al. ,2019 ) to en-
+able the differentiability for the branching operation; During
+the feedforward pass, we sample a parent node by a discrete
+index value based on a certain probability distribution for
+each child node. During the backward pass, we update the
+probability distribution by replacing the discrete samples
+with gumbel-softmax samples.
+For every two layers in a branching block (shown in Fig-
+ure1), we construct a matrix M2RI⇥Jto represent the
+connectivity from parent nodes ito child nodes j. Each en-
+try✓i,jin such a matrix Mstores the probability value that
+represents how likely the parent node iwould be sampled to
+connect with the child node j. During every forward propa-
+gation, each child node jmakes a discrete decision drawn
+from a categorical distribution based on the distribution:
+dj=onehot{arg max
+i(log ✓i,j+✏i)} (4)
+Again dj2RIis a one-hot vector with dimension the same
+as the number of parent nodes Iat the current level. ✏2RI
+is a vector with i.i.d samples draw from gumbel distribution
+(0,1)to add a small amount of noise to avoid the arg max
+operation always selecting the element with the highest
+probability value.
+To enable differentiability of the discrete sampling function,
+we use the gumbel-softmax trick ( Jang et al. ,2017) to relax
+djduring backward propagation as
+˜dj=exp((log ✓i,j+✏i)/⌧)P
+kexp((log ✓k,j+✏k)/⌧)(5)withiequal to the sampled index value of parent node during
+forward pass. The discrete categorical sampling function is
+approximated by a softmax operation over the parent nodes,
+and the parameter ⌧is the temperature that controls how
+sharp the distribution is after the approximation.
+We can now utilize the reparameterization trick for random
+sample djand rewrite the Eq 3as
+@Ltotal
+@✓j=@Ltotal
+@xl+1
+j@
+@✓jE✏[˜dj·Yl]
+=@Ltotal
+@xl+1
+jE✏[@˜dj
+@✓i]Yl(6)
+At this stage, the branching probabilities are fully differ-
+entiable with respect to the training loss and can readily
+be inserted to a neural network and stacked to construct
+a tree-structured neural network. We decay the tempera-
+ture⌧gradually during training so the network can explore
+freely in the early stage and exploit the converged topology
+distribution in the later stage.
+3.4. Final Architecture Selection
+During the training stage, the network topology distribution
+and the weight matrices of the network are jointly optimized
+over the loss Ltotalacross all tasks. Once the validation loss
+converges, we simply select the ﬁnal network conﬁguration
+using the same categorical distribution but without the noise
+✏for every block in the network,
+dj=onehot{arg max
+i(log ✓i,j)} (7)
+We then re-train the ﬁnal network architecture from scratch
+to obtain the ﬁnal performance. The same procedure has
+also been shown effective in previous literature ( Pham et al. ,
+2018 ;Sciuto et al. ,2019 ) where such weight sharing net-
+work search schema demonstrates high correlation between
+the intermediate network performance during search phase
+and the ﬁnal performance obtained by re-train the network
+from scratch.
+Figure 2illustrates our overall training process of a cer-
+tain branching block in a DAG. We initialize the sampling
+
+==== Page 5 ====
+Learning to Branch for Multi-Task Learning
+inputW0,0W0,1W0,2W1,0W1,1W1,2W2,0
+W2,1
+W2,2 bent, 5 bent, 6 bent, 7 bent, 8 bent, 9 sinc, 10 sinc, 11 sinc, 12 sinc, 13 sinc, 14 square, 0 square, 1 square, 2 square, 3 square, 4
+(a)
+inputW0,0W0,1W0,2W1,0W1,1W1,2W2,0W2,1W2,2 sin, 0 sin, 1 sin, 2 sin, 3 sin, 4 2*sin, 5 2*sin, 6 2*sin, 7 2*sin, 8 2*sin, 9 3*sin3, 10 3*sin3, 11 3*sin3, 12 3*sin3, 13 3*sin3, 14(b)
+inputW0,0W0,1W0,2W1,0W1,1W1,2W2,0
+W2,1
+W2,2 cos, 5 cos, 6 cos, 7 cos, 8 cos, 9 sinc, 10 sinc, 11 sinc, 12 sinc, 13 sinc, 14 square, 0 square, 1 square, 2 square, 3 square, 4(c)
+ (d)
+Figure 3. Learned network architectures by our method in three different experimental settings – each setting has 15tasks generated by 3
+different activation functions. Setting (a) contains activations bent, square, and sinc. The learned network group tasks with the same
+activation together in 3 distinct clusters. Setting (b) contains the same activation sin but with different scale multipliers 1,2, and 3. All
+tasks are grouped together and share all intermediate layers. Setting (c) contains activations cos, sinc, and square. As illustrated in (d) that
+cos and sinc share similar behavior, tasks with these two similar activations are grouped while the task with square activation branches out
+earlier in the intermediate layer.
+probability p✓jwith a uniform distribution so each parent
+node has an equal chance to send its activation values to a
+child node jas shown in Figure 2(a). The computed update
+gradients then increase the probability of sampling certain
+paths that are more likely to reduce the overall loss as shown
+in Figure 2(b). Once the overall validation loss converges,
+each child node selects one parent node with the highest
+sampling probability while removing unselected paths and
+parent nodes as shown in Figure 2(c). We can construct a
+deeper tree-structured multi-task neural network by stacking
+such branching blocks as shown in Figure 2(d) as long as
+we ensure the number of child nodes matches the number
+of tasks being trained. This process implicitly groups the
+relevant tasks together by sharing necessary layers. It does
+not require prior knowledge of the relatedness of the tasks
+and avoids exhausting trial-and-error searching process by
+hand.
+4. Experiments
+In principle, our method can be applied to any domains
+and does not require any prior knowledge of the tasks. We
+demonstrate the effectiveness of the proposed method on
+synthetic data for regression tasks, CelebA ( Liu et al. ,2015)
+dataset for classiﬁcation tasks, and Taskonomy dataset ( Za-
+mir et al. ,2018 ) for dense prediction that includes both
+regression and classiﬁcation tasks.
+4.1. Controlled Synthetic Data
+We ﬁrst validate the proposed concept using synthetic data
+with controllable task relatedness. The relatedness is real-ized by different activation functions. Inspired by ( Chen
+et al.,2018), we construct the regression tasks by the formu-
+lation
+Tr,s=activation r[((B+ s)Z)/'] (8)
+where r2{1,2,. . . ,5}corresponds to a range of ﬁve differ-
+ent element-wise activation functions {sin, square, bent, cos,
+sinc}, sdenotes task-speciﬁc random noise matrices for
+s2{1,2,. . . ,S }. The input of the formulation Z2R200
+is a 200-dimensional vector and the output T2R100is a
+100-dimensional vector. B2R100⇥200and s2R100⇥200
+are constant matrices randomly sampled from N(0,10)and
+N(0,2), respectively. '2Ris a normalization term that
+has the value of size of the input dimension. We control
+the relatedness of the tasks by the activation used. Tasks
+constructed by the same activation function should be more
+related as they only differ in a small amount of random
+noise  s. On the other hand, tasks with different activation
+functions should be more unrelated.
+We use four proposed branching blocks to construct our tree-
+structured network for the multi-task learning setup. Each
+block has three child nodes with fully-connected layers as
+the choice of operation. Each fully-connected layer contains
+100 neurons. We use simple bias terms for task-speciﬁc
+layers as shown in Figure 3. L2 loss is used as the train-
+ing objective and the loss is optimized by the Adam solver
+with mini-batch size of 100. Learning rate is set to 10 3for
+weight matrices and 10 7for branching probability through-
+out the training. Temperature is set to 50and decayed by
+the square root of the number of iterations. The networks
+are trained for 500epochs with 50epochs for warmup. We
+
+==== Page 6 ====
+Learning to Branch for Multi-Task Learning
+do not update the branching probability during warmup to
+ensure all weight matrices receive equal amounts of update
+gradients.
+We perform experiments in three different settings – each
+setting has equal weighted 15tasks generated by 3different
+activation functions. In the ﬁrst setting (Figure 3(a)), we use
+activations bent, square, and sinc. The ﬁnal learned network
+architecture clearly shows a tree structure with similar tasks
+(same activation) are grouped in the same leaf branch and
+dissimilar tasks (different activations) do not share the same
+leaf branch. In the second setting (Figure 3(b)), we use
+the same activation sin but with different scale multipliers
+1,2, and 3. All tasks are grouped together and share all
+intermediate layers since they only differ in different scaling.
+In the third setting (Figure 3(c)), we use activations cos, sinc,
+and square. As illustrated in Figure 3(d)that cos and sinc
+activations share very similar active regions and scales, we
+can see that tasks with these two similar activations are
+grouped while the task with square activation branches out
+earlier in the intermediate layer. From this experiment, we
+validate our intuition that the proposed branching structure
+indeed captures the underlying task relatedness and is able
+to group related tasks through back-propagation updates.
+4.2. CelebA
+Next, we evaluate the proposed method on real-world image
+classiﬁcation tasks. We use the CelebA dataset ( Liu et al. ,
+2015 ), which contains over 200K face images and each
+image contains 40binary attribute annotations. Each anno-
+tation is regarded as a classiﬁcation task and we adopt 40
+cross-entropy losses with equal weightings for all 40tasks.
+The training, validation, and test sets contain 160K, 20K,
+and 20K images. This benchmark is especially useful to ex-
+amine whether automatically learned task grouping is more
+effective than manual task grouping by human intuition or
+pre-computed task relatedness.
+Implementation details. For a fair comparison, we utilize
+the same overall network structures and operations from ( Lu
+et al.,2017;Huang et al. ,2018) in our branching blocks but
+allow the network to learn the branching decisions. Speciﬁ-
+cally, we construct (a) LearnToBranch-VGG model based
+on the Branch-VGG model in ( Lu et al. ,2017 ) where the
+backbone is a truncated VGG19 ( Simonyan & Zisserman ,
+2015 ) with the number of channels reduced to 32 for con-
+volutional layers and 64 for the fully-connected layers, and
+(b) LearnToBranch-Deep-Wide based on the GNAS-Deep-
+Wide model in ( Huang et al. ,2018 ), which is a customized
+architecture with 5 consecutive convolutional layers and 2
+fully-connected layers. For model (a) we allow our network
+to branch at the end of each resolution stage (last conv layer
+at each resolution) with the number of child nodes set to
+{3,3,5,5,10,20,30,40}, and for model (b) we allow ourTable 1. Results of multi-task learning on CelebA Dataset.
+METHOD ACC(%) P ARAMS (M)
+LNET+AN ET(WANG ET AL .,2016 )8 7 -
+WALK AND LEARN (WANG ET AL .,2016 )8 8 -
+MOON (RUDD ET AL .,2016 )9 0 . 9 4 1 1 9 . 7 3
+INDEP GROUP (HAND &C HELLAPPA ,2017 )9 1 . 0 6 -
+MCNN-AUX ( HAND &C HELLAPPA ,2017 )9 1 . 2 9 -
+VGG-16 B ASELINE (LUE TA L .,2017 )9 1 . 4 4 1 3 4 . 4 1
+BRANCH -VGG ( LUE TA L .,2017 )9 0 . 7 9 2 . 0 9
+LEARN TOBRANCH -VGG ( OURS )9 1 . 5 5 1 . 9 4
+GNAS-D EEP-WIDE(HUANG ET AL .,2018 )9 1 . 3 6 6 . 4 1
+LEARN TOBRANCH -DEEP-WIDE(OURS )9 1 . 6 2 6 . 3 3
+network to branch at the end of each convolutional layer
+with number of child nodes set to {2,4,8,16,40}. The
+number of child nodes are chosen so that the overall compu-
+tational complexity of models (a) and (b) are similar to their
+counterparts.
+We use the Adam optimizers with mini-batch size 64to
+update both the weight matrices and the branching probabil-
+ities in our networks. Temperature is set to 10and decayed
+by the number of epochs. We warmup the training for 2
+epochs without updating the branching probabilities to en-
+sure all weight matrices receive equal amounts of update
+gradients initially. Weight decay is set to 10 4for all ex-
+periments. We perform grid search for learning rates in
+(10 6,10 5,10 4)for the weights and in (1,10,100) for
+branching distributions. After sampling the ﬁnal architec-
+ture, we train the network from scratch with grid search
+for global learning rate in (0.02,0.03,0.04,0.05). The in-
+put data is normalized [ 1,1]and augmented by random
+ﬂipping. Please refer to Appendix for more details.
+Our method leverages the effectiveness of gumbel-softmax
+so that every child node samples a single discrete action
+during the forward pass. Therefore, our network topological
+space is well maintained – the tree does not grow exponen-
+tially with the number of tasks. As the result, it takes 10
+hours to search the architecture and 11 hours to obtain the
+optimal weights for model (a) LearnToBranch-VGG, and
+it takes 4 hours to search the architecture and 10 hours to
+obtain the optimal weights for model (b) LearnToBranch-
+Deep-Wide on a single 16GB Tesla GPU.
+Results. Table 1shows the performance comparison on
+the CelebA test set. The visualizations of the learned
+network architectures are provided in Appendix. We can
+clearly see that both models (a) LearnToBranch-VGG and
+(b) LearnToBranch-Deep-Wide outperform their counter-
+part baselines presented in ( Lu et al. ,2017 ;Huang et al. ,
+2018 ) under the similar network capacity. In fact, both our
+models (a) and (b) have less total number of parameters
+than their baselines. Note that our models only differ in
+the branching operation while maintaining other conﬁgura-
+tions such as kernel size and the number of channels. This
+
+==== Page 7 ====
+Learning to Branch for Multi-Task Learning
+Table 2. Results of multi-task learning on Taskonomy test set. Our method outperforms the direct comparable method AdaShare ( Sun
+et al.,2019 ) and other baselines as well. Besides having fewer parameters and better performance, our method has a clear advantage
+of being the ﬁrst end-to-end trainable tree-structured multi-task network that does not require human intuition or pre-computed task
+relatedness.
+METHOD PARAMS (M) SEGMENTATION #NORMAL "DEPTH #KEYPOINT #EDGE #
+SINGLE -TASK (SUN ET AL .,2019 ) 124 0.575 0.707 0.022 0.197 0.212
+MULTI-TASK (SUN ET AL .,2019 ) 41 0.587 0.702 0.024 0.194 0.201
+CROSS -STITCH (MISRA ET AL .,2016 ) 124 0.560 0.684 0.022 0.202 0.219
+SLUICE (RUDER ET AL .,2017 ) 124 0.610 0.702 0.023 0.192 0.198
+NDDR-CNN ( GAO ET AL .,2019 ) 133 0.539 0.705 0.024 0.194 0.206
+MTAN ( LIU ET AL .,2019 B) 114 0.637 0.702 0.023 0.193 0.203
+ADASHARE (SUN ET AL .,2019 ) 41 0.566 0.707 0.025 0.192 0.193
+LEARN TOBRANCH (OURS ) 51 0.462 0.709 0.018 0.122 0.136
+demonstrates the effectiveness of the proposed end-to-end
+trainable branching mechanism. We note that the ResNet-
+18 (MGDA-UB) model in ( Sener & Koltun ,2018 ) achieves
+91.75% accuracy on this speciﬁc task. However their net-
+work has more than 11million parameters, which is roughly
+double the size of our model (b) with comparable perfor-
+mance. Also their focus is on reformulating the multi-task
+learning problem as multi-objective optimization. We pro-
+pose to further study the possibility of combining the two
+techniques in future investigation.
+4.3. Taskonomy
+In this experiment we extend our method to the recent
+Taskonomy dataset ( Zamir et al. ,2018 ), which contains
+over 4.5million indoor images from over 500buildings.
+Following ( Sun et al. ,2019), we select surface normal, edge
+detection, keypoint detection, monocular depth, and seman-
+tic segmentation among the total 26tasks for the experiment.
+We use the standard tiny split benchmark, which contains
+275K training, 54K test, 52K validation images. We again
+follow the work in ( Sun et al. ,2019 ) to report test losses on
+these tasks for standardized comparisons.
+Implementation details. We follow ( Sun et al. ,2019 ) to
+use the ResNet-34 ( He et al. ,2016) backbone and the ASPP
+decoder ( Chen et al. ,2017 ) for task-speciﬁc dense predic-
+tions. We use L1 loss for edge detection, keypoint detection
+and monocular depth tasks, cross-entropy loss for semantic
+segmentation task, and cosine similarity loss for surface
+normal task.
+During the topology searching, we allow the network to
+branch at the end of every ResNet block. Each branching
+block has 5child nodes so the network capacity is similar
+to the baseline model in ( Sun et al. ,2019 ). We use the
+Adam optimizers with mini-batch size 64to train our net-
+work. Temperature is set to 10and decayed by the number
+of epochs. We again warmup the training for 2 epochs with-
+out updating the branching probabilities. We perform grid
+search for learning rates in (10 4,10 3,10 2)for both theweights and branching distributions, and weight decay in
+(10 5,10 4,10 3). We train the network topology distribu-
+tion on input image size of 128⇥128and re-train the ﬁnal
+selected network on image size of 256⇥256for compar-
+isons on the same image resolution. The input is normalized
+in[ 1,1]and augmented by random clipping, scaling, and
+cropping. On a single 32GB Tesla GPU, it takes 2days to
+train the topology distribution and 3days to obtain the ﬁnal
+converged network.
+Results. Following ( Chen et al. ,2017;Standley et al. ,2019;
+Sun et al. ,2019 ), we use the cross-entropy metrics with
+uncertain and background pixels masked out for segmenta-
+tion; we use cosine similarities between the predictions and
+ground truth vectors without any masks for surface normal;
+we calculate the absolute mean error between the output and
+normalized ground truth with pixels whose depths are more
+than 126m masked out for depth; for the rest of the tasks,
+we calculate the absolute mean error between the output and
+normalized ground truth without any mask.
+Table 2lists the results that are based on the same evaluation
+protocol. We can clearly see that our method achieves the
+best performance on all 5tasks compared to all recent base-
+lines. The ﬁrst row in Table 2shows the Single-Task setting
+where each task has its own set of parameters. It achieves
+lower performance than ours while having more than double
+parameter count. Our method is also more efﬁcient than the
+recent Cross-Stitch and MTAN benchmarks as shown in the
+Table. AdaShare ( Sun et al. ,2019 ) uses a single-path net-
+work with adaptive skip-connections for multi-task learning.
+While the method has slightly less number of parameters, it
+achieves lower performance than our method on all 5tasks,
+showing the importance of feature sharing and branching.
+We randomly sample four converged architectures after
+training and visualize them in Figure 4. We observe that
+even though the data ﬂows take different paths in the four ar-
+chitectures, the ﬁnal pruned network topology remains very
+similar to each other. Figure 4(a),4(c),4(d)share exactly
+the same tree structure with edge and keypoint branch out
+
+==== Page 8 ====
+Learning to Branch for Multi-Task Learning
+inputW0,0W0,1W0,2W0,3W0,4W1,0W1,1W1,2W1,3W1,4W2,0W2,1W2,2W2,3W2,4W3,0W3,2W3,3W3,4W3,1W4,0W4,1W4,2W4,3W4,4W5,0W5,1W5,2W5,3W5,4W6,1W6,3W6,4W6,0W6,2W7,4W7,2W7,3W7,0W7,1W8,0W8,1W8,2W8,3W8,4W9,4W9,1W9,2W9,0W9,3W10,4W10,0W10,2W10,3W10,1W11,0W11,1W11,2W11,3W11,4W12,2W12,0W12,1W12,3W12,4W13,3W13,0W13,2W13,1W13,4W14,0W14,1W14,2W14,3W14,4W15,0W15,4W15,2W15,3W15,1 Normal  Depth  Segmentation  Edge  Keypoints 
+(a)
+inputW0,0W0,1W0,2W0,3W0,4W1,0W1,1W1,2W1,3W1,4W2,0W2,1W2,2W2,3W2,4W3,0W3,1W3,2W3,4W3,3W4,0W4,1W4,2W4,3W4,4W5,0W5,4W5,2W5,3W5,1W6,1W6,4
+W6,2W6,3W6,0W7,1W7,3
+W7,2W7,0W7,4W8,0W8,1W8,2W8,3W8,4W9,0W9,1W9,4W9,3W9,2W10,1W10,3W10,2W10,4W10,0W11,2W11,0W11,1W11,3W11,4W12,1W12,2W12,3W12,0W12,4W13,4W13,2W13,0W13,1W13,3W14,0W14,1W14,2W14,3W14,4W15,4W15,0W15,1W15,2W15,3 Normal  Depth  Segmentation  Edge  Keypoints (b)
+inputW0,0W0,1W0,2W0,3W0,4W1,0W1,1W1,2W1,3W1,4W2,0W2,1W2,2W2,3W2,4W3,0W3,2W3,3W3,4W3,1W4,0W4,1W4,2W4,3W4,4W5,1W5,0W5,2W5,3W5,4W6,1W6,2W6,3W6,4W6,0W7,2W7,3W7,4W7,0W7,1W8,0W8,1W8,2W8,3W8,4W9,0W9,1W9,4W9,2W9,3W10,2W10,1W10,0W10,3W10,4W11,0W11,2W11,4W11,1W11,3W12,2W12,3W12,4W12,0W12,1W13,1W13,0W13,3W13,2W13,4W14,0W14,1W14,2W14,3W14,4W15,3W15,0W15,1W15,2W15,4 Normal  Depth  Segmentation  Edge  Keypoints (c)
+inputW0,0W0,1W0,2W0,3W0,4W1,0W1,1W1,2W1,3W1,4W2,0W2,1W2,2W2,3W2,4W3,0W3,4W3,1W3,3W3,2W4,0W4,1W4,2W4,3W4,4W5,0W5,2W5,1W5,3W5,4W6,4W6,0W6,3W6,2W6,1W7,2W7,0W7,3W7,1W7,4W8,0W8,1W8,2W8,3W8,4W9,1W9,3W9,4W9,0W9,2W10,0W10,1W10,2W10,3W10,4W11,1W11,0W11,3W11,4W11,2W12,4W12,0W12,2W12,3W12,1W13,4
+W13,2W13,3W13,0W13,1W14,0W14,1W14,2W14,3W14,4W15,1W15,0W15,2W15,3W15,4 Edge  Keypoints  Normal  Depth  Segmentation (d)
+Figure 4. Four randomly sampled network architectures trained on Taskonomy dataset. Our method discovers the same task grouping
+strategy in network (a), (c), and (d). Network (b) branches out at one layer later compared to the others but still shares the same task
+grouping strategy.
+Ours
+AdaShare
+SegmentationNormalDepthKeypointEdge
+GT
+Ours
+GT
+Ours
+AdaShare
+GT
+AdaShareFigure 5. Qualitative results of AdaShare ( Sun et al. ,2019 ), our method, and ground truth. Our multi-task apporach produces cleaner
+predictions for high-level tasks (segmentation, normal, depth) and more accurate conﬁdence scores for low-level tasks (keypoint, edge).
+from normal, depth and segmentation at the second last layer.
+Figure 4(b) has a slightly different conﬁguration that the
+branching occurs at the last layer. However, all the searched
+architectures show similar strategies for task grouping that
+are automatically found by the proposed method.
+To further validate the effectiveness of the proposed branch-
+ing operation, we directly sample a new network architec-
+ture without training the branching probability using the
+same topological space. Figure 5shows the qualitative re-
+sults of the output from AdaShare ( Sun et al. ,2019 ), the
+output from our method, and the ground truth. We can see
+that our converged network produces better results visu-
+ally, especially for segmentation, depth estimation, keypointprediction and edge detection tasks.
+5. Conclusion
+In this work, we introduce an automated multi-task learning
+framework that learns the underlying task grouping strate-
+gies by sharing and branching a neural network. We propose
+a carefully designed topological space to enable direct opti-
+mization for both the weights and branching distributions
+of the network through gumbel-softmax sampling. We vali-
+date the proposed method on controlled synthetic data, real-
+world CelebA, and large-scale Taskonomy dataset. Future
+work includes extension of our approach to multi-modality
+inputs and tasks with partial annotations.
+
+==== Page 9 ====
+Learning to Branch for Multi-Task Learning
+References
+Bau, D., Zhou, B., Khosla, A., Oliva, A., and Torralba, A.
+Network dissection: Quantifying interpretability of deep
+visual representations. In CVPR , 2017.
+Caruana, R. Multitask learning. Machine learning , 1997.
+Chen, L.-C., Papandreou, G., Kokkinos, I., Murphy, K., and
+Yuille, A. L. Deeplab: Semantic image segmentation
+with deep convolutional nets, atrous convolution, and
+fully connected crfs. TPAMI , 2017.
+Chen, Z., Badrinarayanan, V., Lee, C.-Y., and Rabinovich,
+A. Gradnorm: Gradient normalization for adaptive loss
+balancing in deep multitask networks. In ICML , 2018.
+Duong, L., Cohn, T., Bird, S., and Cook, P. Low resource
+dependency parsing: Cross-lingual parameter sharing in a
+neural network parser. In Proceedings of the 53rd Annual
+Meeting of the Association for Computational Linguistics
+and the 7th International Joint Conference on Natural
+Language Processing , 2015.
+Gao, Y., Ma, J., Zhao, M., Liu, W., and Yuille, A. L. Nddr-
+cnn: Layerwise feature fusing in multi-task cnns by neu-
+ral discriminative dimensionality reduction. In CVPR ,
+2019.
+Guo, M., Haque, A., Huang, D.-A., Yeung, S., and Fei-Fei,
+L. Dynamic task prioritization for multitask learning. In
+ECCV , 2018.
+Hand, E. M. and Chellappa, R. Attributes for improved
+attributes: A multi-task network utilizing implicit and
+explicit relationships for facial attribute classiﬁcation. In
+AAAI , 2017.
+He, K., Zhang, X., Ren, S., and Sun, J. Deep residual
+learning for image recognition. In CVPR , 2016.
+Huang, S., Li, X., Cheng, Z.-Q., Zhang, Z., and Hauptmann,
+A. Gnas: A greedy neural architecture search method for
+multi-attribute learning. In ACM , 2018.
+Jang, E., Gu, S., and Poole, B. Categorical reparameteriza-
+tion with gumbel-softmax. In ICLR , 2017.
+Kendall, A., Gal, Y., and Cipolla, R. Multi-task learning
+using uncertainty to weigh losses for scene geometry and
+semantics. In CVPR , 2018.
+Kokkinos, I. Ubernet: Training a universal convolutional
+neural network for low-, mid-, and high-level vision using
+diverse datasets and limited memory. In CVPR , 2017.
+Krizhevsky, A., Sutskever, I., and Hinton, G. E. Imagenet
+classiﬁcation with deep convolutional neural networks.
+InAdvances in Neural Information Processing Systems ,
+2012.Lee, C.-Y., Gallagher, P. W., and Tu, Z. Generalizing pool-
+ing functions in convolutional neural networks: Mixed,
+gated, and tree. In AISTATS , 2016.
+Liang, J., Meyerson, E., and Miikkulainen, R. Evolutionary
+architecture search for deep multitask networks. In Pro-
+ceedings of the Genetic and Evolutionary Computation
+Conference , 2018.
+Liu, C., Zoph, B., Neumann, M., Shlens, J., Hua, W., Li,
+L.-J., Fei-Fei, L., Yuille, A., Huang, J., and Murphy, K.
+Progressive neural architecture search. In ECCV , 2018.
+Liu, H., Simonyan, K., and Yang, Y. Darts: Differentiable
+architecture search. In ICLR , 2019a.
+Liu, S., Johns, E., and Davison, A. J. End-to-end multi-task
+learning with attention. In CVPR , 2019b.
+Liu, Z., Luo, P., Wang, X., and Tang, X. Deep learning face
+attributes in the wild. In ICCV , 2015.
+Long, M. and Wang, J. Learning multiple tasks with deep
+relationship networks. arXiv preprint arXiv:1506.02117 ,
+2015.
+Lu, Y., Kumar, A., Zhai, S., Cheng, Y., Javidi, T., and Feris,
+R. Fully-adaptive feature sharing in multi-task networks
+with applications in person attribute classiﬁcation. In
+CVPR , 2017.
+Maziarz, K., Kokiopoulou, E., Gesmundo, A., Sbaiz,
+L., Bartok, G., and Berent, J. Gumbel-matrix rout-
+ing for ﬂexible multi-task learning. arXiv preprint
+arXiv:1910.04915 , 2019.
+Meyerson, E. and Miikkulainen, R. Beyond shared hierar-
+chies: Deep multitask learning through soft layer order-
+ing. In ICLR , 2018.
+Misra, I., Shrivastava, A., Gupta, A., and Hebert, M. Cross-
+stitch networks for multi-task learning. In CVPR , 2016.
+Mitchell, T. M. The need for biases in learning generaliza-
+tions . Department of Computer Science, Laboratory for
+Computer Science Research, Rutgers University, 1980.
+Pasunuru, R. and Bansal, M. Continual and multi-task
+architecture search. In ACL, 2019.
+Pham, H., Guan, M. Y., Zoph, B., Le, Q. V., and Dean, J.
+Efﬁcient neural architecture search via parameter sharing.
+InICML , 2018.
+Rosenbaum, C., Klinger, T., and Riemer, M. Routing net-
+works: Adaptive selection of non-linear functions for
+multi-task learning. In ICLR , 2018.
+
+==== Page 10 ====
+Learning to Branch for Multi-Task Learning
+Rudd, E. M., G ¨unther, M., and Boult, T. E. Moon: A
+mixed objective optimization network for the recognition
+of facial attributes. In ECCV , 2016.
+Ruder, S. An overview of multi-task learning in deep neural
+networks. arXiv preprint arXiv:1706.05098 , 2017.
+Ruder, S., Bingel, J., Augenstein, I., and Søgaard, A. Sluice
+networks: Learning what to share between loosely related
+tasks. ArXiv , abs/1705.08142, 2017.
+Ruder, S., Bingel, J., Augenstein, I., and Søgaard, A. Latent
+multi-task architecture learning. In Proceedings of the
+AAAI Conference on Artiﬁcial Intelligence , 2019.
+Sciuto, C., Yu, K., Jaggi, M., Musat, C., and Salzmann, M.
+Evaluating the search phase of neural architecture search.
+InICLR , 2019.
+Sener, O. and Koltun, V. Multi-task learning as multi-
+objective optimization. In Advances in Neural Informa-
+tion Processing Systems , 2018.
+Shaw, A., Wei, W., Liu, W., Song, L., and Dai, B. Meta
+architecture search. In Advances in Neural Information
+Processing Systems , 2019.
+Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le,
+Q., Hinton, G., and Dean, J. Outrageously large neural
+networks: The sparsely-gated mixture-of-experts layer.
+arXiv preprint arXiv:1701.06538 , 2017.
+Simonyan, K. and Zisserman, A. Very deep convolutional
+networks for large-scale image recognition. In ICLR ,
+2015.
+Standley, T., Zamir, A. R., Chen, D., Guibas, L., Malik, J.,
+and Savarese, S. Which tasks should be learned together
+in multi-task learning? arXiv preprint arXiv:1905.07553 ,
+2019.
+Sun, X., Panda, R., and Feris, R. Adashare: Learning what
+to share for efﬁcient deep multi-task learning. arXiv
+preprint arXiv:1911.12423 , 2019.
+Szegedy, C., Liu, W., Jia, Y., Sermanet, P., Reed, S.,
+Anguelov, D., Erhan, D., Vanhoucke, V., and Rabinovich,
+A. Going deeper with convolutions. In CVPR , 2015.
+Vandenhende, S., De Brabandere, B., and Van Gool, L.
+Branched multi-task networks: deciding what layers to
+share. arXiv preprint arXiv:1904.02920 , 2019.
+Veit, A. and Belongie, S. Convolutional networks with
+adaptive inference graphs. In ECCV , 2018.
+Wang, J., Cheng, Y., and Schmidt Feris, R. Walk and learn:
+Facial attribute representation learning from egocentric
+video and contextual data. In CVPR , 2016.Wong, C., Houlsby, N., Lu, Y., and Gesmundo, A. Trans-
+fer learning with neural automl. In Advances in Neural
+Information Processing Systems , 2018.
+Xie, S., Zheng, H., Liu, C., and Lin, L. Snas: stochastic
+neural architecture search. In ICLR , 2019.
+Zamir, A. R., Sax, A., Shen, W., Guibas, L. J., Malik, J.,
+and Savarese, S. Taskonomy: Disentangling task transfer
+learning. In CVPR , 2018.
+Zeiler, M. D. and Fergus, R. Visualizing and understanding
+convolutional networks. In ECCV , 2014.
+Zoph, B. and Le, Q. V. Neural architecture search with
+reinforcement learning. In ICLR , 2017.
+Zoph, B., Vasudevan, V., Shlens, J., and Le, Q. V. Learning
+transferable architectures for scalable image recognition.
+InCVPR , 2018.
+

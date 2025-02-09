@@ -1,0 +1,1230 @@
+==== Page 1 ====
+TT-R EC: TENSOR TRAIN COMPRESSION
+FOR DEEP LEARNING RECOMMENDATION MODEL EMBEDDINGS
+Chunxing Yin1 2Bilge Acun1Xing Liu1Carole-Jean Wu1
+ABSTRACT
+The memory capacity of embedding tables in deep learning recommendation models (DLRMs) is increasing
+dramatically from tens of GBs to TBs across the industry. Given the fast growth in DLRMs, novel solutions are
+urgently needed in order to enable DLRM innovations. At the same time, this must be done in a fast and efﬁcient
+way without having to exponentially increase infrastructure capacity demands. In this paper, we demonstrate the
+promising potential of Tensor Train decomposition for DLRMs (TT-Rec), an important yet under-investigated
+context. We design and implement optimized kernels (TT-EmbeddingBag) to evaluate the proposed TT-Rec
+design. TT-EmbeddingBag is 3 faster than the SOTA TT implementation. The performance of TT-Rec is
+further optimized with the batched matrix multiplication and caching strategies for embedding vector lookup
+operations. In addition, we present mathematically and empirically the effect of weight initialization distribution on
+DLRM accuracy and propose to initialize the tensor cores of TT-Rec following the sampled Gaussian distribution.
+We evaluate TT-Rec across three important design space dimensions—memory capacity, accuracy, and timing
+performance—by training MLPerf-DLRM with Criteo’s Kaggle and Terabyte data sets. TT-Rec compresses the
+model size by 4to 221for Kaggle, with 0:03% to0:3%loss of accuracy correspondingly. For Terabyte, our
+approach achieves 112 model size reduction which comes with no accuracy loss nor training time overhead as
+compared to the uncompressed baseline.
+Our code is available on Github at facebookresearch/FBTT-Embedding.
+1 I NTRODUCTION
+Deep neural networks (DNNs) are witnessing an unprece-
+dented growth in all dimensions: data, model complexity,
+and the cost of infrastructure required for model training and
+deployment. For instance, at Facebook, the amount of data
+used in machine learning (ML) tripled in one year (2019–
+20), which led to an eight-fold increase in the amount of
+computation required for training (Hazelwood, 2020). Simi-
+larly, the number of parameters in state-of-the-art language
+models have increased exponentially, currently at over 175
+billion parameters in OpenAI’s GPT-3 (Brown et al., 2020).
+In response, there is considerable interest to design domain-
+speciﬁc accelerators and at-scale infrastructures (Acun et al.,
+2021; Alibaba, 2019; Amazon, 2019; Chung et al., 2018;
+Fowers et al., 2018; Hazelwood et al., 2018; Jouppi et al.,
+2017; Lee & Rao, 2019; Mattson et al., 2020a; NVIDIA,
+2020a; Ovtcharov et al., 2015; Reddi et al., 2020). To sus-
+tain the fast cadence of ML innovations, we must achieve
+orders-of-magnitude reductions in the infrastructure demand
+1Facebook AI, USA2Georgia Institute of Technology, USA. Corre-
+spondence to: Bilge Acun <acun@fb.com >.
+Proceedings of the 4thMLSys Conference , San Jose, CA, USA,
+2021. Copyright 2021 by the author(s).while maintaining or even improving model accuracy.
+In this work, we consider a new algorithmic approach to
+cope with the large memory requirement of DNNs, focusing
+on the critical use-case of embedding tables in deep learning-
+based recommendation models (DLRMs). These models
+represent one of the most resource-demanding deep learn-
+ing workloads, consuming more than 50% of training and
+80% of the total AI inference cycles at Facebook’s data cen-
+ters (Gupta et al., 2020; Naumov et al., 2020). Furthermore,
+the memory capacity requirement for state-of-the-art recom-
+mendation models has grown into the scale of terabytes (Lui
+et al., 2021; Yi et al., 2018; Zhao et al., 2019; 2020). From
+systems perspective, the large embedding tables that con-
+tribute to more than 99% of the total recommendation model
+capacity are important targets for efﬁciency optimization.
+Our approach uses tensorization to address the large mem-
+ory capacity demand of embedding tables in a DLRM.
+At a high level, tensorization replaces layers of a neu-
+ral network with an approximate and structured low-rank
+form (Novikov et al., 2015). The tensorization form is
+parametric – its “shape” determines the design trade-off be-
+tween storage capacity, execution time, and model accuracy.
+Furthermore, tensorized representation can be ﬁne-tuned
+with respect to the architecture of a given hardware plat-
+
+==== Page 2 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Figure 1. The design space demonstrates the potential of DLRM
+accuracy and model size tradeoff with respect to the tunable param-
+eters, e.g., ranks of the tensorization method (colors), dimensions
+of embedding (shapes), and number of compressed embedding ta-
+bles (brightness). The data points that fall onto the Pareto Frontier
+(the black curve) represent optimal settings that maximize DLRM
+accuracy (the y-axis) given a memory size (the x-axis).
+form. Figure 1 illustrates the design space with respective
+to the tunable parameters, such as ranks of the tensoriza-
+tion method, dimensions of the embedding and number
+of tables to compress. Data points on the Pareto frontier
+(black curve) represent the optimal settings that maximize
+the recommendation model accuracy (y-axis) given a cor-
+responding memory size (x-axis). The parameters of these
+optimal data points vary, depending on the model’s charac-
+teristics (embedding dimensions), the tensorization setting
+(i.e., tensor ranks), and the memory capacity of the under-
+lying training system. Given the large conﬁguration space,
+parameters need to be carefully studied in order to achieve
+highest possible model quality given a target model size.
+We design a Tensor- Train compression technique for deep
+learning Recommendation models, called TT-Rec . The core
+idea is to replace large embedding tables in a DLRM with a
+sequence of matrix products. This method is analogous to
+techniques that use lookup tables to trade-off memory ca-
+pacity and bandwidth with computation. TT-Rec suits well
+for accelerators like GPUs, which have a relatively higher
+compute-to-memory (FLOPs-per-Byte) ratio and limited
+memory capacity. Since tensor products skew the initial-
+ization distribution, we propose a new way to initialize the
+element distribution of the tensor form. Furthermore, to
+mitigate increases in training time when the tensor form
+must be decompressed, we introduce a cache structure that
+exploits the unique sparse feature distribution in DLRMs,
+in which we store the most accessed embedding vectors in
+the uncompressed format. Since these cached embedding
+vectors are learned without compression, using this cache
+design can also help recovering model accuracy. Thus, TT-
+Rec uses a hybrid approach to learn features and deliver
+on-par model accuracy while requiring orders-of-magnitude
+less memory capacity.We show signiﬁcant compression ratios and improved train-
+ing time performance at the same time with a judicious
+design and parameterization of the tensor-train compression
+technique. The compute-to-memory ratio of the underlying
+hardware can also be taken into account when parameteriz-
+ing the proposed technique. While prior works have demon-
+strated tensor-train compression techniques for embedding
+layers (Hrinchuk et al., 2020), this paper is the ﬁrst to ex-
+plore and customize tensor-train compression techniques
+for DLRMs, with a particular focus on minimizing the sig-
+niﬁcant memory capacity requirement of the embedding
+layers (over tens to hundreds of GBs, or over 99% of the
+total model size).
+The main contributions of this paper are as follows:
+•This work applies tensor-train compression for a new
+application context—the embedding layers of DLRMs.
+•TT-Rec offers a ﬂexible design space between memory
+capacity, training time and model accuracy. It is an ef-
+fective approach especially for online recommendation
+training. The orders-of-magnitude lower memory require-
+ment with TT-Rec also unlocks a range of modern AI
+training accelerators for DLRM training.
+•Our in-depth design space characterization shows the im-
+portance of choosing the right number of embedding ta-
+bles to compress and the dimension of the compressed
+tensors. In particular, we quantify the potential trade-off
+between memory requirements and accuracy.
+•To recover accuracy loss, we propose to use a sampled
+Gaussian distribution for the weight initialization of the
+tensor cores. Furthermore, to accelerate the training per-
+formance of TT-Rec, we introduce a separate cache struc-
+ture to store frequently-accessed embedding vectors in the
+uncompressed format, which we show empirically also
+improves model accuracy.
+•We demonstrate the promise of TT-Rec: on Terabyte, TT-
+Rec achieves higher model accuracy (0.19% to 0.42%
+over the baseline) while reducing the total memory re-
+quirement of the embedding tables by 22 to112with
+a small amount of 10% training time increase on average.
+2 B ACKGROUND
+Deep learning recommendation models. Figure 2 de-
+picts the generalized model architecture for DLRMs. The
+left box represents the uncompressed baseline, while the
+right box depicts the proposed TT-Rec design. There are two
+primary components: the Multi Layer Perceptron (MLP)
+layer modules and the Embedding Tables (EMBs). The
+MLP layers are used to process continuous features, such
+as user age, while the EMBs are used to process categorical
+features by encoding sparse, high-dimensional inputs into
+dense, vector representation. The encoded vectors are pro-
+cessed by an interaction operation followed by a top MLP
+
+==== Page 3 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+MLPbottomDense FeaturesSparse Features……………0001111TT-RecTT-EMB1TT-ReccacheTT-EMB2TT-ReccacheTT-EMB3TT-ReccacheEmbedding AggregationEMBNEMBN-1……Feature InteractionMLPtopPredictionBaselineEMB1EMB2EMBNEMBN-1EMB3…
+Figure 2. Generalized model architecture for DLRMs. The shaded
+structure (with orthogonal green stripes) is the baseline DLRM
+and the yellow box to its right represents the alternative proposed
+TT-Rec design that would replace the baseline in the stack.
+layer.
+The sparse embedding tables pose infrastructure challenges
+from both the perspectives of storage and bandwidth require-
+ment. There are tens of millions of rows in an embedding
+table, where the number of rows are growing exponentially
+for future recommendation models, resulting in memory
+requirement into the TB scale (Zhao et al., 2020). Further-
+more, the EMB lookup operation gathers multiple embed-
+ding vectors simultaneously across the tables, making the
+execution memory bandwidth bound. To address the ever-
+increasing memory capacity and bandwidth challenges, this
+work examines a fundamentally different approach—instead
+of gathering dense embedding vectors from EMBs that store
+information in the latent space representation, we seek meth-
+ods to replace large EMBs with a sequence of small matrix
+products using tensor train decomposition.
+Tensor-train decompositions. Similar to matrix de-
+composition, such as Singular Value Decomposition
+(SVD) (Xue et al., 2013) and Principal Component Analysis
+(PCA) (Wold et al., 1987), Tensor-Train (TT) is an approach
+to tensor decomposition by decomposing multidimensional
+data into product of smaller tensors. TT is a simple and
+robust method for model compression (Oseledets, 2011)
+and has been studied extensively for deep learning applica-
+tion domains, such as computer vision (Yang et al., 2017)
+and natural language understanding (Hrinchuk et al., 2020).
+However, such method has not been investigated for the deep
+learning recommendation space; thus, its potential remains
+unknown. Here, we describe the fundamental principle of
+TT-decomposition and its application to recommendation
+embedding.
+AssumeA2RI1I2:::Idis ad dimensional tensor, where
+Ikis the size of dimension k.Acan be decomposed as
+A(i1;i2;:::;id) =G1(:;i1;:)G2(:;i2;:):::Gd(:;id;:);whereGk2RRk 1IkRk, andR0=Rk= 1 to keep
+product of the sequence of matrices a scalar. The se-
+quencefRkgd
+k=0is referred as to TT-ranks , and each 3-
+dimensional tensor Gkis called a TT-core .
+The TT decomposition can also be generalized to com-
+press a matrix W2RMN. We assume that MandN
+can be factorized into sequences of integers, i.e., M=Qd
+i=1mk;andN=Qd
+i=1nk. Correspondingly, we re-
+shape the matrix Was a 2d-dimensional tensor W 2
+R(m1n1)(m2n2) (mdnd), where
+W((i1;j1);(i2;j2);:::; (id;jd))
+=G1(:;i1;j1;:)G2(:;i2;j2;:):::Gd(:;id;jd;:)(1)
+and each 4-d tensor Gk2RRk 1mknkRk,R0=Rd=
+1. LetR;m , andnbe the maximal rk;mkandnkrespec-
+tively fork= 1;:::;d . TT format reduces the space for
+storing the matrix from O(MN)toO(dR2max(m;n)2).
+Table 2 in Section 6.6 illustrates the detailed embedding ta-
+ble sizes and their corresponding compressed dimensions.
+3 P ROPOSED DESIGN OF TT-R EC
+In this section, we present the proposed design, called TT-
+Rec. TT-Rec customizes the TT-decomposition method to
+compress embedding tables in deep learning recommenda-
+tion models ( §3.1). An overview of our design, where the
+large embedding tables are replaced with TT-Rec, is shown
+in Figure 2. In order to compensate the accuracy loss from
+replacing embedding vectors with vector-matrix multipli-
+cations, we introduce a new way to initialize the element
+distribution for the TT-cores ( §3.2). This is an important
+step, since the distribution of the weights resulting from
+multiplication of the TT-cores are skewed from TT-cores’
+initial distribution due to the product operation.
+3.1 Customizing TT-decomposition for Embedding
+Table Compression
+Each embedding lookup can be interpreted as a one-hot vec-
+tor matrix multiplication wT
+i=eT
+iW, whereeiis a vector
+withi-th position to be 1, and 0 anywhere else. In more com-
+plex scenarios, an embedding lookup represents a weighted
+combination of multiple items w=P
+kiT
+kW. We compress
+the embedding table Was in Equation (1), and hence em-
+bedding lookup operation of row i=Pd
+i=1ikQd
+j=i+1Ij
+is be represented the following:
+wi=G1(:;i1;:;:)G2(:;i2;:;:):::Gd(:;id;:;:) (2)
+Letw(k)
+i2RQk 1
+i=1ninkRkbe the partial product of the
+ﬁrstkTT-cores in Equation 2. The tensor multiplication
+ofw(k)
+iGk+1(:;ik;:;:)can be unfolded and formulated as
+a matrix-matrix multiplication where w(k)
+i2RQk
+i=1niRk
+andGk+1(:;ik;:;:)2RRknk+1Rk+1.
+
+==== Page 4 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+0E+04E+67E+61E+7
+-0.001 0.000 0.001Sampled N(0,1) N(0,1/3n)
+Uniform(-1/sqrt(n), 1/sqrt(n))
+Figure 3. The probability density function (PDF) of product of
+three independent and identically distributed (i.i.d.) random vari-
+ables (left) from Uniform(0,1) and from N(0,1); and from (right)
+sampled Gaussian distribution (red), comparing to N(0;1)(grey)
+and uniform distribution.
+In uncompressed models, storing and updating an embed-
+ding table of size MNrequires forO(MN)space, while
+in TT-Rec, we propose to only learn the gradient of the
+loss function Lwith respect to the TT-cores through back-
+ward propagation (Equation 3). Let@L
+@ybe the gradient with
+respect to the output y, and@L
+@w(k+1)
+i=@L
+@yfork=d,
+@L
+@Gk(:;ik;:;:)= (w(k)
+i)T@L
+@w(k+1)
+i
+@L
+@w(k)
+i=@L
+@w(k+1)
+iGT
+k(:;ik;:;:)(3)
+Not all sparse features are equally important is a key ob-
+servation used in the design of TT-Rec. Data samples in
+industry-scale recommendation use cases often follow a
+Power or Zipﬁan distribution (Wu et al., 2020). A small
+subset of sparse features capture a signiﬁcant portion of
+training samples that index to the set of the features in the
+embedding tables. This observation is particularly impor-
+tant to reduce the data movement overhead when GPUs are
+employed as AI training accelerators.
+One of the performance optimization potential unlocked
+by TT-Rec is that the collection of DLRMs that require
+memory capacities larger than that of training accelerators
+can now easily run on accelerators. In addition to opti-
+mizing TT-Rec’s performance using GPUs, we introduce
+a caching scheme to retain the frequently-accessed embed-
+ding vectors/rows in the EMBs. The cache enables TT-Rec
+to exploit the aforementioned temporal locality by storing
+most frequently-accessed embedding rows in the uncom-
+pressed format. By doing so, TT-Rec minimizes the need
+of computation. The detail of the performance optimization
+implementation are described in detail later in Section 4.2.
+3.2 Weight Initialization
+Replacing an embedding vector lookup with a sequence
+of tensor computation to approximate the original vector
+may introduce an accuracy loss in TT-Rec. To compensate
+the accuracy loss, we introduce a new way to initialize the
+weights of the TT-cores. Typically, larger TT-ranks provide
+lower compression ratios while achieving model accuracyDistribution KL-divergence Accuracy
+uniform( ( 1pn;1pn)) 0 79.263 %
+N(0;1) c 1
+6n78.123 %
+N(0;1=2)c 1
+3n+ 0:34 78.371 %
+N(0;1=8)c 4
+3n+ 1:4 78.823 %
+N(0;1=3n) 0:17 79.256 %
+N(0;1=9n2)1
+2ln18
+n 1:5n 79.220 %
+Table 1. The accuracy of uncompressed DLRM with embed-
+ding tables initialized from various Gaussian distributions, c=
+0:5 ln2
+n< 7, compared with uniform distribution.
+closer to that of the baseline. However, when increasing the
+TT-rank value in TT-Rec, we ﬁnd that the corresponding ac-
+curacy improvements saturate quickly despite the decreasing
+compression ratios, as we show later in detail in Section 6.6.
+This led us to investigate the initialization behavior of the
+uncompressed baseline and TT-Rec—the initial distribution
+of the TT-cores can signiﬁcantly inﬂuence the model quality.
+Since the TT decomposition approximates the full tensor,
+we hope to ﬁnd the best conﬁguration of the uncompressed
+model and have TT-Rec approximate the same conﬁguration.
+For the uncompressed DLRMs, uniform random distribu-
+tion usually outperforms normal distribution. For validation,
+we initialize DLRMs with different forms of Gaussian dis-
+tribution. Then, we determine the correlation between the
+model accuracy and the distance between the Gaussian and
+uniform distribution.
+To approximate a uniform distribution on [a;b]by a Gaus-
+sian distributionN(;2), we want to minimize the KL-
+divergence
+DKL(PjQ) = Z1
+ 1P(x) lnP(x)
+Q(x)dx
+whereP(x) =1
+b aifx2[a;b], otherwise 0; and Q(x) =
+1p
+22e(x )2
+22. Minimizing the KL-divergence for a given
+uniform distribution using the ﬁrst-order approach results in
+=a+b
+2; 2=(b a)2
+12:
+Therefore, to best approximate the uniform distribution
+used in the DLRM (Uniform ( 1pn;1pn)), we should adopt
+N(0;1
+3n)for initialization. Table 1 shows the accuracy of
+the DLRMs that are initialized with various Gaussian forms,
+where accuracy gap is proportional to the KL-divergence
+between the Gaussian and uniform distribution.
+For TT-Rec, we want the product of TT cores to either
+approximate Uniform ( 1pn;1pn)orN(0;1
+3n)during initial-
+ization. Initializing the TT-cores is challenging since the
+distribution of product of random variables is non-trivial. In
+practice, both uniform and normal distributions can be used
+
+==== Page 5 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Embedding Lookup 
+Warm up LFU 
+counter 
+Train TT-Rec Uncompress 
+frequent rows 
+from TT; 
+Update cache Cache Lookup( IC)
+TT Lookup( IT)Partition 
+Lookup Index 
+ I = IC ∪ IT  
+Loss 
+Partition 
+Lookup Index 
+ I = IC ∪ IT  Embedding Update 
+Cache Update( IC)
+TT Update(  IT )Forward propagation 
+Backward propagation Stage 1 Stage 3 Stage 2 
+Figure 4. Multi-stage training process with caching.
+to reasonably initialize TT-cores.However, the TT product
+of these distributions do not serve as an appropriate approx-
+imation for uniform distribution as Figure 3 (left) shows.
+To better approximate the best Gaussian distribution shown
+in Table 1, we reduce the amount of values close to zero
+in each core by sampling the Gaussian distribution. Our
+sampling method is shown in Algorithm 3 in Appendix A.
+We validate the product of the TT-cores with Algorithm 3
+in Appendix A. In Figure 3-(right), we compare the product
+withN(0;1=3n), which serves as the best approximation
+to Uniform ( 1=pn;1=pn). We show later in Section 6.2
+that our algorithm achieves the highest accuracy in training.
+4 P ERFORMANCE OPTIMIZATIONS
+Replacing embedding vectors with TT-core multiplications
+trades-off memory with computation. Depending on the em-
+bedding vector lookup patterns and the underlying system
+architectures, training time overhead from the computations
+can vary. In order to mitigate the associated performance
+overhead, we introduce a cache structure as part of TT-Rec
+to leverage the observation – a small subset of features (rows
+in embedding tables) constitute most of the embedding ta-
+ble accesses. Thus, here, we describe the execution ﬂow
+for deep learning recommendation model training: forward
+propagation and backward propagation implementations in
+Section 4.1. Then, we introduce TT-Rec’s cache design to
+improve the training time performance in Section 4.2.
+4.1 TT-Rec Implementation
+The embedding layer takes row indices as input in Com-
+pressed Sparse Row (CSR) format. The input is translated
+into multiple embedding bags, in which the embedding vec-
+tors belonging to an embedding bag are pooled together by
+summation or average. Let indices []be an integer array
+of lengthn, andoffsets []be an integer array of length
+mnto specify the starting index in indices []of each
+embedding bag. Speciﬁcally, to compute for jth embedding
+bag with embedding matrix W, the algorithm will summa-rize or average the rows fW(indices [k];:)joffsets [j]
+k < offsets [j+ 1]g. In TT-Rec, this is computed as a
+sequence of small matrix-matrix products.
+outputi=offset [i+1]X
+k=offset [i]indices [k]windices [k]
+=offset [i+1]X
+k=offset [i]indices [k]G1(ik
+1;:;:):::Gd(:;ik
+d;:);
+(4)
+whereik
+jindexes the slice in Gjthat is used for computing
+vectorW(indices [k];:), andiis the per sample weight
+associated with each embedding vector.
+To obtain a high-performance implementation of TT-
+EmbeddingBag, we use a batched GEMM implementation
+from cuBLAS (NVIDIA, 2020). The algorithm computes
+and stores the intermediate GEMM results tri=tri 1Gi,
+wheretr1=G1, for allBvectors by a single batched
+GEMM kernel. Given a batch of queried embedding vec-
+tors, the algorithm reduces the batch to embedding bags in
+parallel. Algorithm 1 of Appendix A shows the pseudocode
+of the batched embedding kernel for the 3-dimensional TT
+decomposition. This algorithm can be generalized to any
+arbitrary TT dimension by extending lines 5-10 to set up the
+pointers to intermediate GEMM results.
+The backward propagation algorithm for the 3-dimensional
+TT compression is illustrated by Algorithm 2 of Appendix A.
+Based on the chain rule as described in Equation 3, we com-
+pute the gradient w.r.t. the embedding bags, and accumulate
+the gradients into each TT-core.
+4.2 A Least-Frequently-Used Cache for TT-Rec
+While TT-Rec reduces the memory requirement of embed-
+ding tables, this method introduces latency through addi-
+tional computations from (1) reconstructing values of the
+queried embedding rows from the TT format in the forward
+propagation, (2) determining the gradient for each TT-core
+in the backward propagation, and (3) recomputing the inter-
+mediate GEMM results for the gradient computation.
+Recomputation of the intermediate results, in Algorithm 2
+(line 3) of Appendix A, can be eliminated by storing ten-
+sors from the forward pass. This reduces the latency but
+comes with slightly increased memory footprint and mem-
+ory allocation time. The dominating source of performance
+optimization potential, however, comes from the aforemen-
+tioned distribution of sparse features in the training samples.
+The row access frequency follows the Power Law distribu-
+tion in the largest embedding tables, i.e. a few embedding
+vectors are recurrently accessed throughout training.
+To consider the characteristics of recommendation data sam-
+
+==== Page 6 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Emb. Table Dimensions TT-Core Shapes # of TT Parameters Memory Reduction
+# Rows Emb. Dim. G1G2G3R= 16R= 32R= 64R= 16R= 32R= 64
+10131227 16 (1, 200, 2,R)(R, 220, 2,R)(R, 250, 4, 1) 135040 495360 1891840 1200 327 86
+8351593 16 (1, 200, 2,R)(R, 200, 2,R)(R, 209, 4, 1) 122176 449152 1717504 1094 297 78
+7046547 16 (1, 200, 2,R)(R, 200, 2,R)(R, 200, 4, 1) 121600 448000 1715200 927 252 66
+5461306 16 (1, 166, 2,R)(R, 175, 2,R)(R, 188, 4, 1) 106944 393088 1502976 817 222 58
+2202608 16 (1, 125, 2,R)(R, 130, 2,R)(R, 136, 4, 1) 79264 291648 1115776 445 121 32
+286181 16 (1, 53, 2,R) (R, 72, 2,R) (R, 75, 4, 1) 43360 160448 615808 106 28 7
+142572 16 (1, 50, 2,R) (R, 52, 2,R) (R, 55, 4, 1) 31744 116736 446464 72 19 5
+Table 2. The original dimensions of Kaggle’s 7 largest embedding tables in DLRM and their respective TT decomposition parameters.
+ples, we incorporate a software cache structure to store the
+frequently-used embedding vectors on the GPU. The cache
+stores an uncompressed copy of the frequently accessed
+embedding vectors. As Section 6.5 later shows, we perform
+performance sensitive analysis over a wide range of cache
+sizes and empirically determine that devoting 0.01% of the
+respective embedding tables as TT-Rec caches is sufﬁcient
+from both model accuracy’s and training time’s perspectives.
+Given the sequence of embedding bags, the indices are
+ﬁrst partitioned into two different groups: cachedindices
+andttindices . The cached embedding rows are directly
+fetched from the cache whereas the embedding vectors from
+thettindices group are computed, following the forward
+propagation operations described in Algorithm 1. Then,
+during the backward propagation, the cached, uncompressed
+vectors can be simply updated with W0=W+@L
+@W, while
+the non-cached vectors are updated to TT-cores as described
+in Algorithm 2. In this way, the weights of the two index
+sets are learned separately by the cache and the TT cores.
+In order to offset the cache population overheads, TT-
+Rec adopts a semi-dynamic cache, where the frequently-
+accessed embedding vectors are loaded into cache only ev-
+ery 100s to 1000s of iterations, initialized from TT cores.
+In order to track the frequencies of the all the existing in-
+dices, an open addressing hash table is used. On the other
+hand, the learned weights in the cache would be discarded
+when an eviction happens. In practice, this strategy does
+not affect training accuracy as the evicted cache lines are
+not accessed frequently and therefore contribute less to the
+overall model. We chose this strategy as decomposing the
+evicted vectors and updating the decomposed parameters
+with the existing TT cores are equivalent to dynamically
+tracking TT decomposition for a streaming matrix, which is
+a challenging algebraic problem itself.
+Figure 4 summarizes the multi-stage training process. The
+model training starts with the TT embedding tables only.
+The ﬁrst few iterations (e.g. 10% training samples) are
+used to warm up the cache state. The most frequently ac-
+cessed embedding vectors will be stored in the cache as
+uncompressed. Depending on the phase behavior, one might
+consider updating the cache and repeat the warm up pro-cess periodically. Based on our empirical observation, the
+set of the most-frequently-accessed vectors are stable over
+window, indicating little periodic warm-up need.
+5 E XPERIMENTAL SETUP
+Deep Learning Recommendation Model Parameters
+and Data Sets: We implement the proposed TT-Rec de-
+sign over the open-source MLPerf reference implementation
+of the DLRM recommendation model architecture (MLPerf-
+DLRM) (Mattson et al., 2020a;b; MLPerf, 2020; Naumov
+et al., 2019). We train TT-Rec with the Criteo Kaggle Dis-
+play Advertising Challenge Dataset (Kaggle) (Criteo Labs,
+2014) and Criteo Terabyte Click Logs (Criteo Labs, 2013).
+In both the datasets, each data sample consists of 13 numer-
+ical features and 26 categorical features, and a binary label.
+Kaggle contains 7 days of ads click data, whereas Terabyte
+contains 24 days of click data (4.3 billion records). The 26
+categorical features are interpreted into 26 embedding tables
+in TT-Rec, where each row in the embedding table corre-
+sponds to an element in that category. Figure 6-Baseline
+bars show the size and composition of the embedding tables
+in the two datasets. Table 2 summarizes the dimensions
+of the 7 largest embedding tables when training MLPerf-
+DLRM with Kaggle and the respective TT decomposition
+parameters.
+To study the effectiveness of TT-Rec, we adopt the same hy-
+perparamters as speciﬁed in the MLPerf-DLRM reference
+implementation, including the embedding dimensions, MLP
+dimensions, learning rate, and batch size. Both datasets are
+trained with the SGD optimizer. Note, as the dimension
+of the embedding increases from 64 to 512, the total mem-
+ory requirement is over 96 GB, exceeding the latest GPU
+memory capacity. This is when TT-Rec shines. The uncom-
+pressed baseline has to run on CPUs or multiple GPUs via
+model parallelism (which requires extra all-to-all communi-
+cation overheads) while TT-Rec enables recommendation
+training on GPUs with data parallelism.
+For accuracy evaluation, we report the test accuracy (%)
+as well as the BCE loss. We train TT-Rec for a single
+epoch using all the data samples in Kaggle. For Terabyte,
+
+==== Page 7 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+8080.180.280.380.480.580.680.780.880.981
+3 TT-Emb.5 TT-Emb.7 TT-Emb.Accuracy (%)TT-Rank 8TT-Trank 16TT-Rank 32TT-Rank 64Baseline7878.178.278.378.478.578.678.778.878.979
+3 TT-Emb.5 TT-Emb.7 TT-Emb.Accuracy (%)TT-Rank 8TT-Trank 16TT-Rank 32TT-Rank 64Baseline
+(b) Terabyte7878.178.278.378.478.578.678.778.878.979
+3 TT-Emb.5 TT-Emb.7 TT-Emb.Accuracy (%)TT-Rank 8TT-Trank 16TT-Rank 32TT-Rank 64Baseline
+(a) Kaggle7878.178.278.378.478.578.678.778.878.979
+8163264Accuracy [%]TT-RankUniformGaussianSampled GaussianBaseline
+(c) Kaggle Distributions
+Figure 5. (a) and (b) Validation accuracy of TT-Rec with various tables compressed and TT ranks training with Kaggle and Terabyte
+respectively. (c) Validation accuracy of TT-Rec using different initialization techniques on Kaggle with 7 TT-Embedding tables.
+02468101214
+Baseline3 TT-Emb.5 TT-Emb.7 TT-Emb.Baseline3 TT-Emb.5 TT-Emb.7 TT-Emb.KaggleTerabyteMemory Requirement (GB)4x 48.2x117.3x2.5x21.8x95.5xTT-Rec Compression RatioTT-Rec Compression Ratio
+Figure 6. TT-Rec shows signiﬁcant model size reduction when
+compressing different number of embeddings for Kaggle in green,
+and Terabyte in purple labels (TT-rank of 32).
+we downsize the negative training samples by 0.875, as
+speciﬁed by the MLPerf-DLRM benchmark.
+All the evaluation results are obtained by training Kaggle
+dataset on an NVIDIA Tesla V100-SXM2 GPU with an Intel
+Xeon E5-2698 CPU. Terabyte dataset results are obtained
+on the same system but using eight CPUs with a single GPU
+due to its larger system memory requirement.
+6 E XPERIMENTAL RESULTS
+TT-Rec: Overall, TT-Rec demonstrates to be an effective
+technique. Here, we ﬁrst present the TT-Rec results without
+using our custom designed cache. For Kaggle, TT-Rec
+reduces the overall model size requirement by 4 to 221,
+from 2.16 GB to less than 0.5 GB. The different capacity
+reduction comes with validation accuracy loss ranging from
+0.03% to 0.3%, and a small amount of training time increase
+by 7.4% on average. Similarly, for Terabyte, the overall
+model size requirement is reduced by 112 , from 12.57 to
+0.11 GB. The model quality experiences no degradation,
+TT-Rec outperforms the uncompressed baseline by 0.2%
+to 0.5% on validation accuracy. Finally, this comes with atraining time increase by 13.9% on average.
+6.1 Memory Capacity Requirement with TT-Rec
+TT-Rec achieves signiﬁcant compression ratios for the em-
+bedding tables of Terabyte and Kaggle, by as much as 327 
+and by an average of 181 (with TT-rank of 32). In the
+uncompressed baseline, the 7 largest tables constitutes 99%
+of the model. For Kaggle, with TT-Rec, the memory re-
+quirement of the 7 embedding tables is reduced from 2.16
+GB to only 18 MB, leading to 112 model size reduction.
+Figure 6 compares the memory capacity requirement (y-
+axis) between the baseline and TT-Rec (x-axis) across the
+3, 5, and 7 largest embedding tables. As illustrated in Fig-
+ure 6, the model size requirement also becomes signiﬁcantly
+lower when TT-Rec trains the less number of the large em-
+bedding tables in the TT-Emb. format – for TT-Emb. of 5
+and 3, the overall model size is reduced by 48 and 4,
+respectively. For Terabyte, TT-Rec achieves 2.6, 21.8, and
+95.5model size reduction for TT-Emb. of 3, 5 and 7,
+respectively. This impressive memory capacity reduction
+unlocks industry-scale multi-GB/TB DLRMs that cannot be
+previously trained using commodity training accelerators,
+such as GPUs (40 GB of HBM2 in the latest NVIDIA A100
+GPUs (NVIDIA, 2020b) or TPUs 16-32 GB of HBM (Chao
+& Saeta, 2019)), to enjoy signiﬁcantly higher throughput
+performance in state-of-the-art training accelerators.
+6.2 Model Accuracy with TT-Rec
+To achieve accuracy-neutral while still enjoying TT-Rec’s
+memory reduction beneﬁt, Figure 5(a) and (b) compare the
+validation accuracy of the uncompressed baseline with that
+of TT-Rec for Kaggle and Terabyte, respectively. Figure 5(a)
+shows that, when TT-Rec trains the largest 3, 5, and 7 em-
+bedding tables in the TT-Emb. format (x-axis), the optimal
+TT-rank to achieve a nearly accuracy-neural result varies,
+with the optimal rank of 8, 32, and 64, respectively.
+Interestingly, for Terabyte, Figure 5(b) shows that TT-Rec
+
+==== Page 8 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+0.951.051.151.25
+3 TT-Emb.5 TT-Emb.7 TT-Emb.3 TT-Emb.5 TT-Emb.7 TT-Emb.KaggleTerabyteTraining Time Normalized to Baseline(Lower is Better)TT-Rank = 8TT-Rank = 16TT-Rank = 32TT-Rank = 641.301.53
+Figure 7. Training time comparison across TT-Rec settings. Base-
+line takes 12.14ms/iter on Kaggle, and 12.64ms/iter on Terabyte.
+Embedding Table SizeCost [GFLOPs or GB]1E-41E-31E-21E-11E+01E+11E+2
+0.0E+0 2.5E+6 5.0E+6 7.5E+6 1.0E+7
+T3nsor Comp TT-Rec Comp T3nsor Mem TT-Rec Mem
+Figure 8. System resource requirement of T3nsor and TT-Rec.
+achieves higher validation accuracies (y-axis) across the
+board. As expected, with more embedding tables trained in
+the TT-Emb. format, TT-Rec brings signiﬁcantly higher
+model size reduction at the expense of model accuracy
+degradation. Increasing the number of the large embedding
+tables trained in the TT-Emb. format from 3 to 7 improves
+the model size reduction from 2.6 to 95.5 while the vali-
+dation accuracy degrades from 80.975% to 80.682%. Note,
+even though the validation accuracy is lowered, the model
+accuracy (TT-Emb. of 7) still outperforms the uncompressed
+baseline of 80.45%.
+Using larger TT-ranks produces more accurate models at
+the expense of lower compression ratios. We notice that,
+although mathematically larger TT-ranks should produce
+more accurate approximations to the full tensor, increasing
+the rank does not always compensate the loss of accuracy.
+We believe that such accuracy loss is caused by the weight
+initialization distribution, as we describe next.
+Figure 5(c) presents the TT-Rec accuracy results using the
+different weight initialization strategies, described in §3.2.
+Recall, the model accuracy difference between TT-Rec and
+the baseline strongly correlates with the distance between
+the distribution of the full matrix generated by the set of
+the tensor cores and the uniform distribution. Thus, the
+sampled Gaussian distribution is expected to outperform the
+other distributions as the full matrix generated by TT-Rec
+approximateN(0;1
+3n)the best. The accuracy results in
+Figure 5(c) verify this expectation empirically.
+Training Progress [%]% Difference
+0.5%1.0%5.0%10.0%50.0%100.0
+20 40 60 80 100TB EMB1 TB EMB2 TB EMB3 KG EMB1
+KG EMB2 KG EMB3Figure 9. The set of frequently-accessed embedding rows over time
+stabilize at around 5% and 50% of the training run for Terabyte
+and Kaggle, respectively.
+6.3 Training Time Performance of TT-Rec
+To have a full picture of TT-Rec’s potential, we present the
+training time performance of TT-Rec next. Figure 7 depicts
+the normalized training time of TT-Rec (y-axis), using TT-
+ranks of [8, 16, 32, 64] across the TT-Emb. settings of [3, 5,
+7] (x-axis). Higher model size reduction ratios come with
+higher training time overheads. Increasing the number of
+the large embedding tables trained in the TT-Emb. format
+from 3 to 7 reduces the model sizes by 46.5 and 37.4 
+for Kaggle and Terabyte, respectively, while the training
+time using the optimal TT-rank increases by 12.5% and
+11.8%, respectively. Depending on the importance of the
+three axes— memory capacity requirement ,model quality
+andtraining time performance for DLRM training—TT-
+Rec offers a ﬂexible design space that can be navigated
+according to the desired optimization goal.
+6.4 TT-Embedding Kernel Implementation Efﬁciency
+To quantify the efﬁciency of our TT-Rec implementation,
+we compare the performance of the TT-Embedding kernel
+with the baseline PyTorch EmbeddingBag operator (Paszke
+et al., 2019) and the state-of-the-art TT embedding library,
+called T3nsor (Hrinchuk et al., 2020), for word embedding
+of NLP use cases. Figure 8 shows that our TT-Embedding
+implementation is order-of-magnitude more efﬁcient than
+that of T3nsor, from the perspectives of compute (repre-
+sented by circle) and memory (represented by square) re-
+quirement, over the number of rows in embedding table
+(x-axis). T3nsor decompresses embedding tables on the
+ﬂy; thus, it requires the same amount of memory footprint
+during training as that of the PyTorch Embedding Bag op-
+erator. Our implementation achieves a memory footprint
+reduction of#EmbRows
+BatchSizeyielding roughly 10,000 lower
+memory footprint requirement as compared to T3nsor and
+the PyTorch implementation. The overall training time of
+TT-Rec is on par with that of the baseline using the PyTorch
+Embedding Bag operator (Figure 7; TT-Emb. of 3; Kaggle),
+and is 2.4faster than T3nsor on average.
+
+==== Page 9 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Warmup Iterations [% of Total Iterations]Normalized Execution Time
+Accuracy Difference [%]
+0.500.751.001.251.50
+-0.0250.0000.0250.0500.0750.100
+10 20 30 40 50Kaggle Terabyte Kaggle-Accuracy Terabyte-Accuracy
+Cache Size [% of Emb. Table Rows]Normalized Execution Time
+Accuracy Difference [%]
+0.500.751.001.251.50
+-0.0250.0000.0250.0500.0750.100
+10 1 0.5 0.1 0.05 0.01Kaggle Terabyte Kaggle-Accuracy Terabyte-Accuracy
+Figure 10. The impact of warm-up iterations on the TT-Rec training time and model accuracy (left). The model training time and accuracy
+over the cache sizes with respect to the embedding table (right).
+6.5 Analysis for TT-Rec Cache Performance
+As described in §4.2, we introduce a cache structure in TT-
+Rec to capture the small subset of embedding rows with data
+locality. Based on the available memory capacity on the
+training system, TT-Rec caches an uncompressed version of
+frequently-accessed rows to reduce the computation need.
+To illustrate the feature reuse potential in the context of
+TT-Rec, Figure 9 depicts the percentage of changes in the
+set of the most-frequently-accessed 10k embedding rows
+over the training run, for the three largest embedding tables
+(EMB1, EMB2, and EMB3). We count the cumulative row
+access frequencies every 3%of training progress and mea-
+sure the difference between each consecutive points (y-axis
+of Figure 9 in the log-scale). This difference is indicative
+of training phase stability: the lower the difference is, the
+more stable the set of frequently-accessed rows is.
+Figure 10(a) shows the impact of warm-up iterations on the
+TT-Rec training time and model accuracy. During the warm-
+up period, the cache structure is being ﬁlled up with most-
+frequently-accessed embedding vectors, using the aforemen-
+tioned LFU replacement. Thus, the longer the warm-up
+period is, the better the TT-Rec cache captures the most-
+frequently-accessed embedding vectors and the higher the
+cache hit rate is for the remaining training iterations.
+For Kaggle, as the warm-up iterations increase from 10% to
+30% of the total training iterations, the total training time
+increases by 33%. This is because the training time speedup
+from the slightly higher cache hit rate (from the warm-up
+period) is not sufﬁcient to compensate the warm-up time
+overhead. As warm-up continues to increase beyond 30%
+of the training, we start seeing the training time overhead
+to decrease. This happens as the hit rate improves with
+more warm-up iterations. In contrast, with the larger Ter-
+abyte dataset, TT-Rec cache can effectively and consistently
+reduce the training time across the different warm-up itera-
+tions. It improves the end-to-end training time by up-to 19%
+with negligible accuracy impact. Overall, with the cache
+00.511.522.5
+P = 1P = 10P = 100Time / #-Embedding Lookups (ns)BaselineTT-Rank = 8TT-Rank = 16TT-Rank = 32Figure 11. Performance of TT-Rec for MLPerf-DLRM (P of 1)
+and embedding-dominated DLRMs (P of 10 and 100).
+00.050.10.150.20.250.30.35
+0.10.30.50.70.91.1Time / #-Embedding Lookup (us)Cache Hite RateTT-Rec (P=10)Baseline (P=10)TT-Rec (P=100)Baseline (P=100)
+Figure 12. Performance comparison for TT-Rec’s EmbeddingBag
+kernel and the baseline.
+support, TT-Rec receives additional accuracy improvement
+of 0.09% on Kaggle and 0.02% on Terabyte.
+Another important design parameter for TT-Rec is the size
+of the LFU cache. Figure 10(b) shows the corresponding
+model training time and accuracy over the cache sizes rang-
+ing from 0.01% to 10% of the respective embedding tables.
+For Kaggle and Terabyte, devoting 0.01% worth of the em-
+bedding table memory requirement is sufﬁcient.
+6.6 TT-Rec Performance with Large Pooling Factors
+To understand Rec-TT training performance for other cat-
+egories of DLRMs that are embedding-dominated (Gupta
+et al., 2020; Gupta et al., 2020; Ke et al., 2020), we develop
+a suite of microbenchmarks to synthetically generate em-
+bedding vectors with a polling factor (P) of 10 and 100. The
+pooling factor is deﬁned as the average number of embed-
+ding lookups required per training sample. The larger P, the
+more embedding vectors are looked up and gathered, and
+
+==== Page 10 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+the embedding operations are more expensive. Both Kaggle
+and Terabyte datasets correspond to P = 1.
+Figure 11 compares the performance of the non-cached TT-
+Rec kernel with PyTorch EmbeddingBag for P =[1, 10, 100]
+across various TT-ranks. As seen in Figure 11, the perfor-
+mance per training sample is better as P increases. This
+is because as the number of embedding lookups increase,
+the overhead of EmbeddingBag is amortized, in both the
+baseline and TT-Rec cases. Furthermore, the performance
+gap between the non-cached TT-Rec kernel and Embedding-
+Bag increases as P increases. This is because there exists
+higher reuses of embedding vectors when P is larger and
+EmbeddingBag beneﬁts from such reuse.
+To reduce the execution time of TT-Rec as P increases, Fig-
+ure 12 compares the performance of TT-Rec with caching
+enabled with EmbeddingBag. To quantify the timing per-
+formance per training sample, we synthetically generate
+data samples to control the cache hit rate. As expected, as
+the cache hit rate increases (the x-axis), the performance of
+TT-Rec improves and eventually outperforms the baseline
+EmbeddingBag when the cache hit rate reaches 90%.
+7 R ELATED WORK
+General Model Compression Techniques: Among the
+many compression techniques for training, the commonly-
+used ones include magnitude pruning (Zhu & Gupta, 2017),
+variational dropout (Kingma & Welling, 2013), and l0reg-
+ularization (Louizos et al., 2017). Other efforts propose to
+impose structured sparsity in model weights upfront (Child
+et al., 2019; Gray et al., 2017). Such approaches can sig-
+niﬁcantly reduce both training and inference cost, but have
+not been proven as effective solutions for deep learning rec-
+ommendation models. Furthermore, while these methods
+are generally applicable, the prior works are fundamentally
+different from our proposed TT-decomposition approach.
+Embedding Table Compression Techniques: The semi-
+nal work by Weinberger et al. examined feature hashing,
+allowing multiple elements to map to the same embedding
+vector; thus, it reduces the embedding space (Weinberger
+et al., 2009). However, hash collisions can yield signiﬁ-
+cant accuracy losses. For example, Zhao et al. observed
+an intolerable degree of accuracy loss if hashing were ap-
+plied to terabyte-scale recommendation models (Zhao et al.,
+2020). Guan et al. proposed a 4-bit quantization scheme
+to compress pre-trained models for inference (Guan et al.,
+2019). This design is feasible for recommendation inference
+although quantization for training is challenging and often
+comes with accuracy trade-off. A recent technique proposed
+is to generate embedding vectors on the ﬂy using dense
+neural networks (Kang et al., 2020). This work achieves
+a comparable accuracy against full embedding with 1/4thmodel size. However, it comes with 9xruntime overhead.
+Other works also explored the potential of low-rank approx-
+imation on the embedding tables (Ghaemmaghami et al.,
+2020; Hrinchuk et al., 2020) but experienced critical accu-
+racy degradation. None provides a computationally-efﬁcient
+interface for industry-scale DLRMs.
+Tensorization: Tensor methods have been extensively stud-
+ied for compressing DNNs. One of the most common
+method is the Tucker factorization (Cohen et al., 2016),
+which can generate high-quality DNNs when compressing
+fully-connected layers. Tensor Train (TT) and Tensor Ring
+(TR) decomposition techniques have been recently studied
+in the context of DNNs (Hawkins & Zhang, 2019; Wang
+et al., 2018). But previous work has explored the accu-
+racy trade-off for fully-connected and convolution layers
+only. In particular, TT decomposition offers a structural
+way to compress DNNs and thus is capable of preserving
+the DNN weights. TR can preserve the weights with moder-
+ately lower compression ratios than that of TT (Wang et al.,
+2018). Despite interest in TT-based methods, to the best of
+our knowledge, ours is the ﬁrst to consider them in the con-
+text of DLRMs. In our analysis, we comprehensively study
+the design space of how memory size reduction, model qual-
+ity, and training time overheads trade-off. Finally, we also
+present an efﬁcient implementation for TT-Rec, which we
+will release as open source upon the acceptance of this work.
+8 C ONCLUSION
+The spirit of TT-Rec is to use principled, parameterized al-
+gorithmic methods to help control the explosive demands on
+computational infrastructure. This strategy complements in-
+novations in the infrastructure itself. TT-Rec speciﬁcally at-
+tacks the considerable memory requirements of embedding
+layers of modern recommendation models, whose memory
+requirements in industrial applications at scale can require
+hundreds of GBs to TBs of memory. TT-Rec replaces oth-
+erwise large embedding tables with a sequence of matrix
+products, reducing the total model memory capacity re-
+quirement by 112 times with only a small amount of 13.9%
+training time overhead while maintaining the same model
+accuracy as the baseline. Such signiﬁcant memory capacity
+reductions can be achieved with a relatively small increase
+in training time through clever caching strategies, making
+online recommendation model training more practical.
+ACKNOWLEDGEMENTS
+We would like to thank Richard Vuduc and Mark Tygert for
+the rigorous discussions and thoughtful feedback. We also
+thank Hsien-Hsin Lee and Kim Hazelwood for supporting
+this work.
+
+==== Page 11 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+REFERENCES
+Acun, B., Murphy, M., Wang, X., Nie, J., Wu, C.-J.,
+and Hazelwood, K. Understanding training efﬁciency
+of deep learning recommendation models at scale. In
+Proceedings oftheIEEE International Symposium on
+High Performance Computer Architecture, 2021.
+Alibaba. Alibaba unveils ai chip to enhance cloud comput-
+ing power. https://www.alibabagroup.com/
+en/news/article?news=p190925 , 2019.
+Amazon. AWS Inferentia: High performance ma-
+chine learning inference chip, custom designed by
+AWS. https://aws.amazon.com/machine-
+learning/inferentia/ , 2019.
+Brown, T. B., Mann, B., Ryder, N., Subbiah, M., Kaplan,
+J., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G.,
+Askell, A., et al. Language models are few-shot learners.
+arXiv:2005.14165, 2020.
+Chao, C. and Saeta, B. Cloud TPU: Codesign-
+ing architecture and infrastructure, 2019. URL
+https://www.hotchips.org/hc31/HC31_
+T3_Cloud_TPU_Codesign.pdf .
+Child, R., Gray, S., Radford, A., and Sutskever, I.
+Generating long sequences with sparse transformers.
+arXiv:1904.10509, 2019.
+Chung, E., Fowers, J., Ovtcharov, K., Papamichael, M.,
+Caulﬁeld, A., Massengill, T., Liu, M., Ghandi, M., Lo, D.,
+Reinhardt, S., Alkalay, S., Angepat, H., Chiou, D., Forin,
+A., Burger, D., Woods, L., Weisz, G., Haselman, M., and
+Zhang, D. Serving DNNs in real time at datacenter scale
+with project brainwave. IEEE Micro , 38:8–20, March
+2018.
+Cohen, N., Sharir, O., and Shashua, A. On the expressive
+power of deep learning: A tensor analysis. In Proceedings
+oftheConference onlearning theory, 2016.
+Criteo Labs. Download terabyte click logs. https:
+//labs.criteo.com/2013/12/download-
+terabyte-click-logs/ , 2013.
+Criteo Labs. Kaggle display advertising challenge
+dataset. https://labs.criteo.com/2014/02/
+kaggle-display-advertising-challenge-
+dataset/ , 2014.
+Fowers, J., Ovtcharov, K., Papamichael, M., Massengill,
+T., Liu, M., Lo, D., Alkalay, S., Haselman, M., Adams,
+L., Ghandi, M., Heil, S., Patel, P., Sapek, A., Weisz, G.,
+Woods, L., Lanka, S., Reinhardt, S., Caulﬁeld, A., Chung,
+E., and Burger, D. A conﬁgurable cloud-scale dnn proces-
+sor for real-time ai. In Proceedings oftheInternational
+Symposium onComputer Architecture, June 2018.Ghaemmaghami, B., Deng, Z., Cho, B., Orshansky, L.,
+Singh, A. K., Erez, M., and Orshansky, M. Train-
+ing with multi-layer embeddings for model reduction.
+arXiv:2006.05623, 2020.
+Gray, S., Radford, A., and Kingma, D. P. Gpu kernels for
+block-sparse weights. arXiv:1711.09224, 3, 2017.
+Guan, H., Malevich, A., Yang, J., Park, J., and Yuen, H. Post-
+training 4-bit quantization on embedding tables, 2019.
+Gupta, U., Hsia, S., Saraph, V ., Wang, X., Reagen, B.,
+Wei, G., Lee, H. S., Brooks, D., and Wu, C. Deep-
+RecSys: A system for optimizing end-to-end at-scale
+neural recommendation inference. In Proceedings of
+theACM/IEEE Annual International Symposium on
+Computer Architecture, pp. 982–995, 2020.
+Gupta, U., Wu, C.-J., Wang, X., Naumov, M., Reagen,
+B., Brooks, D., Cottel, B., Hazelwood, K., Jia, B.,
+Lee, H.-H. S., Malevich, A., Mudigere, D., Smelyan-
+skiy, M., Xiong, L., and Zhang, X. The Archi-
+tectural Implications of Facebook’s DNN-based Per-
+sonalized Recommendation. In Proceedings ofthe
+IEEE International Symposium onHigh Performance
+Computer Architecture, 2020.
+Hawkins, C. and Zhang, Z. Bayesian Tensorized
+Neural Networks with Automatic Rank Selection.
+arXiv:1905.10478, 2019.
+Hazelwood, K. Deep learning: It’s not all about recognizing
+cats and dogs, 2020. URL https://databricks.
+com/speaker/kim-hazelwood .
+Hazelwood, K., Bird, S., Brooks, D., Chintala, S., Diril,
+U., Dzhulgakov, D., Fawzy, M., Jia, B., Jia, Y ., Kalro,
+A., Law, J., Lee, K., Lu, J., Noordhuis, P., Smelyanskiy,
+M., Xiong, L., and Wang, X. Applied machine learn-
+ing at Facebook: A datacenter infrastructure perspective.
+InProceedings oftheInternational Symposium onHigh
+Performance Computer Architecture, 2018.
+Hrinchuk, O., Khrulkov, V ., Mirvakhabova, L., Orlova, E.,
+and Oseledets, I. Tensorized embedding layers for efﬁ-
+cient model compression, 2020.
+Jouppi, N. P., Young, C., Patil, N., Patterson, D., Agrawal,
+G., Bajwa, R., Bates, S., Bhatia, S., Boden, N., Borchers,
+A., Boyle, R., Cantin, P., Chao, C., Clark, C., Coriell, J.,
+Daley, M., Dau, M., Dean, J., Gelb, B., Ghaemmaghami,
+T. V ., Gottipati, R., Gulland, W., Hagmann, R., Ho, C. R.,
+Hogberg, D., Hu, J., Hundt, R., Hurt, D., Ibarz, J., Jaffey,
+A., Jaworski, A., Kaplan, A., Khaitan, H., Killebrew, D.,
+Koch, A., Kumar, N., Lacy, S., Laudon, J., Law, J., Le,
+D., Leary, C., Liu, Z., Lucke, K., Lundin, A., MacKean,
+G., Maggiore, A., Mahony, M., Miller, K., Nagarajan, R.,
+
+==== Page 12 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Narayanaswami, R., Ni, R., Nix, K., Norrie, T., Omernick,
+M., Penukonda, N., Phelps, A., Ross, J., Ross, M., Salek,
+A., Samadiani, E., Severn, C., Sizikov, G., Snelham, M.,
+Souter, J., Steinberg, D., Swing, A., Tan, M., Thorson,
+G., Tian, B., Toma, H., Tuttle, E., Vasudevan, V ., Walter,
+R., Wang, W., Wilcox, E., and Yoon, D. H. In-datacenter
+performance analysis of a tensor processing unit. In
+Proceedings oftheACM/IEEE International Symposium
+onComputer Architecture, 2017.
+Kang, W.-C., Cheng, D. Z., Yao, T., Yi, X., Chen, T., Hong,
+L., and Chi, E. H. Deep hash embedding for large-vocab
+categorical feature representations. arXiv:2010.10784 ,
+2020.
+Ke, L., Gupta, U., Cho, B. Y ., Brooks, D., Chandra, V ., Diril,
+U., Firoozshahian, A., Hazelwood, K., Jia, B., Lee, H. S.,
+Li, M., Maher, B., Mudigere, D., Naumov, M., Schatz, M.,
+Smelyanskiy, M., Wang, X., Reagen, B., Wu, C., Hemp-
+stead, M., and Zhang, X. RecNMP: Accelerating per-
+sonalized recommendation with near-memory processing.
+InProceedings oftheACM/IEEE Annual International
+Symposium onComputer Architecture, 2020.
+Kingma, D. P. and Welling, M. Auto-encoding variational
+bayes. arXiv:1312.6114, 2013.
+Lee, K. and Rao, V . Accelerating facebook’s in-
+frastructure with application-speciﬁc hardware.
+https://engineering.fb.com/data-
+center-engineering/accelerating-
+infrastructure/ , March 2019.
+Louizos, C., Welling, M., and Kingma, D. P. Learn-
+ing sparse neural networks through l0regularization.
+arXiv:1712.01312, 2017.
+Lui, M., Yetim, Y ., ¨Ozg¨ur¨Ozkan, Zhao, Z., Tsai, S.-Y ., Wu,
+C.-J., and Hempstead, M. Understanding capacity-driven
+scale-out neural recommendation inference. Proceedings
+of the IEEE International Symposium on Performance
+Analysis of Systems and Software, 2021.
+Mattson, P., Cheng, C., Coleman, C., Diamos, G., Micike-
+vicius, P., Patterson, D., Tang, H., Wei, G.-Y ., Bailis, P.,
+Bittorf, V ., Brooks, D., Chen, D., Dutta, D., Gupta, U.,
+Hazelwood, K., Hock, A., Huang, X., Jia, B., Kang, D.,
+Kanter, D., Kumar, N., Liao, J., Narayanan, D., Oguntebi,
+T., Pekhimenko, G., Pentecost, L., Reddi, V . J., Robie, T.,
+John, T. S., Wu, C.-J., Xu, L., Young, C., and Zaharia,
+M. MLPerf training benchmark. Proceedings of the
+Conference on Systems and Machine Learning, 2020a.
+Mattson, P., Reddi, V . J., Cheng, C., Coleman, C., Di-
+amos, G., Kanter, D., Micikevicius, P., Patterson, D.,
+Schmuelling, G., Tang, H., Wei, G.-w., and Wu, C.-J.Mlperf: An industry standard benchmark suite for ma-
+chine learning performance. IEEE Micro , 40(2):8–16,
+2020b.
+MLPerf. MLPerf Training. https://mlperf.org/
+training-overview/#overview , 2020.
+Naumov, M., Mudigere, D., Shi, H.-J. M., Huang, J., Sun-
+daraman, N., Park, J., Wang, X., Gupta, U., Wu, C.-J.,
+Azzolini, A. G., Dzhulgakov, D., Mallevich, A., Cher-
+niavskii, I., Lu, Y ., Krishnamoorthi, R., Yu, A., Kon-
+dratenko, V ., Pereira, S., Chen, X., Chen, W., Rao, V .,
+Jia, B., Xiong, L., and Smelyanskiy, M. Deep Learning
+Recommendation Model for Personalization and Recom-
+mendation Systems. arXiv:1906.00091, 2019.
+Naumov, M., Kim, J., Mudigere, D., Sridharan, S., Wang,
+X., Zhao, W., Yilmaz, S., Kim, C., Yuen, H., Ozdal, M.,
+Nair, K., Gao, I., Su, B.-Y ., Yang, J., and Smelyanskiy, M.
+Deep learning training in Facebook data centers: Design
+of scale-up and scale-out systems. arXiv:2003.09518 ,
+2020.
+Novikov, A., Podoprikhin, D., Osokin, A., and Vetrov,
+D. Tensorizing neural networks. Advances inNeural
+Information Processing Systems, pp. 442–450, 2015.
+NVIDIA. 2.8.13. cublasgemmbatchedex, cublas
+:: Cuda toolkit documentation, 2020. URL
+https://docs.nvidia.com/cuda/cublas/
+index.html#cublas-GemmBatchedEx .
+NVIDIA. NVIDIA DGX A100: the universal system for AI
+infrastructure, 2020a. URL https://www.nvidia.
+com/en-us/data-center/dgx-a100/ .
+NVIDIA. NVIDIA A100 Tensor Core GPU, 2020b. URL
+https://www.nvidia.com/content/dam/
+en-zz/Solutions/Data-Center/a100/pdf/
+nvidia-a100-datasheet.pdf .
+Oseledets, I. V . Tensor-train decomposition. Society for
+Industrial andApplied Mathematics , 45(4):1600–1621,
+2011.
+Ovtcharov, K., Ruwase, O., Kim, J.-Y ., Fowers, J., Strauss,
+K., and Chung, E. Toward accelerating deep learn-
+ing at scale using specialized hardware in the data-
+center. In Proceedings oftheIEEE Symposium on
+High-Performance Chips, August 2015.
+Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J.,
+Chanan, G., Killeen, T., Lin, Z., Gimelshein, N., Antiga,
+L., Desmaison, A., K ¨opf, A., Yang, E., DeVito, Z.,
+Raison, M., Tejani, A., Chilamkurthy, S., Steiner, B.,
+Fang, L., Bai, J., and Chintala, S. PyTorch: An im-
+perative style, high-performance deep learning library.
+arXiv:1912.01703, 2019.
+
+==== Page 13 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Reddi, V . J., Cheng, C., Kanter, D., Mattson, P.,
+Schmuelling, G., Wu, C.-J., Anderson, B., Breughe, M.,
+Charlebois, M., Chou, W., Chukka, R., Coleman, C.,
+Davis, S., Deng, P., Diamos, G., Duke, J., Fick, D., Gard-
+ner, J. S., Hubara, I., Idgunji, S., Jablin, T. B., Jiao, J.,
+John, T. S., Kanwar, P., Lee, D., Liao, J., Lokhmotov,
+A., Massa, F., Meng, P., Micikevicius, P., Osborne, C.,
+Pekhimenko, G., Rajan, A. T. R., Sequeira, D., Sirasao,
+A., Sun, F., Tang, H., Thomson, M., Wei, F., Wu, E., Xu,
+L., Yamada, K., Yu, B., Yuan, G., Zhong, A., Zhang, P.,
+and Zhou, Y . MLPerf inference benchmark. Proceedings
+of the ACM/IEEE Annual International Symposium on
+Computer Architecture, 2020.
+Wang, W., Sun, Y ., Eriksson, B., Wang, W., and Aggarwal,
+V . Wide Compression: Tensor Ring Nets. Proceedings
+oftheIEEE Computer Society Conference onComputer
+Vision andPattern Recognition, pp. 9329–9338, 2018.
+Weinberger, K., Dasgupta, A., Langford, J., Smola, A., and
+Attenberg, J. Feature hashing for large scale multitask
+learning. In Proceedings ofthe26th annual international
+conference onmachine learning, pp. 1113–1120, 2009.
+Wold, S., Esbensen, K., and Geladi, P. Principal compo-
+nent analysis. Chemometrics andintelligent laboratory
+systems, 2(1-3):37–52, 1987.
+Wu, C.-J., Burke, R., Chi, E. H., Konstan, J., McAuley,
+J., Raimond, Y ., and Zhang, H. Developing a recom-
+mendation benchmark for mlperf training and inference.
+arXiv:2003.07336, 2020.
+Xue, J., Li, J., and Gong, Y . Restructuring of deep neural
+network acoustic models with singular value decomposi-
+tion. Proceedings of Interspeech, 2013.
+Yang, Y ., Krompass, D., and Tresp, V . Tensor-train recurrent
+neural networks for video classiﬁcation. Proceedings of
+the International Conference on Machine Learning, 2017.
+Yi, X., Chen, Y .-F., Ramesh, S., Rajashekhar, V ., Hong,
+L., Fiedel, N., Seshadri, N., Heldt, L., Wu, X., and Chi,
+E. H. Factorized deep retrieval and distributed tensorﬂow
+serving. Proceedings of the Conference on Systems and
+Machine Learning, 2018.
+Zhao, W., Zhang, J., Xie, D., Qian, Y ., Jia, R., and Li, P.
+AIBox: CTR prediction model training on a single node.
+InProceedings oftheACM International Conference on
+Information andKnowledge Management, 2019.
+Zhao, W., Xie, D., Jia, R., Qian, Y ., Ding, R., Sun,
+M., and Li, P. Distributed hierarchical gpu parame-
+ter server for massive scale deep learning ads systems.
+arXiv:2003.05622, 2020.Zhu, M. and Gupta, S. To prune, or not to prune: ex-
+ploring the efﬁcacy of pruning for model compression.
+arXiv:1710.01878, 2017.
+
+==== Page 14 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+APPENDIX
+A A LGORITHM DETAILS
+Algorithm 1 and Algorithm 2 below shows the details of the forward and back-propagation algorithm for TT-Rec embedding
+tables. Algorithm 3 shows how the TT-cores are initialized using our proposed Sampled Gaussian method.
+Algorithm 1: Forward prop. of TT-Embedding
+1whileSidx<offsets [m]do
+2Eidx=min(offsets [Sidx+B];offsets [m])
+3 fork=SidxtoEidxdo
+4idx[j][k] =ik
+jin Eqn( 4)
+5a[k] = &G1[idx[1][k]][0]
+6b[k] = &G0[idx[0][k]][0]
+7c[k] = &tr0[k][0]
+8a[k+B] = &G2[idx[2][k]][0]
+9b[k+B] = &tr0[k][0]
+10c[k+B] = &tr1[k][0]
+11 end
+12 forj=0tod-2do
+13 BBatched GEMM kernel calls
+14 c[jB: (j+ 1)B] =a[jB: (j+ 1)B]b[jB: (j+ 1)B]
+15 end
+16BReduce embedding rows to output
+17 output [Sidx:Eidx] =Poffsets [i+1]
+j=offsets [i]c[j]
+18 Sidx=Eidx
+19end
+
+==== Page 15 ====
+TT-Rec: Tensor Train Compression for Deep Learning Recommendation Models
+Algorithm 2: Backward prop. of TT-Rec Embeddings
+1whileSidx<offsets [m]do
+2Eidx=min(offsets [Sidx+B];offsets [m])
+3 Recompute for tri’s as in Algorithm 1
+4 fork=SidxtoEidxdo
+5idx[j][k] =ik
+jin Eqn( 4)
+6a0[k] = &G0[idx[0][k]][0]
+7b0[k] = &tr0[k][0]
+8c0[k] = &trG1[k][0]
+9a1[k] = &tr0[k][0]
+10b1[k] = &G1[idx[1][k]][0]
+11c1[k] = &trG0[k][0]
+12a0[k+B] = &tr0[k][0]
+13b0[k+B] = &dx
+14c0[k+B] = &trG2[k][0]
+15a1[k+B] = &dx
+16b1[k+B] = &G2[idx[2][k]][0]
+17c1[k+B] = &tr0[k][0]
+18 end
+19 forj=d-2to0do
+20 BBatched GEMM calls to compute @Gj
+21 c0[jB: (j+ 1)B] =a0[jB: (j+ 1)B]b0[jB: (j+ 1)B]
+22 BBatched GEMM calls to compute @x
+23 c1[jB: (j+ 1)B] =a1[jB: (j+ 1)B]b1[jB: (j+ 1)B]
+24 @Gj[idx[k]]+ = trGj[k]
+25 end
+26startidx=endidx
+27end
+Algorithm 3: Sampled Gaussian initialization.
+1ford=0tott-dim do
+2Gd= random.normal(0,1)
+3 foreach entryGd(i;j;k;l )inGddo
+4 whileGd(i;j;k;l )2do
+5Gd(i;j;k;l )= random.normal(0,1)
+6Gd== (p
+1=3n)1=d
+

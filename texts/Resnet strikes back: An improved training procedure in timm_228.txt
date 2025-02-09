@@ -1,0 +1,1063 @@
+==== Page 1 ====
+ResNet strikes back: An improved training
+procedure in timm
+Ross WightmanHugo Touvron?;yHerv ´e J´egou?
+Independent researcher?Facebook AIySorbonne University
+Abstract
+The inﬂuential Residual Networks designed by He et al. remain the gold-standard
+architecture in numerous scientiﬁc publications. They typically serve as the default
+architecture in studies, or as baselines when new architectures are proposed. Yet
+there has been signiﬁcant progress on best practices for training neural networks
+since the inception of the ResNet architecture in 2015. Novel optimization & data-
+augmentation have increased the effectiveness of the training recipes.
+In this paper, we re-evaluate the performance of the vanilla ResNet-50 when
+trained with a procedure that integrates such advances. We share competitive train-
+ing settings and pre-trained models in the timm open-source library, with the hope
+that they will serve as better baselines for future work. For instance, with our more
+demanding training setting, a vanilla ResNet-50 reaches 80.4% top-1 accuracy at res-
+olution 224224 on ImageNet-val without extra data or distillation. We also report
+the performance achieved with popular models with our training procedure.
+1 Introduction
+In the last decade we have witnessed signiﬁcant advances in image classiﬁcation, as
+reﬂected by improvement on benchmarks such as the ILSVRC’2012 challenge [36] or
+other image classiﬁcation benchmarks, which are visible on popular websites1. Schemat-
+ically, the increase of performance reﬂects the maximization by the community of a
+problem of the form
+accuracy (model) = f(A;T;N);
+whereAis the architecture design, Tis the training setting along with its hyper-
+parameters, andNis the measurement noise, in which we also include overﬁtting that
+typically occurs when selecting the maximum over a large set of hyper-parameters or
+choices of methods. Several good practices exist to mitigate N, like measuring the stan-
+dard deviation with different seeds, using a separate evaluation dataset [34] or evalu-
+ating models on transfer tasks. Putting aside N, measuring progress on AorTposes
+a challenge as both AandTprogress over time. When optimizing jointly over ( A;T),
+there is no guarantee that the optimal choice T1for a given architecture A1remains the
+best for another model design A2. Therefore even when one compare models under the
+same training procedure, one may implicitly favor one model over another. One good
+practice to disentangle the improvement resulting from the training procedure from
+that of the architecture is to ensure that the baseline incorporates new “ingredients”
+1See for instance http://paperswithcode.com/task/image-classification
+1arXiv:2110.00476v1  [cs.CV]  1 Oct 2021
+
+==== Page 2 ====
+from the literature, and to put a reasonable amount of effort in adjusting the hyper-
+parameters. Ideally, i.e., without resource and time constraints, one would optimally
+adopt the best possible training procedure for each architecture
+T?(A) = max
+Tf(A;T;N); (1)
+but realistically this is not possible. When comparing architectures, most papers com-
+pare their results to other reported in older publications, but for which architectures
+were trained with potentially weaker recipes. In the best case, the same or a similar
+procedure is used to compare two architectures.
+We are not aware of an effort speciﬁcally targeted at improving the ResNet-50 train-
+ing procedure with an extensive ingredient selection and hyper-parameter search. In
+the literature, the performance reported on ImageNet-1k-val for this architecture ranges
+from 75.2% to 79.5%, depending on the paper. It is unclear whether a sufﬁcient effort
+has been invested in pushing the baseline further. We want to ﬁll this gap: in this pa-
+per, we focus on the vanilla ResNet-50 architecture2as described by He et al. [13], and
+we optimize the training so as to maximize the performance of this model for the orig-
+inal test resolution of 224224. We solely consider the training recipe. Therefore we
+exclude all variations of the ResNet-50 such as SE-ResNet-50 [20] or ResNet-50-D [14],
+which usually improve the accuracy under the same training procedure. In summary,
+in this paper,
+• We propose three training procedures intended to be strong baselines for a vanilla
+ResNet-50 used at inference resolution 224224. The three variants correspond
+to different numbers of epochs (100, 300 and 600) with adjustment of hyper-
+parameters and ingredients.
+• Our procedure include recent advances from the literature as well as new propos-
+als. Noticeably, we depart from the usual cross-entropy loss. Instead, our training
+solves a multi-classiﬁcation problem when using Mixup and CutMix: we mini-
+mize the binary cross entropy for each concept selected by these augmentations,
+assuming that all the mixed concepts are present in the synthetized image.
+• We measure the stability of the accuracy over a large number of runs with differ-
+ent seeds, and discuss the overﬁtting issue by jointly comparing the performance
+on ImageNet-val versus the one obtained in ImageNet-V2 [34].
+• We train popular architectures and re-evaluate their performance. We also dis-
+cuss the necessity to optimize jointly the architecture and the training procedure:
+we showcase that having the same training procedure is not sufﬁcient for com-
+paring the merits of different architectures.
+We provide ablations in Section 5. Our supplemental material may interest the com-
+munity: Appendix A details augmentations variants that have been introduced by the
+timm library3. Appendix B covers alternative procedures for training a ResNet-50 that
+signiﬁcantly differ in their ingredients from our three focal training procedures. They
+achieve noteworthy performance and possibly better results with different architec-
+tures and tasks.
+2ResNet-50 V1.5 (the PyTorch [1] ResNet50) a slight adjustment of He et al. [13] that was made in torch7,
+stride was moved from 1x1 to 3x3 in bottleneck.
+3available at http://github.com/rwightman/pytorch-image-models/
+2
+
+==== Page 3 ====
+2 Related work
+Image Classiﬁcation is a core problem in computer vision. It is often employed as a
+benchmark task to measure progress in computer vision. Pre-trained models for image
+classiﬁcation, particularly trained on ImageNet [9], are used in a large variety of down-
+stream tasks like detection or segmentation. Progress in image classiﬁcation generally
+translates to progress on these tasks.
+The timm library [50] has recently gained signiﬁcant momentum in the scientiﬁc
+community as it provides implementations for numerous popular models for image
+classiﬁcation, as well as training methods. Pre-trained weights – either adapted from
+originals or trained in timm with newer procedures – are included for many models.
+While model architectures are timm ’s focus, it also includes implementations of many
+data augmentations, regularization techniques, optimizers, and learning rate sched-
+ulers that are leveraged in the training procedures described in this paper. In many
+cases these implementations include functionality beyond the original implementa-
+tions or papers that they were based upon. We describe these additions in Appendix A.
+ResNet [13] is one of the most popular image classiﬁcation architectures. It was a
+noteworthy improvement at the time it was introduced and continues to serve as the
+referent architecture for some analysis [8, 55, 56], or as a baseline in papers introducing
+new architectures [32, 35, 51, 57].
+Some works have modernized the ResNet training procedure and obtained some
+improvement over the original model (e.g. Dollar et al. [10]). This allows a more di-
+rect comparison when considering new models or methods involving more elaborate
+training procedures than the one initially used. Nevertheless, improving the ResNet-50
+baseline [6, 10, 14, 47, 48, 54] was not the main objective of these works. As a conse-
+quence and as we will see, the best performance reported so far with a ResNet-50 is
+still far from the maximum performance (peak or average) that one can achieve with
+this architecture. In this paper, our goal is to offer the best possible training procedure
+that we could ﬁnd for the ResNet-50 based on existing ingredients and practices. We
+hope that it will serve as a strong baseline for subsequent works. Note, some papers
+have also focused on ResNet-50 training [2, 27, 49], but they have either modiﬁed the
+architecture or changed the resolution, which does not allow for a direct comparison to
+the original ResNet-50 at resolution 224 224. For instance, Lee et al. [27] use ResNet-
+D [14] with SE attention [20]. Bello et al. [2] also optimize ResNet without architectural
+changes, but they don’t report competitive results for ResNet-50 at 224 224.
+Training ingredients & recipes for image classiﬁcation have signiﬁcantly evolved
+since the inception of AlexNet [26]. Several trends have changed over time. Common
+modiﬁcations include replacing the waterfall schedule (classical division by 10 of learn-
+ing rate every 30 epochs) by a longer and more progressive schedule [5, 10, 11, 41, 45,
+52]. Increasing jointly the number of epochs [10, 11, 14, 41, 45] and the batch size while
+using mixed precision better leverages powerful GPUs. Modern procedures make use
+of stronger data-augmentation [7, 8, 55, 56, 58], stronger regularization [12, 21, 37],
+weight averaging [22, 31] and correct the train-test resolution discrepancy [48] by dif-
+ferentiating the train from the test resolution [5, 11]. Different losses have also been
+experimented with [4, 23] even if cross-entropy remains the standard. For the optimiza-
+tion, SGD with Nesterov momentum [38] is a common default for CNNs. RMSProp is
+also used for speciﬁc CNN architecture families like in Inception [39], NASNet [59],
+AmoebaNet [33], MobileNet [19], EfﬁcientNet [41] .For training image classiﬁers based
+3
+
+==== Page 4 ====
+Training Number Training Training Peak memory Numbers Top-1 accuracy
+Procedure of epochs resolution time by GPU (MB) of GPU val real v2
+A1 600 224224 110h 22,095 4 80.4 85.7 68.7
+A2 300 224224 55h 22,095 4 79.8 85.4 67.9
+A3 100 160160 15h 11,390 4 78.1 84.5 66.1
+Table 1: Training resources used for our three training procedures on V100 GPUs and corre-
+sponding accuracies at resolution 224 224 on ImageNet1k-val, -V2 and -Real. Note, the top-1
+val acc. of pytorch-zoo [1] is 76.1%.
+on transformers [11, 45] and MLP [43, 44], AdamW [28] and Lamb [53] optimizers are
+popular choices.
+3 Training Procedures
+We offer three different training procedures with different costs and performance so
+as to cover different use-cases, see Table 1 for resource usage and corresponding ac-
+curacies. Our procedures target the best performance of ResNet-50 when tested at
+resolution 224224. We have explored numerous variations with different optimiz-
+ers, choice of regularization, and a reasonable amount of grid search for the hyper-
+parameters. We refer the reader to Section 4.2 for control experiments on quantifying
+the amount of overﬁtting. See Section 4.1 in the Appendix for the exact ingredient list
+and parametrization. We focus on three different operating points:
+Procedure A1 aims at providing the best performance for ResNet-50. It is therefore the
+longest in terms of epochs (600) and training time (4.6 days on one node with 4
+V100 32GB GPUs).
+Procedure A2 is a 300 epochs schedule that is comparable to several modern proce-
+dures like DeiT, except with a larger batch size of 2048 and other choices intro-
+duced for all our recipes.
+Procedure A3 aims at outperforming the original ResNet-50 procedure with a short
+schedule of 100 epochs and a batch size 2048. It can be trained in 15h on 4 V100
+16GB GPUs and could be a good setting for exploratory research or studies.
+Note, Section B gives alternative training procedures that may serve as interesting
+choices when considering other models. In the rest of this section, we focus on the
+ingredients included in A1–A3.
+Loss: multi-label classiﬁcation objective. Mixup and CutMix augmentation synthe-
+size an image from several images having in most cases different labels. By using cross-
+entropy, the output is implicitly treated as a probability of presence of each of the mixed
+concepts. In our training, we assume instead that these concepts are all present, and
+treat the classiﬁcation as a multi-label classiﬁcation problem (1-vs-all). For this pur-
+pose, we adopt the binary cross-entropy (BCE) loss instead of the typical cross-entropy
+(CE). This loss is consistent with the Mixup and CutMix data augmentation: The tar-
+gets are deﬁned for each class to 1 (or 1 "with smoothing) if the class is selected by
+Mixup or Cutmix, independent of other classes. Over the best settings that we have ex-
+plored, BCE slightly outperforms cross-entropy in their best respective conﬁgurations.
+We point out that Beyer et al. [4] previously adopted BCE with the motivation to pro-
+duce multiple non-exclusive labels, and obtained excellent results with it. But to the
+best of our knowledge they did not use it with CutMix or Mixup as we propose to do.
+4
+
+==== Page 5 ====
+In our experiments, even when using BCE, setting all mixed concepts with a target to
+1 (or 1 ") is more effective than considering a distribution of concepts that sum to 1.
+Conceptually we believe it is more aligned with what Mixup and CutMix are actually
+doing: it is likely that a human could recognize each of two mixed concepts.
+Data-Augmentation. We adopt the following combination of data augmentations: on
+top of standard Random Resized Crop (RRC) and horizontal ﬂip (commonly used since
+GoogleNet [40]), we apply timm [50] variants of RandAugment [8], Mixup [56], and
+CutMix [55]. This combination was used for instance in DeiT [45]. Many of the model
+weights in timm have also been trained with RandAugment and Mixup, but with Ran-
+dom Erasing [58] and increased regularization instead of CutMix. We refer the reader
+to Appendix A for more details about the variants offered in timm .
+Regularization. Across our three training procedures, regularization differs the
+most. In addition to adapting the weight decay, we use label smoothing, Repeated-
+Augmentation [3, 17] (RA) and stochastic-Depth [21]. We use more regularization for
+longer training schedules. For instance we adopt label smoothing only for A1. Both
+RA and stochastic depth tend to improve the results at convergence, but they slow
+down the training in the early stages as reported by Berman et al. [3] for RA. For short
+schedules they are therefore less effective or even detrimental, which is why we adopt
+them only with A1 and A2. Note that for other architectures, or larger ResNets, it is
+beneﬁcial to add additional regularization, therefore one would have to adapt the cor-
+responding hyper-parameters for such architectures. For instance, for a ResNet-152 the
+performance increases from 81.8% to 82.4% on Imagenet-val by putting more of Ran-
+dAugment, mixup and stochastic depth regularization on top of A2 recipe. At resolu-
+tion 256256 this model obtains 82.7%, which is above the accuracy (82.2%) reported
+by Bello et al. [2] for a ResNet-200 before architectural changes (Table 1 in their paper).
+Optimization. Since AlexNet, the most used optimizer to train convnets is SGD.
+In contrast transformers [11, 46] and MLP [43, 44] use AdamW [28] or LAMB opti-
+mizer. Dosovitskiy et al. [11] report similar performance between AdamW [28] and
+SGD for ResNet-50. This concurs with our observations for intermediate batch sizes
+(e.g., 512). We use larger batches, e.g., 2048. When combined with repeated augmen-
+tation and the binary cross entropy loss, we found that LAMB [53] makes it easier to
+consistently achieve good results. We found it difﬁcult to achieve convergence when
+using both SGD and BCE. We therefore focus on LAMB with cosine schedule as the
+default optimizer for training our ResNet-50. Alternative training procedures using
+different optimizer, loss, augmentation, and regularization combinations can be found
+in Appendix B.
+Details of our ingredients and comparison to existing training procedures. In Ta-
+ble 2 we compare different recipes used to train vanilla ResNet-50 to ours. We consider
+only the results with the unmodiﬁed ResNet-50 architecture. We have chosen a wide
+range of training procedures to try to be as representative as possible but obviously it
+cannot be exhaustive. We do not consider approaches using advanced training settings
+like distillation, or models pre-trained self-supervised or with pseudo-labels.
+4 Experiments
+In this section we ﬁrst compare our training procedure to existing ones and evaluate
+them with different architectures. Importantly, we discuss the signiﬁcance of our re-
+5
+
+==== Page 6 ====
+Table 2: Ingredients and hyper-parameters used for ResNet-50 training in different papers. We
+compare existing training procedures with ours.
+Previous approaches Ours
+Procedure! ResNet PyTorch FixRes DeiT FAMS ( 4) A1 A2 A3
+Reference [13] [1] [48] [45] [10]
+Train Res 224 224 224 224 224 224 224 160
+Test Res 224 224 224 224 224 224 224 224
+Epochs 90 90 120 300 400 600 300 100
+# of forward pass 450k 450k 300k 375k 500k 375k 188k 63k
+Batch size 256 256 512 1024 1024 2048 2048 2048
+Optimizer SGD-M SGD-M SGD-M AdamW SGD-M LAMB LAMB LAMB
+LR 0.1 0.1 0.2 110 32.0 510 3510 3810 3
+LR decay step step step cosine step cosine cosine cosine
+decay rate 0.1 0.1 0.1 0:02t=400
+decay epochs 30 30 30 1
+Weight decay 10 410 410 40.05 10 40.01 0.02 0.02
+Warmup epochs 7 7 7 5 5 5 5 5
+Label smoothing " 7 7 7 0.1 0.1 0.1 7 7
+Dropout 7 7 7 7 7 7 7 7
+Stoch. Depth 7 7 7 0.1 7 0.05 0.05 7
+Repeated Aug 7 7 3 3 7 3 3 7
+Gradient Clip. 7 7 7 7 7 7 7 7
+H. ﬂip 3 3 3 3 3 3 3 3
+RRC 7 3 3 3 3 3 3 3
+Rand Augment 7 7 7 9/0.5 7 7/0.5 7/0.5 6/0.5
+Auto Augment 7 7 7 7 3 7 7 7
+Mixup alpha 7 7 7 0.8 0.2 0.2 0.1 0.1
+Cutmix alpha 7 7 7 1.0 7 1.0 1.0 1.0
+Erasing prob. 7 7 7 0.25 7 7 7 7
+ColorJitter 7 3 3 7 7 7 7 7
+PCA lighting 3 7 7 7 7 7 7 7
+SWA 7 7 7 7 3 7 7 7
+EMA 7 7 7 7 7 7 7 7
+Test crop ratio 0.875 0.875 0.875 0.875 0.875 0.95 0.95 0.95
+CE loss 3 3 3 3 3 7 7 7
+BCE loss 7 7 7 7 7 3 3 3
+Mixed precision 7 7 7 3 3 3 3 3
+Top-1 acc. 75.3% 76.1% 77.0% 78.4% 79.5% 80.4% 79.8% 78.1%
+6
+
+==== Page 7 ====
+sults with experiments that aim at (1) quantifying the sensitivity of the performance to
+random factors; (2) evaluating the overﬁtting by measuring on a different test set.
+4.1 Comparison of training procedures for ResNet-50
+Table 1 summarizes the main characteristics of our training procedure. To the best of
+our knowledge, our procedure A1 surpasses the current state of the art on ImageNet
+with a vanilla ResNet-50 architecture at resolution 224 224. Our other procedures A2
+and A3 achieve lower but still high performance with less resources.
+Performance comparison with other architectures. In Table 3 we report the perfor-
+mance obtained when training different architectures with our training procedures.
+This allows us to see how well they generalize to other models. Or procedures im-
+proves the performance of several models over results reported in the literature, in
+particular older ones and/or those most comparable to ResNet-50 in terms of architec-
+ture and size. In some cases like ViT-B, we observe that A2 is better than A1, which
+suggests that the hyper-parameters are not adapted to longer schedules (typically re-
+quiring more regularization). For instance, the A2 training recipe achieves 81.8% top-1
+accuracy when training a ResNet-152, but by increasing a bit the regularization we im-
+proved it to 82.4% at resolution 224 224, which translates to 82.7% when evaluated at
+resolution 256256.
+In Table 3, we compare the performance and resources associated with our 3 train-
+ing recipes when using them to train other architectures. We complement these re-
+sults with Table 4, where we additionally include the performance and efﬁciency on
+ImageNet-1k, ImageNet-V2 and ImageNet-Real for different architectures trained with
+our best performing A1 training recipes.
+4.2 Signiﬁcance of measurements: seed experiments
+For a ﬁxed set of choices and hyper-parameters, there is some inherent variability on
+the performance due to the presence of random factors in several stages. It is the case
+for the weight initialization, but also for the optimization procedure itself. For instance
+the order in which the images are fed to the network through batches depends on a
+random generator. This variability raises the question of the signiﬁcance of accuracy
+measurements. For this purpose, we measure the distribution of performance when
+changing the random generator choices. This is conveniently done by changing the
+seed, as previously done by Picard [30], who concludes to the exist of outliers signiﬁ-
+cantly outperforming or underperforming the average outcome of a traing procedure.
+In Figure 1, we report several statistics on the performance with the A2 training proce-
+dure when considering 100 distinct seeds (from 1 to 100, note that we have used seed=0
+in all other experiments). In these experiments, we focus on the performance reached
+at the end of the training: we do not select the maximum obtained by intermediate
+checkpoints in the last epochs. This would have a similar effect as a seed selection, but
+the measures would not be IID and less disentangled from the training duration itself.
+The standard deviation is typically around 0:1on ImageNet-val, see Figure 1. This
+concurs with statistics reported in the literature for ResNet and other convnets [32]. The
+variance is higher on ImageNet-V2 (std=0.23), which consists of a smaller set (10000 vs
+50000 for -val) of images not present in the validation set. The mean 79.72% shows that
+our main weights (seed 0) overestimates the average performance by about +0:13%.
+Peak performance and control of overﬁtting To prevent to over-estimate too much
+the accuracy on validation, during our exploration process we have selected only the
+7
+
+==== Page 8 ====
+Table 3: Comparison on ImageNet classiﬁcation between other architectures trained with our
+ResNet-50 optimized training procedure without any hyper-parameters adaptation . In partic-
+ular, our procedure must be adapted for deeper/larger models, which beneﬁt from more regu-
+larization. For the training cost we report the training time (time) in hours, the number of GPU
+used (#GPU) and the peak memory by GPU (Pmem) in GB. For A1 and A2, we adopt the same
+training and test resolution as in the original publication introducing the architecture. For A3
+we use a smaller training resolution to reduce the compute-time.y: torchvision [1] results.:
+DeiT [45] results.
+A1-A2-org. A3 Cost ImageNet-1k-val
+train test train test A1 A2 A1-A2 A3 A1 A2 A3 org.
+#Architecture res. res. res. res. time (hour) # GPU Pmem time # GPU Pmem Accuracy(%)
+ResNet-18 [13]y224 224 160 224 186 93 2 12.5 28 2 6.5 71.5 70.6 68.2 69.8
+ResNet-34 [13]y224 224 160 224 186 93 2 17.5 27 2 9.0 76.4 75.5 73.0 73.3
+ResNet-50 [13]y224 224 160 224 110 55 4 22.0 15 4 11.4 80.4 79.8 78.1 76.1
+ResNet-101 [13]y224 224 160 224 74 37 8 16.3 8 8 8.5 81.5 81.3 79.8 77.4
+ResNet-152 [13]y224 224 160 224 92 46 8 22.5 9 8 11.8 82.0 81.8 80.6 78.3
+RegNetY-4GF [32] 224 224 160 224 130 65 4 27.1 15 4 13.9 81.5 81.3 79.0 79.4
+RegNetY-8GF [32] 224 224 160 224 106 53 8 19.8 10 8 10.3 82.2 82.1 81.1 79.9
+RegNetY-16GF [32] 224 224 160 224 150 75 8 25.6 13 8 13.4 82.0 82.2 81.7 80.4
+RegNetY-32GF [32] 224 224 160 224 120 60 16 17.6 12 16 9.4 82.5 82.4 82.6 81.0
+SE-ResNet-50 [20] 224 224 160 224 102 51 4 27.6 16 4 14.2 80.0 80.1 77.0 76.7
+SENet-154 [20] 224 224 160 224 110 55 16 23.3 12 16 12.2 81.7 81.8 81.9 81.3
+ResNet-50-D [14] 224 224 160 224 100 50 4 23.9 14 4 12.3 80.7 80.2 78.7 79.3
+ResNeXt-50-32x4d [51]y224 224 160 224 80 40 8 14.3 15 4 14.6 80.5 80.4 79.2 77.6
+EfﬁcientNet-B0 [41] 224 224 160 224 110 55 4 22.1 15 4 11.4 77.0 76.8 73.0 77.1
+EfﬁcientNet-B1 [41] 240 240 160 224 62 31 8 17.9 8 8 7.9 79.2 79.4 74.9 79.1
+EfﬁcientNet-B2 [41] 260 260 192 256 76 38 8 22.8 9 8 11.9 80.4 80.1 77.5 80.1
+EfﬁcientNet-B3 [41] 300 300 224 288 62 31 16 19.5 6 16 10.1 81.4 81.4 79.2 81.6
+EfﬁcientNet-B4 [41] 380 380 320 380 64 32 32 20.4 8 32 14.3 81.6 82.4 81.2 82.9
+ViT-Ti [45]224 224 160 224 98 49 4 16.3 14 4 7.0 74.7 74.1 66.7 72.2
+ViT-S [45]224 224 160 224 68 34 8 16.1 8 8 7.0 80.6 79.6 73.8 79.8
+ViT-B [11]224 224 160 224 66 33 16 16.4 5 16 7.3 80.4 79.8 76.0 81.8
+timm [50] speciﬁc architectures
+ECA-ResNet-50-T 224 224 160 224 112 56 4 29.3 15 4 15.0 81.3 80.9 79.6
+EfﬁcientNetV2-rw-S [42] 288 384 224 288 52 26 16 16.6 7 16 10.1 82.3 82.9 80.9 83.8
+EfﬁcientNetV2-rw-M [42] 320 384 256 352 64 32 32 18.5 9 32 12.1 80.6 81.9 82.3 84.8
+ECA-ResNet-269-D 320 416 256 320 108 54 32 27.4 11 32 17.8 83.3 83.9 83.3 85.0
+ﬁnal checkpoint and we use relatively coarse grid for hyper-parameters search to pre-
+vent introducing an additional seed effect. However optimizing over a large number
+of choices typically leads to overﬁtting. In Figure 1, we observe that the maximum (or
+peak performance) is close to 80.0% with the A2 training procedure. Note, Figure 2
+provides the distribution of accuracy as an histogram;
+One question is whether this model is intrinsically better than the average ones,
+or if it was just lucky on this particular measurement set. To attempt to answer this
+question, we measure how the performance transfers to another measurement dataset:
+we compute for all the seeds the couples (ImageNet-val top-1 acc., ImageNet-V2 top-1
+acc.), and plot them as a point cloud in Figure 1. We observe that the correlation be-
+tween the performance on ImageNet-val and -V2 is limited. Noticeably the best perfor-
+mance is not achieved by the same seed on the two datasets. This observation suggests
+some signiﬁcant measurement noise, which advocates to report systematically the per-
+formance on different datasets, and more particularly one making a clear distinction
+between validation and test.
+More on sensitivity analysis: variance along epochs. Figure 3 shows how the per-
+formance variability evolves along epochs.
+8
+
+==== Page 9 ====
+Table 4: Performance of models trained with A1 training procedure. We measure peak memory
+and throughput on one GPU V100 32GB with batch size 128, FP16 precision and test resolution
+from Table 3. Note that the throughput is indicative, since it depends on the GPU hardware, the
+software that runs the models, and other factors like the adjustment of batch size (we keep it ﬁx
+in this table).
+# params FLOPs Throughput Peak mem Top-1 Real V2
+Architecture 106109(im/s) (MB) Acc. Acc. Acc.
+ResNet-18 [13] 11.7 1.8 7960.5 588 71.5 79.4 59.4
+ResNet-34 [13] 21.8 3.7 4862.6 642 76.4 83.4 65.1
+ResNet-50 [13] 25.6 4.1 2536.6 1,155 80.4 85.7 68.7
+ResNet-101 [13] 44.5 7.9 1547.9 1,264 81.5 86.3 70.3
+ResNet-152 [13] 60.2 11.6 1094.0 1,355 82.0 86.4 70.6
+RegNetY-4GF [32] 20.6 4.0 1690.6 1,585 81.5 86.7 70.7
+RegNetY-8GF [32] 39.2 8.1 1122.3 2,139 82.2 86.7 71.1
+RegNetY-16GF [32] 83.6 16.0 694.1 3,052 82.0 86.4 71.2
+RegNetY-32GF [32] 145.0 32.4 431.5 3,366 82.5 86.6 71.7
+SE-ResNet-50 [20] 28.1 4.1 2174.8 1,193 80.0 85.8 68.8
+SENet-154 [20] 115.1 20.9 511.5 2,414 81.7 86.0 71.2
+ResNet-50-D [14] 25.6 4.4 2418.8 1,205 80.7 85.9 68.9
+ResNeXt-50-32x4d [51] 25.0 4.3 1727.5 1,247 80.5 85.5 68.4
+EfﬁcientNet-B0 [41] 5.3 0.4 3701.5 932 77.0 83.8 65.0
+EfﬁcientNet-B1 [41] 7.8 0.7 2365.2 1,077 79.2 85.3 67.7
+EfﬁcientNet-B2 [41] 9.2 1.0 1786.8 1,318 80.4 86.0 69.3
+EfﬁcientNet-B3 [41] 12.0 1.8 1082.4 2,447 81.4 86.7 70.4
+EfﬁcientNet-B4 [41] 19.0 4.2 561.3 5,058 81.6 85.9 70.8
+ViT-Ti [45] 5.7 1.3 3497.7 346 74.7 82.1 62.4
+ViT-S [45] 22.0 4.6 1762.3 682 80.6 85.6 69.4
+ViT-B [11] 86.6 17.6 771.0 1,544 80.4 84.8 69.4
+timm [50] speciﬁc architectures
+ECA-ResNet50-T 25.6 4.4 2139.7 1,155 81.3 86.1 69.9
+EfﬁcientNetV2-rw-S [42] 23.9 8.8 823.1 2,339 80.6 84.8 69.2
+EfﬁcientNetV2-rw-M [42] 53.2 18.5 456.8 2,916 82.3 87.1 71.7
+ECA-Resnet269-D 102.1 70.6 168.1 4,134 83.3 86.9 71.9
+4.3 Transfer Learning
+In Table 5 we provide transfer learning performance on seven ﬁne grained dataset with
+our different pre-training procedures, and provide a comparison with the default Py-
+Torch pre-training. For each pre-training we use exactly the same ﬁne-tuning proce-
+dure inspired by the ﬁne-tuning procedure used in DeiT [45]. For each dataset we
+adapt the ﬁne-tuning hyper-parameters.
+We observe that the ﬁne-tuning tend to smooth the difference of performance on
+certain datasets, such as CIFAR or Stanford Cars. Overall our A1 procedure leads to
+the best performance on downstream tasks, but the performance of the Pytorch default
+and A2 tend to be similar, while on Imagenet-val and -v2 A2 was signiﬁcantly better.
+A3 is signiﬁcantly inferior on downstream tasks, which may be related to the lower
+training resolution at 160 160.
+9
+
+==== Page 10 ====
+79.5 79.6 79.7 79.8 79.9 80.0
+ImageNet Top-1(%)67.467.667.868.068.268.4 ImageNet-v2 Top-1(%)
+Top-1 accuracy (%)
+dataset# mean std max min seed 0
+ImageNet-val 79.72 0.10 79.98 79.50 79.85
+ImageNet-real 85.37 0.08 85.55 85.21 85.45
+ImageNet-V2 67.99 0.23 68.69 67.39 67.90
+Figure 1: Top":Statistics for ResNet-50 trained with
+A2 and 100 different seeds. The column ”seed 0”
+corresponds to the weights that we take as reference.
+Its performance is +0.13% above the average top-1
+accuracy on Imagenet-val.
+ Left: Point cloud plotting the ImageNet-val top-1
+accuracy vs ImageNet-V2 for all seeds. Note that
+the outlying seed that achieves 68.5% top-1 accu-
+racy on ImageNet-V2 has an average performance
+on ImageNet-val.
+79.4 79.5 79.6 79.7 79.8 79.9 80.0 80.1
+ImageNet Top-1(%)
+Figure 2: Distribution of the performance on
+ImageNet-val with the A2 procedure. It is mea-
+sured with 100 different seeds. We also depict the
+Gaussian-ﬁt of this distribution.
+4.4 Comparing architectures and training procedures: a show-case of
+contradictory conclusions
+In this paragraph we case how difﬁcult it is to compare two architectures, even under
+the same training procedure, or conversely how it is difﬁcult to compare different pro-
+cedures with a single architecture. We choose ResNet-50 and DeiT-S. The latter [45] is
+essentially a ViT parameterized so that it has approximately the same number of pa-
+rameters as a ResNet-50. For each architecture, we have put a signiﬁcant effort in opti-
+mizing the procedure to maximize the performance on Imagenet-val with the same 300
+epochs training schedule and same batch size. Under this constraint, the best training
+procedure that we have designed for ResNet-50 is A2. We denote by T2 the corre-
+sponding training procedure for DeiT-S. Note that this training procedure achieves a
+signiﬁcantly better performance on Imagenet-val than the one initially proposed for
+DeiT-S (80.4% versus 79.8% in the original paper).
+test set! ImageNet-val ImageNet-v2
+#architecture training ! A2 T2 A2 T2
+ResNet-50 79.9 79.2 67.9 67.9
+DeiT-S 79.6 80.4 68.1 69.2
+10
+
+==== Page 11 ====
+50 100 150 200 250 300
+Epochs01020304050607080 ImageNet Top-1(%)
+260 270 280 290
+Epochs78.579.079.580.0 ImageNet Top-1(%)Figure 3: We show how the mean, standard deviation, minimum and maximum of the top-1
+accuracy on ImageNet-val evolves during training with the A2 procedure (ResNet-50 architec-
+ture). (Left) For all 300 training epochs. (Right) Same but for the last epochs. We note that the
+variance in accuracy is high at the beginning, see for instance at epoch 100, where the difference
+in performance can be as large as 10% in accuracy. Towards the end of the training, most of the
+networks converge to similar values and the range signiﬁcantly decreases in the last 50 epochs.
+Credit : this ﬁgure and experiment was inspired by Picard [30].
+Table 5: Performance comparison on transfer-learning tasks for different pre-training recipes.
+Dataset Train size Test size #classes Pytorch [1] A1 A2 A3
+ImageNet-val [36] 1,281,167 50,000 1000 76.1 80.4 79.8 78.1
+iNaturalist 2019 [18] 265,240 3,003 1,010 73.2 73.9 75.0 73.8
+Flowers-102 [29] 2,040 6,149 102 97.9 97.9 97.9 97.5
+Stanford Cars [24] 8,144 8,041 196 92.5 92.7 92.6 92.5
+CIFAR-100 [25] 50,000 10,000 100 86.6 86.9 86.2 85.3
+CIFAR-10 [25] 50,000 10,000 10 98.2 98.3 98.0 97.6
+As one can see, by choosing the procedure optimized for any of the two architec-
+tures, one may conclude that this architecture is better based on ImageNet-val accuracy:
+with A2 training, ResNet50 is better than DeiT-S, with T2 training, DeiT-S is better than
+ResNet50. The measurements on ImageNet-v2 would lead to a different conclusion, as
+DeiT-S is better for both procedure. But even in that case, by focusing on A2 one may
+conclude that the difference between ResNet-50 and DeiT-S with A2 training is not sta-
+tistically signiﬁcant: 67.9% vs 68.1%. Conversely, if the goal is to compare A2 to T2, we
+could draw different conclusions on ImageNet-val if considering a single architecture.
+5 Ablations
+In this section we provide a few ablations of hyper-parameters or selection of ingre-
+dients. Some modiﬁcations are difﬁcult to ablate individually since they require to
+re-adjust several other parameters to work properly. This is the case in particular of the
+optimizer, which strongly interacts with other choices and hyper-parameters. In Ap-
+pendix B we provide alternative training procedures that we have developed for other
+optimizers: RMSProp, SGD and AdamP .
+Main ingredients and hyper-parameters. In Table 6 we provide an ablation of major
+ingredients. We focus on the intermediate A2 training procedure as it is a good com-
+promise between compute-cost and accuracy. We make the following observations:
+•Learning rate and Weight Decay. The learning rate has an important effect on per-
+formance. The higher value 5:10 3presented in this table leads to the best per-
+11
+
+==== Page 12 ====
+loss LR WD RA A2
+BCE 210 30:023 78.24
+BCE 210 30:033 78.47
+BCE 310 30:023 79.16
+BCE 310 30:033 79.28
+BCE 510 30:013 79.66
+BCE 510 30:023 79.85
+BCE 510 30:033 79.73
+BCE 810 30:023 79.63
+BCE 310 30:027 78.74
+BCE 510 30:027 79.57
+BCE 510 30:037 79.58
+CE 210 30:023 77.37
+CE 310 30:023 78.22
+CE 510 30:023 79.18
+CE 510 30:033 79.23
+CE 510 30:053 79.31
+CE 810 30:033 79.12
+CE 310 30:027 77.71
+CE 510 30:017 78.93
+CE 510 30:027 79.00
+CE 510 30:037 78.62
+CE 810 30:027 78.72
+Table 6: Main ablation table with A2 procedure. We compare BCE vs CE, including repeated
+augmentation or not, and vary the learning rate LR and weight decay WD in ranges that our
+exploration phase has identiﬁed as being the most adapted. All results are reported with Seed
+0 and therefore all the ResNet-50 are initialized with the same weights when the training starts.
+The highlighted row corresponds to our A2 procedure.
+formance. However increasing it further increases the risk of divergence. We
+have typically set the weight decay in the range [0.02, 0.03] that we have iden-
+tiﬁed in our preliminary exploration. This parameter is a bit sensitive and can
+interact with other forms of regularization. In some cases we observe signiﬁcant
+differences between 0.02 and 0.03.
+•Loss: Binary Cross Entropy versus Cross Entropy. In this ablation, moving back from
+how we use BCE to the vanilla CE loss signiﬁcantly reduces the performance. As
+discussed in our main paper, we use the ﬂexibility of BCE to regard Mixup/Cut-
+mix as activating a multi-class 1-vs-all classiﬁcation problem as discussed in our
+paper, as opposed to the choice of enforcing probabilities that sum to 1. If we en-
+force probabilities to sum to 1 as implicitly done with cross-entropy, we obtain a
+slightly lower accuracy as reported in Table 8. By itself, i.e., with the same target,
+we do not conclude that BCE is necessarily better than CE. But it is with that loss
+that we reach the conﬁguration with the highest accuracy overall.
+•Repeated augmentation is providing a small boost in this ablation. This augmenta-
+tion has some complex interaction with other hyper-parameters, and is not well
+understood in our opinion. In some cases we observed that it was neutral or
+detrimental, for instance with shortest schedules (A3 procedure), or in Table 8
+with higher values of the Mixup parameter. Overall, it was best to include this
+ingredient in our most accurate procedures A1 and A2.
+12
+
+==== Page 13 ====
+drop-factor A1 A2 A3
+0 79.94 79.79 78.06
+0.05 80.38 79.85 77.57
+0.1 80.12 79.62 77.32
+smoothing
+7 80.22 79.85 78.06
+3 80.38 79.58 77.99
+Table 7: Ablation of stochastic Depth & smoothing for our training procedures. In blue , we
+highlight the results corresponding to the default selection for each procedure, see Table 2.
+Stochastic Depth & Smoothing. We have included stochastic depth in the A1 and
+A2 training procedures. In Table 7 we observe that it provides an improvement for
+A2 compared to setting the drop-rate to 0 (i.e., no stochastic depth), not for A3. Label
+smoothing is not effective at 300 epochs with other hyper-parameters and ingredients
+ﬁxed. This is why we only use it for the longer 600-epoch schedule in A1, where our
+exploration concluded that it has a positive impact.
+Augmentation. Table 8 evidences the role of augmentations when we modify a few
+parameters (of Mixup and RandAugment): each modiﬁcation that we have done has
+some impact on the measured score. While it would be unrealistic (and not ecologi-
+cal) to ensure that all our choices are statistically signiﬁcant, one can observe that all
+modiﬁcations in this table decrease the top-1 accuracy below the average performance
+(79.72% – std 0:1) that we report over 100 seeds in Figure 1.
+mixup Rep. aug. RandA label smooth. stoch. depth BCE target top-1 acc.
+0.1 3 7 7 0.05 3 79.85
+0.2 7 79.62
+0.2 6 79.61
+0.05 79.57
+7 79.57
+Table 8: Ablation of some data-augmentation choices for our training procedure A2 on Imagenet-
+val, all computed with ”Seed 0”. The ﬁrst row contains our default choices, see Table 2 for
+the full set of hyper-parameters. Each other row corresponds to an ablation for which we have
+changed only one or two hyper-parameters or ingredient. Activating ”BCE target” is our default.
+It refers to our choice to regard Mixup/Cutmix as activating a multi-class classiﬁcation 1-vs-all
+problem as discussed in our paper. Not using it means that we also use BCE, but we enforce the
+probabilities of the concepts sum to 1 as with the regular cross-entropy loss.
+Crop-ratio. We evaluate the inﬂuence of the crop-ratio used at inference time. The
+one most commonly adopted in the literature is 0.875. Recently researchers have con-
+sidered larger values for this parameter, noticeably for vision transformers after signif-
+icant gains were reported by the author of the timm library with these models. Table 9
+provides an analysis as a function of this parameter.
+Evaluation at other resolutions. While we primarily focus on the performance when
+inferring at resolution 224224, we also evaluate our models when feeding images at
+larger resolutions. We report these results in Figure 4, where we see that the models
+trained with A1 and A2 have a better performance when used at higher resolutions.
+13
+
+==== Page 14 ====
+A1 A2 A3
+crop-ratio mean (std)max – min seed 0 mean (std)max – min seed 0 mean (std)max – min seed 0
+0.875 80.18 (0.14)80.45 – 79.90 80.14 79.67 (0.08)79.91 – 79.59 79.91 77.69 (0.10)77.85 – 77.48 77.69
+0.9 80.22 (0.15)80.54 – 79.98 80.25 79.73 (0.09)79.89 – 79.56 79.75 77.86 (0.09)78.01 – 77.62 77.83
+0.95 80.24 (0.14)80.49 – 79.91 80.38 79.68 (0.09)79.85 – 79.57 79.85 78.00 (0.09)78.09 – 77.83 78.06
+1.0 80.15 (0.11)80.15 – 79.66 80.19 79.58 (0.13)79.88 – 79.32 79.88 78.02 (0.10)78.16 – 77.83 77.93
+Table 9: Ablation of the crop-ratio when training with A1. We compute the Imagenet-val top-1
+accuracy as a function of this parameter for 10 different seeds, for ResNet50 trained with our
+procedures. Our selection of 0.95 was based on Seed 0 in early experiments. It is comparable but
+not statistically better than the standard 0.875. Note that we have one A1 seed that leads to a top
+80.54% top-1 accuracy at crop-ratio 0.9. We regard it as being overﬁt and therefore we do not
+recommend to report this number.
+160 192 224 256 288 320 352 384
+Test resolution75767778798081 ImageNet Top-1(%)
+A1
+A2
+A3
+Figure 4: We compare ImageNet Top-1 accuracy according to the test resolution for our three
+training procedures A1, A2 and A3 with ResNet-50 architecture. Our training procedure and
+models also beneﬁt from the FixRes effect [48]: the performance increases when using a larger
+image at test time for the procedures A1 and A2. This observation is not true for A3, which is
+expected since this procedure was already relying on feeding smaller images at train time, so as
+to maximize the accuracy at test resolution 224224.
+6 Conclusion
+In this paper we have proposed new training procedures for a vanilla ResNet-50. We
+have integrated new ingredients and put a signiﬁcant effort in exploring diverse pro-
+cedures under different resource constraints. As a result, we have established the new
+state of the art for training this gold-standard model. We have two other procedures to
+train strong ResNet-50 with less compute power. Nevertheless, we do not claim that
+our procedures are universal, quite the opposite: the architecture and training should
+be optimized jointly. Our procedure is not ideal for training other models: while, on
+some models, our training recipes lead to excellent results outperforming those re-
+ported in the literature, they exhibit suboptimal performance on others, typically for
+deeper architectures that require more regularization.
+Acknowledgments & feedback
+Ross Wightman thanks NVIDIA for the donation of a V100 DGX Station and Google’s
+TPU Research Cloud (TRC) for Cloud TPUs used in this research. All authors thank
+Mike Rabbat and Jakob Verbeek for their feedback. We welcome feedback regarding
+these or other noteworthy procedures via the timm GitHub Discussions4.
+4https://github.com/rwightman/pytorch-image-models/discussions
+14
+
+==== Page 15 ====
+References
+[1] Pytorch. https://pytorch.org/vision/stable/index.html . Accessed: 2021-08-
+01. 2, 4, 6, 8, 11
+[2] Irwan Bello, W. Fedus, Xianzhi Du, E. D. Cubuk, A. Srinivas, Tsung-Yi Lin, Jonathon Shlens,
+and Barret Zoph. Revisiting ResNets: Improved training and scaling strategies. arXiv
+preprint arXiv:2103.07579 , 2021. 3, 5
+[3] Maxim Berman, Herv ´e J´egou, Andrea Vedaldi, Iasonas Kokkinos, and Matthijs Douze.
+Multigrain: a uniﬁed image embedding for classes and instances. arXiv preprint
+arXiv:1902.05509 , 2019. 5
+[4] Lucas Beyer, Olivier J. H ´enaff, Alexander Kolesnikov, Xiaohua Zhai, and Aaron van den
+Oord. Are we done with ImageNet? arXiv preprint arXiv:2006.07159 , 2020. 3, 4
+[5] A. Brock, Soham De, S. L. Smith, and K. Simonyan. High-performance large-scale image
+recognition without normalization. arXiv preprint arXiv:2102.06171 , 2021. 3, 21
+[6] Mathilde Caron, Hugo Touvron, Ishan Misra, Herv ´e J´egou, Julien Mairal, Piotr Bojanowski,
+and Armand Joulin. Emerging properties in self-supervised vision transformers. arXiv
+preprint arXiv:2104.14294 , 2021. 3
+[7] Ekin Dogus Cubuk, Barret Zoph, Dandelion Man ´e, Vijay Vasudevan, and Quoc V . Le. Au-
+toaugment: Learning augmentation policies from data. arXiv preprint arXiv:1805.09501 ,
+2018. 3, 18
+[8] Ekin D. Cubuk, Barret Zoph, Jonathon Shlens, and Quoc V . Le. RandAugment: Practical
+automated data augmentation with a reduced search space. arXiv preprint arXiv:1909.13719 ,
+2019. 3, 5, 18, 20
+[9] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale
+hierarchical image database. In Conference on Computer Vision and Pattern Recognition , pages
+248–255, 2009. 3
+[10] Piotr Doll ´ar, Mannat Singh, and Ross B. Girshick. Fast and accurate model scaling. In
+Conference on Computer Vision and Pattern Recognition , 2021. 3, 6
+[11] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai,
+Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly,
+et al. An image is worth 16x16 words: Transformers for image recognition at scale. In
+International Conference on Learning Representations , 2021. 3, 4, 5, 8, 9
+[12] Pierre Foret, Ariel Kleiner, H. Mobahi, and Behnam Neyshabur. Sharpness-aware mini-
+mization for efﬁciently improving generalization. arXiv preprint arXiv:2010.01412 , 2021. 3
+[13] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image
+recognition. In Conference on Computer Vision and Pattern Recognition , 2016. 2, 3, 6, 8, 9
+[14] Tong He, Zhi Zhang, Hang Zhang, Zhongyue Zhang, Junyuan Xie, and Mu Li. Bag of
+tricks for image classiﬁcation with convolutional neural networks. In Conference on Computer
+Vision and Pattern Recognition , 2019. 2, 3, 8, 9
+[15] Dan Hendrycks, Norman Mu, E. D. Cubuk, Barret Zoph, J. Gilmer, and Balaji Lakshmi-
+narayanan. Augmix: A simple data processing method to improve robustness and uncer-
+tainty. arXiv preprint arXiv:1912.02781 , 2020. 18
+[16] Byeongho Heo, Sanghyuk Chun, Seong Joon Oh, Dongyoon Han, Sangdoo Yun, Youngjung
+Uh, and Jung-Woo Ha. Adamp: Slowing down the weight norm increase in momentum-
+based optimizers. arXiv preprint arXiv:2006.08217 , 2020. 21
+[17] Elad Hoffer, Tal Ben-Nun, Itay Hubara, Niv Giladi, Torsten Hoeﬂer, and Daniel Soudry.
+Augment your batch: Improving generalization through instance repetition. In Conference
+on Computer Vision and Pattern Recognition , 2020. 5
+[18] Grant Van Horn, Oisin Mac Aodha, Yang Song, Alexander Shepard, Hartwig Adam, Pietro
+Perona, and Serge J. Belongie. The iNaturalist species classiﬁcation and detection dataset.
+arXiv preprint arXiv:1707.06642 , 2017. 11
+[19] Andrew G. Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko, Weijun Wang, Tobias
+Weyand, M. Andreetto, and Hartwig Adam. Mobilenets: Efﬁcient convolutional neural
+networks for mobile vision applications. arXiv preprint arXiv:1704.04861 , 2017. 3
+[20] Jie Hu, Li Shen, and Gang Sun. Squeeze-and-excitation networks. arXiv preprint
+arXiv:1709.01507 , 2017. 2, 3, 8, 9
+15
+
+==== Page 16 ====
+[21] Gao Huang, Yu Sun, Zhuang Liu, Daniel Sedra, and Kilian Q. Weinberger. Deep networks
+with stochastic depth. In European Conference on Computer Vision , 2016. 3, 5
+[22] Pavel Izmailov, Dmitrii Podoprikhin, T. Garipov, D. Vetrov, and A. G. Wilson. Averaging
+weights leads to wider optima and better generalization. arXiv preprint arXiv:1803.05407 ,
+2018. 3
+[23] Prannay Khosla, Piotr Teterwak, Chen Wang, Aaron Sarna, Yonglong Tian, Phillip Isola,
+Aaron Maschinot, Ce Liu, and Dilip Krishnan. Supervised contrastive learning. arXiv
+preprint arXiv:2004.11362 , 2020. 3
+[24] Jonathan Krause, Michael Stark, Jia Deng, and Li Fei-Fei. 3d object representations for ﬁne-
+grained categorization. In IEEE Workshop on 3D Representation and Recognition , 2013. 11
+[25] Alex Krizhevsky. Learning multiple layers of features from tiny images. Technical report,
+CIFAR, 2009. 11
+[26] A. Krizhevsky, I. Sutskever, and G. Hinton. ImageNet classiﬁcation with deep convolutional
+neural networks. In NeurIPS , 2012. 3
+[27] Jung kyu Lee, Taeryun Won, and Kiho Hong. Compounding the performance im-
+provements of assembled techniques in a convolutional neural network. arXiv preprint
+arXiv:2001.06268 , 2020. 3
+[28] I. Loshchilov and F. Hutter. Fixing weight decay regularization in adam. arXiv preprint
+arXiv:1711.05101 , 2017. 4, 5
+[29] M-E. Nilsback and A. Zisserman. Automated ﬂower classiﬁcation over a large number
+of classes. In Proceedings of the Indian Conference on Computer Vision, Graphics and Image
+Processing , 2008. 11
+[30] David Picard. torch.manual seed(3407) is all you need: On the inﬂuence of random
+seeds in deep learning architectures for computer vision. arXiv preprint arXiv:2109.08203 ,
+sep 2021. 7, 11
+[31] B. Polyak and A. Juditsky. Acceleration of stochastic approximation by averaging. Siam
+Journal on Control and Optimization , 1992. 3
+[32] Ilija Radosavovic, Raj Prateek Kosaraju, Ross B. Girshick, Kaiming He, and Piotr Doll ´ar.
+Designing network design spaces. Conference on Computer Vision and Pattern Recognition ,
+2020. 3, 7, 8, 9
+[33] Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V . Le. Regularized evolution for
+image classiﬁer architecture search. arXiv preprint arXiv:1802.01548 , 2018. 3
+[34] B. Recht, Rebecca Roelofs, L. Schmidt, and V . Shankar. Do ImageNet classiﬁers generalize
+to ImageNet? In International Conference on Machine Learning , 2019. 1, 2
+[35] T. Ridnik, Hussam Lawen, Asaf Noy, and Itamar Friedman. Tresnet: High performance
+gpu-dedicated architecture. arXiv preprint arXiv:2003.13630 , 2020. 3
+[36] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng
+Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, Alexander C. Berg, and Li Fei-
+Fei. ImageNet large scale visual recognition challenge. International Journal of Computer
+Vision , 115(3):211–252, 2015. 1, 11
+[37] Nitish Srivastava, Geoffrey Hinton, Alex Krizhevsky, Ilya Sutskever, and Ruslan Salakhut-
+dinov. Dropout: A simple way to prevent neural networks from overﬁtting. In Journal of
+Machine Learning Research , 2014. 3
+[38] Ilya Sutskever, James Martens, George E. Dahl, and Geoffrey E. Hinton. On the importance
+of initialization and momentum in deep learning. In International Conference on Machine
+Learning , 2013. 3
+[39] Christian Szegedy, V . Vanhoucke, S. Ioffe, Jon Shlens, and Z. Wojna. Rethinking the incep-
+tion architecture for computer vision. Conference on Computer Vision and Pattern Recognition ,
+2016. 3
+[40] C. Szegedy, Wei Liu, Yangqing Jia, P . Sermanet, S. Reed, D. Anguelov, D. Erhan, V . Van-
+houcke, and A. Rabinovich. Going deeper with convolutions. In Conference on Computer
+Vision and Pattern Recognition , 2015. 5
+[41] Mingxing Tan and Quoc V . Le. EfﬁcientNet: Rethinking model scaling for convolutional
+neural networks. arXiv preprint arXiv:1905.11946 , 2019. 3, 8, 9
+[42] Mingxing Tan and Quoc V . Le. Efﬁcientnetv2: Smaller models and faster training. In Inter-
+national Conference on Machine Learning , 2021. 8, 9, 21
+16
+
+==== Page 17 ====
+[43] Ilya Tolstikhin, Neil Houlsby, Alexander Kolesnikov, Lucas Beyer, Xiaohua Zhai, Thomas
+Unterthiner, Jessica Yung, Daniel Keysers, Jakob Uszkoreit, Mario Lucic, and Alexey Doso-
+vitskiy. MLP-Mixer: An all-MLP architecture for vision. arXiv preprint arXiv:2105.01601 ,
+2021. 4, 5
+[44] Hugo Touvron, Piotr Bojanowski, Mathilde Caron, M. Cord, Alaaeldin El-Nouby, Edouard
+Grave, Armand Joulin, Gabriel Synnaeve, Jakob Verbeek, and Herv ´e J´egou. ResMLP:
+feedforward networks for image classiﬁcation with data-efﬁcient training. arXiv preprint
+arXiv:2105.03404 , 2021. 4, 5
+[45] Hugo Touvron, M. Cord, M. Douze, F. Massa, Alexandre Sablayrolles, and H. J ´egou. Train-
+ing data-efﬁcient image transformers & distillation through attention. International Confer-
+ence on Machine Learning , 2021. 3, 4, 5, 6, 8, 9, 10
+[46] Hugo Touvron, Matthieu Cord, Alexandre Sablayrolles, Gabriel Synnaeve, and Herv ´e
+J´egou. Going deeper with image transformers. International Conference on Computer Vision ,
+2021. 5
+[47] Hugo Touvron, Alexandre Sablayrolles, M. Douze, M. Cord, and H. J ´egou. Graﬁt: Learning
+ﬁne-grained image representations with coarse labels. International Conference on Computer
+Vision , 2021. 3
+[48] Hugo Touvron, Andrea Vedaldi, Matthijs Douze, and Herve Jegou. Fixing the train-test
+resolution discrepancy. Neurips , 2019. 3, 6, 14
+[49] Ashish Vaswani, Prajit Ramachandran, Aravind Srinivas, Niki Parmar, Blake Hechtman,
+and Jonathon Shlens. Scaling local self-attention for parameter efﬁcient visual backbones.
+arXiv preprint arXiv:2103.12731 , 2021. 3
+[50] Ross Wightman. Pytorch image models. https://github.com/rwightman/
+pytorch-image-models , 2019. 3, 5, 8, 9, 18
+[51] Saining Xie, Ross Girshick, Piotr Doll ´ar, Zhuowen Tu, and Kaiming He. Aggregated resid-
+ual transformations for deep neural networks. In Conference on Computer Vision and Pattern
+Recognition , 2017. 3, 8, 9
+[52] Ismet Zeki Yalniz, Herv ´e J´egou, Kan Chen, Manohar Paluri, and Dhruv Kumar Ma-
+hajan. Billion-scale semi-supervised learning for image classiﬁcation. arXiv preprint
+arXiv:1905.00546 , 2019. 3
+[53] Yang You, Jing Li, Sashank Reddi, Jonathan Hseu, Sanjiv Kumar, Srinadh Bhojanapalli, Xi-
+aodan Song, James Demmel, Kurt Keutzer, and Cho-Jui Hsieh. Large batch optimization
+for deep learning: Training BERT in 76 minutes. In International Conference on Learning Rep-
+resentations , 2020. 4, 5
+[54] L. Yuan, Y. Chen, Tao Wang, Weihao Yu, Yujun Shi, F. Tay, Jiashi Feng, and S. Yan.
+Tokens-to-token vit: Training vision transformers from scratch on imagenet. arXiv preprint
+arXiv:2101.11986 , 2021. 3
+[55] Sangdoo Yun, Dongyoon Han, Seong Joon Oh, Sanghyuk Chun, Junsuk Choe, and
+Youngjoon Yoo. CutMix: Regularization strategy to train strong classiﬁers with localizable
+features. arXiv preprint arXiv:1905.04899 , 2019. 3, 5, 18
+[56] Hongyi Zhang, Moustapha Ciss ´e, Yann N. Dauphin, and David Lopez-Paz. mixup: Beyond
+empirical risk minimization. arXiv preprint arXiv:1710.09412 , 2017. 3, 5, 18
+[57] Hang Zhang, Chongruo Wu, Zhongyue Zhang, Yi Zhu, Zhi Zhang, Haibin Lin, Yue Sun,
+Tong He, Jonas Muller, R. Manmatha, Mu Li, and Alexander Smola. Resnest: Split-attention
+networks. arXiv preprint arXiv:2004.08955 , 2020. 3
+[58] Zhun Zhong, Liang Zheng, Guoliang Kang, Shaozi Li, and Yi Yang. Random erasing data
+augmentation. In AAAI , 2020. 3, 5, 18
+[59] Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V . Le. Learning transferable ar-
+chitectures for scalable image recognition. Conference on Computer Vision and Pattern Recog-
+nition , 2018. 3
+17
+
+==== Page 18 ====
+Supplementary material
+This supplemental material provides complementary results referred in the main
+document, noticeably a presentation of the augmentation and regularization speciﬁcity
+intimm and some alternative training procedures.
+A Augmentations and Regularization in timm [50]
+Thetimm library includes a variety of image augmentations, regularization techniques,
+optimizers, and learning rate schedulers that can be used to produce leading results on
+ImageNet classiﬁcation and other 2D image tasks. Many timm training components
+have modiﬁcations and improvements from original implementations or papers de-
+scribing them. One should be aware of these changes if using them.
+Data Augmentation intimm includes implementations of RandAugment [8], Au-
+toAugment [7], AugMix [15], Random Erasing [58], and an integrated implementation
+of Mixup [56] and CutMix [55]. The base for all augmentations is typically Random
+Resized Crop with horizontal ﬂipping.
+RandAugment is the most used of the AA (AutoAugment) variants in timm – it also
+contains the most signiﬁcant additions from the original paper and Tensorﬂow based
+implementations – so we will focus on that implementation. The original RandAug-
+ment speciﬁcation has two hyper-parameters, M and N; where M is the distortion mag-
+nitude and N is the number of distortions uniformly sampled and applied per-image.
+The goal of RandAugment was that both M and N be human interpretable. However,
+that ended up not being the case for M. The scales of several augmentations were back-
+wards or not monotonically increasing over the range such that increasing M does not
+increase the strength of all augmentations.
+This is most visible for image enhancement blending operations (color, contrast,
+brightness, sharpness) where the argument value deﬁnes the behavior as follows:
+0. selects the degenerate image
+0.-1.0 interpolates between the degenerate and original image
+1.0 returns original image
+>1.0 extrapolates the original image way from the degenerate
+Taking sharpness as an example, magnitudes of M0, M5, and M10 are mapped in
+the original implementation to produce strong blurring (0.1), no-change (1.0), or strong
+sharpening (1.9) respectively.
+The implementation in timm attempts to improve this situation by adding an ‘in-
+creasing’ mode (always enabled for recipes in this paper) where all augmentation strengths
+increase with magnitude; solarize and posterize increase with M (instead of decrease),
+and interpolation vs extrapolation for the blending operations is randomly chosen with
+a strength that increases with M. This makes increasing M more intuitive and allows
+an additional hyper-parameter to work well: timm adds a MSTD parameter which
+adds gaussian noise with the speciﬁed standard deviation to the M value per distor-
+tion application. Additionally, if MSTD is set to ‘-inf’, M is uniformly sampled from
+0-M for each distortion. Without correcting the scales, one would often end up with
+completely empty or heavily inverted images in ranges of M that are supposed to be
+low in strength.
+18
+
+==== Page 19 ====
+Care was taken in timm ’s RandAugment to reduce impact on image mean, the nor-
+malization parameters can be passed as a parameter such that all augmentations that
+may introduce border pixels can use the speciﬁed mean instead of defaulting to 0 or a
+hard-coded tuple as in other implementations. And lastly, Cutout is excluded by de-
+fault to favour separate use of timm ’s Random Erasing implementation which has less
+impact on mean and standard deviation of the augmented images.
+Random Erasing is another commonly used timm augmentation with modiﬁcations
+from the original paper. The implementation in timm follows the original but allows
+‘erasing’ image regions with per-pixel gaussian noise (mean 0, std 1.0) instead of a
+uniform random or constant color (black or image mean) per-region. When applied
+to images at the recommended location in the augmentation pipeline – after images
+have been normalized (standardized) – this maintains image statistics and allows better
+results with stronger application of the augmentation. A count parameter was also
+added to timm ’s Random Erasing such that multiple regions can be erased per-image.
+Mixup and CutMix are cleanly integrated in timm in a manner not common in other
+implementations. Both can be enabled at the same time with a variety of different
+mixing strategies:
+batchwise CutMix vs Mixup selection, lambda and CutMix region sampling performed
+per-batch
+pairwise mixing, lambda, and region sampling performed per mixing sample pair
+within batch
+elementwise mixing, lambda, and region sampling performed per sample within batch
+half the same as elementwise but one of each mixing pair is discarded so that each
+sample is seen once per epoch
+The default is to use either CutMix or Mixup with probability of 0.5 per-batch if
+both are enabled – this is the case for all mentioned training procedures in this paper.
+Regularization intimm is standard. It allows use of similar regularization for many
+of the included models. Weight decay is available via either native PyTorch or timm
+optimizers. The ability to enable pre-classiﬁer dropout is included in all model archi-
+tectures. Stochastic-Depth has been added as an option to many of the most popular
+model architectures (via a layer named DropPath). Label-smoothing is included via a
+cross-entropy loss function and possible to use in combination with the label manipu-
+lation of CutMix and Mixup.
+B Alternative Training Procedures
+The main training recipes in this paper uses the LAMB optimizer. Several sets of hyper-
+parameter variations with differing training costs were presented with leading results
+for the vanilla ResNet-50 architecture. Here, we introduce alternative training recipes
+that also produce results matching or exceeding the best existing ResNet-50. The reader
+may ﬁnd these are better suited for use or adaptation for their speciﬁc model architec-
+ture, dataset, or task. The alternative recipes are:
+Procedure B – RMSProp with EMA weight averaging and step LR decay;
+19
+
+==== Page 20 ====
+Procedure! B C.1 C.2 D
+Train Res 224 224 224 224
+Test Res 224 224 224 224
+Epochs 600 800 800 600
+# of forward pass 375k 500k 500k 2,000k
+Batch Size 2048 2048 2048 384
+Optimizer RMSProp SGD SGD AdamP
+Initial LR 0.18 0.88 0.88 0.0033
+LR Scheduler step cosine cosine cosine
+Decay Rate 0.988 per 1-epoch 7 7 7
+LR Noise (% of training) 0.45 to 1.0 7 7 7
+Weight Decay 7:010 61:010 51:010 50.01
+Warmup Epochs 5 5 5 5
+Label Smoothing 0.1 0.1 0.1 0.1
+Dropout 0.2 0.25 0.25 0.1
+Stochastic Depth 0.1 0.1 0.1 0.05
+Repeated Augmentation 7 7 3 7
+Grad Clipping 7 AGC .025 AGC .05 7
+RandAugment (M/N/MSTD) 8/2/1.0 7/3/1.0 7/3/1.0 7/3/1.0
+Mixup 0.2 0.2 0.2 0.2
+CutMix 7 1.0 1.0 1.0
+Random Erasing (Prob/Count) 0.35/3 0.4/1 0.4/1 .35/1
+EMA weight averaging 0.9999 7 7 7
+CE loss 3 3 3 7
+BCE loss 7 7 7 3
+Top-1 acc. 79.4% 79.8% 80.0% 79.8%
+Table 10: Alternative training procedures giving good performance with ResNet-50 architecture.
+Procedure C – SGD with Nesterov’s momentum, Adaptive Gradient Clipping, and a
+cosine learning rate decay. We have two variants of it (C1 and C2) depending on
+whether we use repeated augmentation or not;
+Procedure D – AdamP with a cosine learning rate decay and binary cross-entropy.
+The above procedures have been used to product excellent results for many pre-
+trained models in the timm library, including many non-ResNet architectures. Table 10
+summarizes their best ResNet-50 oriented settings.
+Training procedure B details (RMSProp) This procedure is inspired by the Ran-
+dAugment [8] recipes used to train EfﬁcientNet architectures but leverages features in
+timm ’s implementation of RandAugment and Random Erasing. The step decay has
+been adjusted to decay every epoch (instead of every 2.4 as with EfﬁcientNet, weight
+decay has been slightly decreased from EfﬁcientNet defaults, and the learning rate is
+a bit higher. Additional augmentation was added in the form of per-pixel noise Ran-
+dom Erasing and Mixup. It should be noted that the RMSProp optimizer used is the
+rmsprop tfimplementation in timm which carefully matches behaviours of the Ten-
+sorﬂow (before version 2.0) implementation. The native PyTorch RMSProp implemen-
+tation will not produce the same results, even if adjusting for the epsilon location.
+With long decay constants for the EMA weight averaging, it can be beneﬁcial to
+perturb the learning rate (currently once per epoch) with noise in later stages of training
+(typically 40-50% of the way through until the end). In exploration so far, learning rate
+20
+
+==== Page 21 ====
+noise appears to increase sensitivity of training results to random seed but has often
+produced the best result in (so far, limited) sweeps with the same hyper-parameters.
+Further analyzing the interplay between learning rate value, schedule, and noise, EMA
+decay constant, and random seed is a future objective for reﬁning this training recipe.
+This training strategy varies somewhat in effectiveness with batch size. Running ex-
+periments for this paper with larger batch sizes in the 1024-2048 range has often come
+slightly below (0.1 to 0.3 top-1) prior training runs with smaller sizes in the 256-768
+range used for numerous timm pre-trained weights. It is unclear if this can be ad-
+dressed with further hyper-parameter adjustments and different learning rate scaling
+(linear used by default) across batch sizes.
+See Table 11 for a summary of the procedure, including ranges of recommended of
+values to search over for applying to different classiﬁcation task and architecture com-
+binations. For larger model architectures it is advisable to focus on stronger augmen-
+tation and regularization values within the suggested ranges. Looking at Table 3, the
+original results for the timm speciﬁc EfﬁcientNetV2-S [42] variant and ECA-ResNet-
+269-D were trained using this procedure, but with higher levels of augmentation and
+regularization than for ResNet-50.
+Training procedure C details (SGD with Nesterov’s momentum and AGC) This
+recipe is based on the published procedure for training NFNets [5]: using SGD with
+Nesterov’s momentum, Adaptive Gradient Clipping [5] (AGC), and heavy augmenta-
+tion and regularization. AGC allows for stable large batch training at higher learning
+rates. Stronger default augmentation and regularization make up for the loss of batch
+normalization’s regularizing effect when paired with NFNets, but strengths can be re-
+laxed when used with other architectures that use batch normalization. With some
+adjustments, this procedure has been useful training architectures in timm such as
+ECA-NFNet, ResNet, and EfﬁcientNet variants to impressive performance levels. The
+original result for the timm EfﬁcientNetV2-M [42] variant in Table 3 was trained with
+the C.1 recipe, but with signiﬁcantly higher augmentation and regularization than for
+ResNet-50.
+The C.1 vs C.2 versions of this procedure seen in Table 10 differ most signiﬁcantly in
+the application of Repeated Augmentation. It should be noted that a shorter training
+length of 600 epochs also works quite well in both cases, with an expected drop of
+roughly 0.15-0.2 top-1 for the same seed. Table 12 includes ranges of the ingredients for
+exploring with different tasks and architectures.
+Training Procedure D details (AdamP) Late in the process for this report a training
+trial using AdamP [16] showed promise. With limited runs so far a recipe based on
+AdamP has achieved a 79.8 top-1 on ImageNet-1k. Further experimentation is neces-
+sary, the trials so far were run at a comparatively small batch size, but the promising
+results warrant exploration. Note that unlike RMSProp or SGD (but similar to Adam
+and LAMB), it is recommended to use square root scaling when adjusting the learning
+rate for this recipe across different batch sizes.
+Table 13 contains the recommended ranges for the ingredients of this recipe. These
+ranges have not been explored extensively across different model architectures as with
+procedures B and C.
+Other Recipes Undoubtedly, other training recipes with different combinations of
+optimizer, learning rate schedule, augmentation, and regularization exist that can match
+or surpass the performance of the procedures detailed in this report. Ingredients aside,
+putting in the time and effort to tune the recipe with the target architecture is key. The
+authors already have an AdamW recipe in the works that is looking promising.
+21
+
+==== Page 22 ====
+Recommended Range ResNet-50
+Epochs 400-700 600
+Initial LR (per batch size 256) .01-.025 0.0225
+LR Schedule Step Step
+LR Decay Rate 0.97-0.99 per 1-3 epochs 0.988 per 1-epoch
+LR Noise Active (% of training) 40-50% to 100% 45% to 100%
+Grad Clipping Off, global norm 1.0 off
+Dropout 0-0.4 0.2
+Stoch Depth 0-0.1 0.1
+Repeated Augmentation Off Off
+RandAugment (M / N / MSTD) 6-9 / 2-4 / 0.5-1.0 8 / 2 / 1.0
+Random Erasing (Prob / Count) 0.1-0.5 / 1-3 0.35 / 1
+Mixup 0.2, 0.5, 0.8 0.2
+CutMix Off, 0.8, 1.0 0
+EMA Weight Averaging On On
+Loss CE CE
+Table 11: Procedure B summary
+Recommended Range ResNet-50
+Epochs 300-800 800
+Initial LR (per batch size 256) .08-.12 0.11
+LR Schedule cosine cosine
+Grad Clipping AGC .01 - .05 AGC .05
+Dropout 0-0.5 0.25
+Stoch. Depth 0-0.2 0.1
+Repeated Augmentation Off, On On
+RandAugment (M / N / MSTD) 6-10 / 2-4 / 0.5-1.0 7 / 3 / 1.0
+Random Erasing (Prob / Count) 0.1-0.5 / 1-3 0.4 / 1
+Mixup 0.2, 0.5, 0.8 0.2
+CutMix Off, 0.8, 1.0 1.0
+Loss CE CE
+Table 12: Procedure C summary
+Recommended Range ResNet-50
+Epochs 300-600 600
+Initial LR (per batch size 256) .002 - .003 0.0027
+LR Schedule cosine cosine
+Grad Clipping None None
+Dropout 0-0.3 0.1
+Stoch. Depth 0-0.1 0.05
+Repeated Augmentation Off, On Off
+RandAugment (M / N / MSTD) 6-9 / 2-4 / 0.5-1.0 7 / 3 / 1.0
+Random Erasing (Prob / Count) 0.1-0.5 / 1-3 0.35 / 1
+Mixup 0.2, 0.5, 0.8 0.2
+CutMix Off, 0.8, 1.0 1.0
+Loss CE, BCE BCE
+Table 13: Procedure D summary
+22
+

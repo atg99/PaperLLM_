@@ -1,0 +1,1018 @@
+==== Page 1 ====
+What Makes Good In-Context Examples for GPT- 3?
+Jiachang Liu1, Dinghan Shen2, Yizhe Zhang3, Bill Dolan3, Lawrence Carin1, Weizhu Chen2
+1Duke University2Microsoft Dynamics 365 AI3Microsoft Research
+1fjiachang.liu, lcaring@duke.edu
+2;3fdishen, yizzhang, billdol, wzchen g@microsoft.com
+Abstract
+GPT-3(Brown et al., 2020) has attracted lots
+of attention due to its superior performance
+across a wide range of NLP tasks, especially
+with its powerful and versatile in-context few-
+shot learning ability. Despite its success, we
+found that the empirical results of GPT- 3de-
+pend heavily on the choice of in-context ex-
+amples. In this work, we investigate whether
+there are more effective strategies for judi-
+ciously selecting in-context examples (relative
+to random sampling) that better leverage GPT-
+3’s few-shot capabilities. Inspired by the re-
+cent success of leveraging a retrieval module
+to augment large-scale neural network mod-
+els, we propose to retrieve examples that are
+semantically-similar to a test sample to for-
+mulate its corresponding prompt. Intuitively,
+the in-context examples selected with such a
+strategy may serve as more informative in-
+puts to unleash GPT- 3’s extensive knowledge.
+We evaluate the proposed approach on sev-
+eral natural language understanding and gen-
+eration benchmarks, where the retrieval-based
+prompt selection approach consistently out-
+performs the random baseline. Moreover, it
+is observed that the sentence encoders ﬁne-
+tuned on task-related datasets yield even more
+helpful retrieval results. Notably, signiﬁcant
+gains are observed on tasks such as table-to-
+text generation (41.9% on the ToTTo dataset)
+and open-domain question answering (45.5%
+on the NQ dataset). We hope our investigation
+could help understand the behaviors of GPT- 3
+and large-scale pre-trained LMs in general and
+enhance their few-shot capabilities.
+1 Introduction
+GPT-3(Brown et al., 2020) is a new breakthrough
+in NLP research. Previously, NLP models are pre-
+trained on large quantities of data and ﬁne-tuned
+Work was done during an internship at Microsoft Dy-
+namics 365 AI.Trial 1 2 3 4 5
+Accuracy 94.6 95.0 95.8 93.9 86.9
+Table 1: Results of GPT- 3on the task of sentiment
+analysis on the SST-2 dataset. Five different in-context
+examples are randomly selected from the training set.
+We observe different contexts induce different accura-
+cies on the test set.
+on a speciﬁc task and dataset. What sets GPT- 3
+apart from other pre-trained language models is its
+impressive “in-context” few-shot learning ability.
+Provided with a few in-context examples, GPT- 3
+is able to generalize to unseen cases without fur-
+ther ﬁne-tuning. This opens up many new tech-
+nological possibilities that are previously consid-
+ered unique to human. For example, NLP systems
+can be developed to expand emails, extract entities
+from text, generate code based on natural language
+instructions with a few demonstration examples.
+Despite its powerful and versatile in-context
+learning ability, GPT- 3has some practical chal-
+lenges/ambiguities. The original paper (Brown
+et al., 2020) utilizes task-relevant examples that
+are randomly sampled from the training set to con-
+struct the context. In practice, we observe that the
+performance of GPT- 3tends to ﬂuctuate with dif-
+ferent choices of in-context examples. As shown
+in Table 1, the variance of the empirical results
+with distinct in-context examples can be signiﬁ-
+cant. The results are highly sensitive to the exam-
+ples. Our work aims to carefully examine this is-
+sue to gain a deeper understanding on how to bet-
+ter select in-context examples to unleash GPT- 3’s
+few-shot capabilities and further improve its per-
+formance.
+A brute-force approach would be to perform
+combinatorial search over the entire dataset. Un-
+fortunately, this strategy is computationally ex-
+pensive and thus impractical in many cases. ToarXiv:2101.06804v1  [cs.CL]  17 Jan 2021
+
+==== Page 2 ====
+this end, we investigate the inﬂuences of employ-
+ing different in-context examples on the empiri-
+cal results. Interestingly, we found that the in-
+context examples that are closer to the test sample
+in the embedding space consistently give rise to
+stronger performance (relative to the farther ones).
+Inspired by this observation and the recent success
+of retrieval-augmented models (Hashimoto et al.,
+2018), we propose to utilize nearest neighbors of a
+given test sample (among all the training instances
+available) as the corresponding in-context exam-
+ples. The retrieved examples, along with the test
+sample, are provided to GPT- 3for the ﬁnal predic-
+tion.
+To verify the effectiveness of the proposed
+method, we evaluate it on several natural language
+understanding and generation tasks, including sen-
+timent analysis, table-to-text generation and open-
+domain question answering. It is observed that
+the retrieval-based in-context examples unleash
+the few-shot capabilities of GPT- 3much more ef-
+fectively than a random sampling baseline. Even
+with a smaller number of in-context examples,
+the proposed strategy empowers GPT- 3to achieve
+stronger performance. Moreover, we ﬁnd that the
+speciﬁc sentence encoders employed for the re-
+trieval procedure play a critical role. Thus, an ex-
+tensive exploration regarding different pre-trained
+encoders is conducted, and it is shown that en-
+coders ﬁne-tuned on natural language matching
+tasks serve as more effective in-context examples
+selector on the QA task. Detailed analysis and
+case study further validate the effectiveness of pro-
+posed methods. In summary, our contributions in
+this paper are as follows:
+i) to the best of our knowledge, we take a ﬁrst
+step towards understanding the sensitivity of GPT-
+3’s few-shot capabilities with respect to the selec-
+tion of in-context examples;
+ii) to alleviate the sensitivity issue, an ad-
+ditional retrieval module is introduced to ﬁnd
+semantically-similar in-context examples of a test
+instance to construct its corresponding input,
+which greatly outperforms the baseline based on
+random sampled examples;
+iii) ﬁne-tuning the retrieval model on task-
+related dataset(s) leads to even stronger empirical
+results with GPT- 3;
+iv) the performance of GPT- 3improves as the
+number of examples available for retrieval in-
+creases.
+1234sourcetargetcontextpromptwatermelon == wassermelonesports car == sportwagenblue sky == blauer Himmelmountain ==   …………….Figure 1: The ﬁgure above shows how to perform in-
+context learning with a language model. Three in-
+context examples and the test prompt are concatenated
+as a single string input for GPT- 3, with a special charac-
+ter ”nn” inserted between two adjacent examples. GPT-
+3keeps generating tokens until there is a special char-
+acter ”nn”.
+2 Method
+2.1 GPT- 3for In-Context Learning
+The in-context learning scenario of GPT- 3can be
+regarded as a conditional text generation problem.
+Concretely, the probability of generating a target
+yis conditioned on the context C, which includes
+kexamples, and the source x. Therefore, the pre-
+dictionycorresponding to the source xcan be ex-
+pressed as:
+pLM(yjC;x) =TY
+t=1p(ytjC;x;y<t) (1)
+where LM denotes the parameters of the language
+model, and C=fx1;y1;x2;y2;:::;xk;ykgis a
+context string. In GPT- 3, theCis created by con-
+catenatingktraining instances along with their
+corresponding labels. As shown in the illustration
+of Figure 1, GPT- 3is asked to translate “moun-
+tain” to its German version based on the three ex-
+amples given as part of the input.
+For GPT- 3, this generation process is imple-
+mented through a giant transformer-based model
+architecture (Vaswani et al., 2017; Brown et al.,
+2020). Given the large size of the GPT-3 model,
+it would be very computationally-involved to ﬁne-
+tune it on task-speciﬁc samples. Thus, GPT- 3is
+typically leveraged in a in-context learning man-
+ner as described above. It has been shown that
+GPT-3has powerful few-shot capabilities, where
+it can perform quite well with only a small num-
+ber of demonstrations provided. Unfortunately, as
+shown in Table 1, the results of GPT tends to ﬂuc-
+tuate signiﬁcantly with different in-context exam-
+ples chosen. Here we aim to alleviate this issue via
+judious in-context examples selection.
+
+==== Page 3 ====
+XWhat county is Frederick, MD in?Training DataGPT-3Frederick CountyencodeTest Promptencodeselect nearest neighbors
+What county is Duluth Minnesota in? 1What Olympic athlete has won the most medals? NencodeQ: What county is Duluth Minnesota in?A: St. Louis CountyQ: What county is Frederick, MD in?A: Figure 2: In-context example selection for GPT- 3. White dots: unused training samples; grey dots: randomly sam-
+pled training samples; red dots: training samples selected by the k-nearest neighbors algorithm in the embedding
+space of a sentence encoder.
+2.2 The Impact of In-Context Examples
+Given the observation that the empirical results of
+GPT-3are sensitive to the chosen in-context ex-
+amples, we look at the role of in-context examples
+from an empirical perspective. Previous retrieve-
+and-edit literatures usually retrieve prototypes that
+are close to the test source xin some embedding
+space. These examples and the test source xoften
+share semantic or lexical similarities. This hints on
+how we may select in-context examples for GPT-
+3.
+To this end, we examine the impact of the dis-
+tance between in-context example and the test
+sample on GPT- 3’s performance. Concretely, a
+comparison is made on the the Natural Questions
+(NQ) dataset between two in-context example se-
+lection strategies. Given each test example, the
+ﬁrst method utilizes the 10farthest training in-
+stances to construct the context provided to GPT-
+3, while the second employs the 10closest neigh-
+bors. We use the CLS embeddings of a pre-trained
+RoBERTa-large model as the sentence representa-
+tions to measure the proximity of two sentences
+(using the Euclidean distance).
+For evaluation, 100test questions are randomly
+sampled and the average Exact Match (EM) scores
+with the two distinct strategies are reported in Ta-
+Method Closest Farthest
+Accuracy 46.0 31.0
+Table 2: Comparison of the EM score on the closest 10
+neighbors and farthest 10 neighbors on a subset of 100
+test samples of the NQ dataset.ble 2. It can be observed that the nearest neigh-
+bors, as the in-context examples, give rise to much
+better results relative to the farthest ones. More-
+over, the pre-trained RoBERTa model serves as ef-
+fective sentence embeddings for the retrieval pro-
+cedure.
+2.3kNN-augmented In-Context Example
+Selection
+Based on the ﬁndings above, we propose KATE1,
+a strategy to select good in-context examples for
+in-context learning. The process is visualized
+in Figure 2. Speciﬁcally, we ﬁrst use a certain
+sentence encoder to convert sources in both the
+training set and test set to vector representations.
+For online prediction, we can convert the train-
+ing set ﬁrst and encode each test source on the
+ﬂy. Then, for each test source x, we retrieve its
+nearestkneighborsx1;x2;:::;xkfrom the train-
+ing set (according to the distances in the sentence
+encoder’s embedding space). Given some pre-
+deﬁned similarity measure dsuch as the cosine
+similarity, the neighbors are ordered in such a way
+thatd(xi;x)d(xj;x)wheni<j .
+Afterwards, the ksources are concatenated with
+their corresponding targets to form the context
+C=fx1;y1;x2;y2;:::;xk;ykg, which is further
+sent to GPT- 3along with the test input. The algo-
+rithm chart is presented in Algorithm 1. Note that
+different numbers of in-context examples can be
+employed here, and we conduct ablation study on
+its impact in a later section.
+1KATE: Knn-Augmented in-con TextExample selection
+
+==== Page 4 ====
+Algorithm 1 kNN In-context Example Selection
+Given: test prompt xtest, training setDT=
+fxi;yigN
+i=1, sentence encoder (), and number
+of in-context examples k(hyperparameter).
+1:vtest=(xtest)
+2:forxi2DTdo
+3: vi=(xi)
+4: si= kvtest vik2 (orvtestvi
+kvtestk2kvik2)
+5:end for
+6:Select largest ksimilarities si’s (in descend-
+ing order) with indices f(1);:::; (k)g
+7:C= [x(1);y(1);:::;x(k);y(k)]
+8:^ytest=GPT-3([C;xtest])
+Choices of Retrieval Module A core step for
+our context selection approach is mapping sen-
+tences into a latent semantic space, leaving a ques-
+tion as what sentence encoders we should choose.
+We compared among existing pre-trained text en-
+coders and found them sufﬁcient to retrieve se-
+mantically similar sentences. The sentence en-
+coders can be divided into two categories.
+The ﬁrst category includes most generally pre-
+trained sentence encoders such as a pre-trained
+BERT, RoBERTa, or XLNet models. These mod-
+els have been trained on large quantities of un-
+supervised tasks and achieved good performance
+on many natural language tasks. The correspond-
+ing embeddings contain rich semantic information
+from the original sentences.
+The second category includes sentence en-
+coders ﬁne-tuned on speciﬁc tasks or datasets. For
+example, a sentence encoder trained on the STS
+benchmark dataset should be able to assess sim-
+ilarities among different questions better than a
+generally pre-trained sentence encoder. (Reimers
+and Gurevych, 2019, 2020) have shown that these
+ﬁne-tuned encoders have achieved great perfor-
+mance on tasks such as sentence clustering, para-
+phrase mining, and information retrieval.
+3 Experimental Setup
+We apply the kNN in-context selection method
+to the following three tasks: sentiment classiﬁ-
+cation, table-to-text generation, and question an-
+swering (QA). Datasets and the common data split
+setups are shown in Table 3. In terms of the hyper-
+parameters in the GPT- 3API, we set the temper-
+ature to 0. We let GPT- 3keep generating tokens
+until there is a special token “ nn”.Dataset Train Dev Test
+SST-2 67k 872 1.8k
+IMDB 25k - 25k
+ToTTo 120k 7.7k 7.7k
+NQ 79k 8.8k 3.6k
+WQ 3.4k 361 2k
+TriviaQA 78.8k 8.8k 11.3k
+Table 3: Data split for different datasets. In-context
+examples are selected from the training set. Because
+ToTTo and TriviaQA require submitting to their leader-
+boards, the evaluation is done on the dev sets. For all
+other datasets, the evaluation is done on the test sets.
+3.1 Sentence Embeddings for Retrieval
+To retrieve semantically-similar training instances,
+we consider two types of sentence embeddings.
+• The original pre-trained RoBERTa-large
+model (Liu et al., 2019), which is abbreviated
+as KATE roberta ;
+• The RoBERTa-large model ﬁne-tuned on
+task-related datasets: i) ﬁne-tuned on the
+SNLI and MultiNLI dataset (KATE nli);ii)
+ﬁrst ﬁne-tuned on the SNLI and MultiNLI
+dataset and then on the STS-B dataset
+(KATE nli+sts-b ).
+Notably, all the sentence encoders share the same
+the architecture, where the only differences are
+the speciﬁc datasets used for ﬁne-tuning. Eu-
+clidean distance is used for the KATE roberta case,
+while cosine similarity is employed for KATE nli
+and KATE nli+sts-b .
+Sentiment Analysis For sentiment classiﬁca-
+tion, we select in-context examples under the
+transfer setting, where one dataset is treated as the
+training set and the evaluation is made on another
+dataset. This transfer setting is designed to simu-
+late a real-world scenario where we would like to
+leverage an existing labeled dataset for a unlabeled
+one (of a similar task).
+Speciﬁcally, we select in-context examples
+from the SST-2 training set (Socher et al., 2013;
+Wang et al., 2018) and ask GPT- 3to make pre-
+dictions on the IMDB test set (Maas et al., 2011).
+To explore whether a sentence encoder ﬁne-tuned
+on a similar task would beneﬁt KATE’s perfor-
+mance, we also employ a pre-trained RoBERTa-
+large model ﬁne-tuned on the SST-2 training set
+(dubbed as KATE sst-2). The performance is mea-
+sured by the accuracy over the entire IMDB test
+
+==== Page 5 ====
+set. The number of in-context examples is chosen
+to be 3since adding more examples does not fur-
+ther improve the performance.
+Table-to-Text Generation Given a Wikipedia
+table and a set of highlighted cells, this task fo-
+cuses on producing human-readable texts as de-
+scriptions. ToTTo (Parikh et al., 2020) is uti-
+lized for evaluation due to its popularity. We use
+BLEU (Papineni et al., 2002) and PARENT (Dhin-
+gra et al., 2019). metrics for evaluation. The
+ToTTo code base contains both evaluation and
+preprocessing scripts2. Due to the input length
+limit of GPT- 3(currently the token limit is 2048),
+we add an extra preprocessing step by deleting
+the closing angle brackets such as </cell>and
+</table>to save some space. The number of in-
+context examples is set as 2.
+Question Answering Given a factual question,
+the model is asked to generate the correct answer.
+Following prior studies, we use the Exact Match
+(EM) score to measure the performance of GPT-
+3on open-domain QA tasks. The EM score is
+deﬁned as the proportion of the number of pre-
+dicted answers being exactly the same as (one of)
+the ground-truth answer(s). The matching is per-
+formed after string normalization, which includes
+article and punctuation removal. We conduct
+experiments on three open-domain QA bench-
+marks: Natural Questions (NQ) (Kwiatkowski
+et al., 2019), Web Questions (WQ) (Berant et al.,
+2013), and Trivia Question Answering (Trivi-
+aQA) (Joshi et al., 2017). For this task, we pick
+the nearest 64 neighbors as the in-context exam-
+ples for NQ and WQ and nearest 10 neighbors for
+TriviaQA (The retrieved 64 examples could not ﬁt
+into 2048 token limit for TriviaQA. For fair com-
+parison, we set the number of in-context examples
+to be 10 for TriviaQA for both the baseline and
+KATE method). The evaluation is done on the test
+sets of NQ and WQ and the dev set of TriviaQA.
+3.2 Baseline Methods
+Random Sampling For each test sentence, we
+randomly select in-context examples from the
+training set. We refer to this method as Random
+in the experimental results. To have a fair compar-
+ison with KATE, the number of in-context exam-
+ples in this random baseline is the same as KATE
+2The ToTTo code base can be found at https:
+//github.com/google-research/language/
+tree/master/language/tottoMethod Accuracy
+Random 87.952.74
+kNN roberta 50.20
+KATE roberta 91.99
+KATE nli 90.40
+KATE nli+sts-b 90.20
+KATE sst-2 93.43
+Table 4: Accuracy of sentiment prediction for GPT- 3
+on IMDB with different choices of in-context exam-
+ples. In-context examples are from the SST-2 dataset.
+to ensure fair comparison. On the test set, the ran-
+dom baseline is repeated for ﬁve times to obtain
+the average score and corresponding standard de-
+viation.
+k-Nearest Neighbor Additionally, to investi-
+gate whether the retrieval module is complemen-
+tary to GPT- 3’s few-shot learning ability, we
+further consider a k-nearest neighbor baseline.
+Speciﬁcally, for text generation tasks, the target
+y1associated with the ﬁrst retrieved example is
+considered as the predicted target for the test sam-
+ple. As to the sentiment analysis and QA tasks, the
+topkretrieved examples fy1;:::;ykgare utilized,
+where the ﬁnal prediction is determined by major-
+ity voting among the kexamples’ targets. If there
+is a tie case, we take the target of the example that
+is most similar to the test sentence as the predic-
+tion. To ensure fair comparison, we compare the
+baselinekNN and KATE under the same embed-
+ding space of a pre-trained RoBERTa-large model.
+This baseline is abbreviated as kNN roberta .
+4 Experimental Results
+4.1 Sentiment Analysis
+We ﬁrst evaluate KATE on the sentiment anal-
+ysis task. The results are shown in Table 4.
+It can be observed that KATE consistently pro-
+duces better performance relative to the random
+selection baseline. Notably, there is no vari-
+ance with the obtained results since the same set
+of retrieved in-context examples are employed.
+For the KATE method, when a pre-trained sen-
+tence encoder is ﬁne-tuned on NLI or NLI+STS-
+B datasets, the performance slightly decreases.
+Since the objectives of the IMDB dataset and the
+NLI+STS-B datasets are different, this shows that
+ﬁne-tuning on a dissimilar task can hurt KATE’s
+performance. Moreover, KATE nli+sts-b performs
+worse than KATE nlibecause the sentence encoder
+has been further ﬁne-tuned on the STS-B dataset.
+
+==== Page 6 ====
+In contrast, KATE sst-2obtains the best accuracy,
+showing that ﬁne-tuning on a similar task can ben-
+eﬁt KATE’s performance. To verify that the gains
+are not merely from the retrieval step, we further
+compare KATE roberta with thekNN roberta . It turns
+out that the performance of the kNN roberta method
+is similar to random guessing. This observation is
+consistent when one neighbor or three neighbors
+are retrieved. Notably, with the embeddings of
+the RoBERTa-large model ﬁne-tuned on the SST-
+2 dataset, the accuracy of kNN sst-2is 92.46, which
+is lower than that obtained with KATE sst-2. These
+results suggest that the GPT-3 model is critical to
+the ﬁnal results, and the retrieval module is com-
+plementary to GPT- 3’s few-shot capabilities.
+4.2 Table-to-text Generation
+We utilize the ToTTo dataset to evaluate KATE
+on the table-to-text generation task. The results
+are shown in Table 5. The KATE method gives
+rise to considerable gains over the random base-
+line, according to both the BLEU and PARENT
+scores. On a ﬁner scale, the evaluation can be
+done on the overlap subset and the nonoverlap
+subset. The overlap dev subset shares a signif-
+icant number of header names with the training
+set, while the nonoverlap one does not share any
+header names. It can be observed that the KATE
+method improves the results on both the overlap
+and the nonoverlap subsets, meaning that the re-
+trieval module is helpful for both situations where
+the test set follows the distribution of the train-
+ing set and where the test set is out of distribu-
+tion of the training set. Similar to sentiment anal-
+ysis, there is a slight drop in performance from
+KATE roberta to KATE nliand KATE nli+sts-b . This is
+due to the difference between the objectives of the
+ToTTo dataset and NLI+STS-B datasets. The drop
+from KATE nlito KATE nli+sts-b further validates the
+idea that ﬁne-tuning on a dissimilar task can hurt
+KATE’s performance. For the kNN baseline, it
+performs much worse than the random selection
+method and the KATE method, again suggesting
+that the retrieval process and GPT-3 work together
+collaboratively to achieve better results.
+To understand how the retrieval mechanism
+helps GPT- 3’s predictions, we conduct a case
+study on the retrieved examples (see Table 6). By
+retrieving relevant examples from the training set,
+KATE provides useful detailed information within
+the table, e.g., the number of points, rebounds, and
+assists, to GPT- 3for more accurate description.On the other hand, the random selection method
+has the issue of hallucination, where the generated
+sequences contain information ( i.e., “senior year”
+and “University of Texas”) not present in the table.
+4.3 Questing Answering
+We also evaluate KATE on the open-domain QA
+tasks, as shown in Table 7. For the QA tasks,
+we compare with some state-of-the-art methods
+such as RAG (Lewis et al., 2020) and T5 (Raf-
+fel et al., 2019). Both methods require ﬁne-
+tuning on the speciﬁc datasets. The KATE method
+again improves GPT- 3’s few-shot prediction ac-
+curacies substantially across various benchmarks.
+It is worth noting that the ﬁne-tuned transformer
+models serve as better sentence encoders for re-
+trieval purpose (compared with the RoBERTa-
+large model without ﬁne-tuning). KATE nliand
+KATE nli+sts-b improve upon KATE roberta because
+this time ﬁne-tuning on NLI or STS-B datasets
+is helpful for retrieving semantically similar ques-
+tions from the QA datasets. Moreover, on the
+NQ and TriviaQA datasets, further ﬁne-tuning on
+the STS-B dataset improves KATE’s results. We
+also try reducing the number of in-context ex-
+amples to be as small as ﬁve for both the ran-
+dom and KATE methods, where KATE outper-
+forms the baseline as well. Therefore, the advan-
+tage of KATE over the random baseline holds for
+both small and large numbers of in-context exam-
+ples. More details can be found in Section 5.1.
+We evaluate the other baseline kNN roberta by using
+the top- 1nearest neighbor. We also explore using
+64 nearest neighbors (10 for TriviaQA) to deter-
+mine the answer (by majority voting explained in
+Section 3.2). The EM score tends to be similar to
+retrieving the top- 1nearest neighbor. These kNN
+baseline results again suggest that the retrieval
+module and GPT- 3work together to achieve better
+performance.
+To investigate why the retrieval examples are
+helpful, we further present a case study. Con-
+cretely, the retrieved in-context examples from the
+NQ dataset are shown in Table 8. For the ﬁrst and
+second cases, the random baseline provides wrong
+answers because GPT- 3is unable to recall the ex-
+act detail. However, the in-context examples se-
+lected by KATE contain the correct details, which
+facilitates GPT- 3to answer the questions. For the
+third test question, the random baseline leads GPT-
+3to misinterpret the question as asking for a spe-
+ciﬁc location. In contrast, KATE selects similar
+
+==== Page 7 ====
+MethodOverall Overlap Subset Nonoverlap Subset
+BLEU PARENT BLEU PARENT BLEU PARENT
+Random 28.42.1 39.3 2.6 31.2 2.5 41.8 3.0 25.6 1.8 37.0 2.3
+kNN roberta 14.1 12.6 20.1 17.9 8.0 7.52
+KATE roberta 40.3 49.7 47.8 55.0 32.9 44.6
+KATE nli 39.1 48.5 46.5 53.7 31.9 43.6
+KATE nli+sts-b 38.1 47.2 45.2 52.2 31.1 42.4
+Table 5: Table-to-text generation results on the ToTTo dev dataset.
+Test TableTable :<page title>Trey Johnson <section title>College<table><cell>32<colheader>
+GP<cell>4.8<colheader>RPG<cell>2.3<colheader>APG<cell>23.5<colheader>PPG
+Table :<page title>Dedric Lawson <section title>College<table><cell>9.9<colheader>
+RPG<cell>3.3<colheader>APG<cell>19.2<colheader>PPG
+Retrieved Sentence : Dedric Lawson averaged 19.2 points, 9.9 rebounds and 3.3 assists per game.
+Examples Table :<page title>Carsen Edwards <section title>College<table><cell>3.8<colheader>
+RPG<cell>2.8<colheader>APG<cell>18.5<colheader>PPG
+Sentence : Edwards averaged 18.5 points, 3.8 rebounds and 2.8 assists per game.
+PredictionsGround-truth : Trey Johnson averaged 23.5 points , 4.8 rebounds , and 2.3 assists in 32 games.
+Random : Trey Johnson averaged 23.5 points per game in his senior year at the University of Texas.
+KATE : Johnson averaged 23.5 points , 4.8 rebounds and 2.3 assists per game.
+Table 6: A sample of retrieved in-context examples from the ToTTo dataset. The ﬁrst block shows a table string
+from the test set. The second block provides two retrieved examples. The last block includes the ground-truth
+sentence and sentences by the random selection and KATE methods. For the KATE method, GPT- 3pays more
+attention to detailed information such as the number of points, rebounds, and assists. In contrast, the random
+selection method leads GPT- 3to generate details which do not exist in the original table.
+Method NQ WQ TriviaQA
+RAG (Open-Domain) 44.5 45.5 68.0
+T5+SSM (Closed-Book) 36.6 44.7 60.5
+T5 (Closed-Book) 34.5 37.4 50.1
+GPT- 3(64 examples) 29.9 41.5 -
+Ours
+Random 28.60.3 41.0 0.5 59.2 0.4
+kNN roberta 24.0 23.9 26.2
+KATE roberta 40.0 47.7 57.5
+KATE nli 40.8 50.6 60.9
+KATE nli+sts-b 41.6 50.2 62.4
+Table 7: QA results on various datasets. (*) On Trivi-
+aQA, we used 10 examples. On NQ and WQ, we used
+64 examples.
+questions which ask for the origins of objects. Us-
+ing these in-context examples, GPT- 3is able to in-
+terpret and answer the question correctly.
+5 Analysis and Ablation Study
+5.1 Number of In-context Examples
+We ﬁrst investigate the impact of the number of in-
+context examples on KATE’s performance. Con-
+cretely, on the NQ dataset, we choose the num-
+ber of in-context examples to be 5,10,20,35,
+and64, and KATE nli+sts-b is compared with the
+random baseline and KATE roberta across different
+settings. As shown in the left plot of Figure 3,
+both KATE and the random baseline beneﬁt fromutilizing more in-context examples. However,
+KATE consistently outperforms the random selec-
+tion method, even when the number of in-context
+examples is as few as 5. This result is interest-
+ing because in practice, employing less in-context
+leads to more efﬁcient inference with GPT- 3.
+5.2 Size of Training Set for Retrieval
+We further examine how the size of the training
+set may inﬂuence the KATE method. On the NQ
+dataset, we create new subsets from the original
+training set, with sizes of 1k, 2k, 5k, 10k, 30k,
+and 70k, respectively. In-context examples are re-
+trieved from these subsets instead of the original
+training set. The number of nearest neighbors is
+set to 64. We compare KATE nli+sts-b with the ran-
+dom selection method and KATE roberta , and the re-
+sults are shown in the right plot of Figure 3. For
+KATE roberta and KATE nli+sts-b , as the size of the
+training set for retrieval increases, the EM scores
+also increase. In contrast, the result of the random
+sampling baseline does not change much. Intu-
+itively, as the training size gets larger, it is more
+likely for KATE to retrieve relevant in-context ex-
+amples to help GPT- 3answer a question correctly.
+As we have shown previously in Table 8, the re-
+trieved in-context examples could provide critical
+detailed information to GPT- 3, thus helping GPT-
+3to better answer the questions.
+
+==== Page 8 ====
+In-Context Examples Predictions
+Question : The Mughal Gardens of Rashtrapati Bhavan is modelled on which garden?
+The Mughal Garden of Rashtrapati Bhavan is modelled on? The Persian style of architecture Ground-truth : Persian garden
+Who built the ﬁrst Mughal Garden in India? Babur KATE :The Persian gardens
+The landscape design of the Gardens of Versailles is known as which style? French garden Random Baseline :Shalimar gardens
+Question : What city was Zeus the patron god of?
+What is the symbol of Zeus the Greek God? Bull Ground-truth : Olympia
+Where did Zeus spend most of his time? Mount Olympus KATE :Olympia
+Where was the statue of Zeus at Olympia located? In the Temple of Zeus Random Baseline Athens
+Question : Where did the Dewey decimal system come from?
+Where did the formula for area of a circle come from? Archimedes Ground-truth : Melvil Dewey
+Where did the name jack russell come from? Reverend John Russell KATE :Melvil Dewey
+Where did the letters of the alphabet come from? The Phoenician alphabet Random Baseline :the library of Congress
+Table 8: Samples of retrieved in-context examples from the NQ dataset. Each block begins with a test question.
+Three retrieved Q-A pairs are shown on the left. Predictions by the KATE method and useful details from in-
+context examples are shown in Green . Gold-standard references are shown in Blue. Predictions by the random
+selection method are shown in Red.
+10 20 30 40 50 60
+Number of In-context Examples25.027.530.032.535.037.540.0EM Score
+EM Score vs. Number of In-context Examples
+Random
+KATEroberta
+KATEnli+stsb
+0 10000 20000 30000 40000 50000 60000 70000
+Size of Training Set28303234363840EM Score
+EM Score vs. Size of Training Set
+Random
+KATEroberta
+KATEnli+stsb
+Figure 3: Left: Ablation study on the effect of number of in-context examples for GPT- 3for different selection
+methods. Right: Ablation study on the effect of the size of training set for retrieval on KATE. Two representative
+sentence encoders are used in the ablation study.
+Trial 1 2 3 Default Reverse
+EM Score 42.0 42.5 42.0 41.6 42.8
+Table 9: Ablation study on the effect of in-context
+example orders for GPT- 3on the NQ dataset using
+KATE nli+sts-b . For the default order, the example Ais
+to the left of example BifAis closer to the test prompt
+xthanBin the embedding space. For the reverse order,
+the example A is to the right of example B.
+5.3 Order of In-context Examples
+Moreover, we explore how the order of in-context
+examples may affect KATE’s results. As men-
+tioned in Section 2.3, under the standard set-
+ting, the retrieved in-context examples are or-
+dered such that d(xi;x)d(xj;x)whenever
+i < j . Here, we randomly permute the order
+of in-context examples in the NQ dataset for the
+proposed KATE nli+sts-b method, and conduct theexperiments for 3different orders. Additionally,
+we explore the reverse order where d(xi;x)
+d(xj;x)wheneveri < j . The results are pre-
+sented in Table 9. On this particular NQ dataset,
+the reverse order performs the best. One possi-
+ble explanation is that since tokens next to each
+other have similar positional embeddings, putting
+the most similar sentences close to the test ex-
+ample may be helpful for GPT-3 to leverage the
+corresponding information. However, we also did
+the experiments on the WQ and TriviaQA and ﬁnd
+that the default order performs slightly better than
+the reverse order. Hence, the choice of orders is
+data-dependent. Addtionally, it can be observed
+that the variation among the NQ results tends to
+be quite small (compared with the difference be-
+tween the random baseline and KATE), indicating
+that the example order does not have a signiﬁcant
+
+==== Page 9 ====
+impact on KATE’s performance.
+6 Related Work
+Pre-trained Language Models NLP systems
+have made tremendous progress by pre-training
+models on unlabeled text. For text classiﬁca-
+tion tasks, notable models include BERT (De-
+vlin et al., 2018), RoBERTa (Liu et al., 2019),
+and XLNet (Yang et al., 2019). For text genera-
+tion tasks, notable models include BART (Lewis
+et al., 2019), T5 (Raffel et al., 2019), mT5 (Xue
+et al., 2020), XLM (Lample and Conneau, 2019),
+GPT (Radford et al., 2018), and GPT-2 (Radford
+et al., 2019). These models encapsulate rich infor-
+mation to facilitate a wide range of downstream
+tasks ranging from natural language understand-
+ing to generation. These models can be adapted
+to many different tasks via ﬁne-tuning. GPT-
+3(Brown et al., 2020), however, can be adapted
+to many downstream tasks without ﬁne-tuning.
+Given just a few in-context examples, GPT- 3is
+able to quickly pick up patterns and produce an-
+swers analogously both in terms of the answer
+style and content. Thus, GPT- 3may be considered
+as a pattern recognizer to perform in-context learn-
+ing. People have just started trying to understand
+GPT-3from different perspectives. As mentioned
+in the introduction, (Hendrycks et al., 2020) stud-
+ies which categories of questions GPT- 3is more
+capable of answering. Our work focuses on how
+to choose good in-context examples.
+Retrieval-based Text Generation There is a
+long history of applying information retrieval in
+text generation (Sumita and Hitoshi, 1991). It is
+very related to the exemplar-based learning (J ¨akel
+et al., 2008; Ziyadi et al., 2020). The central idea is
+to treat retrieved samples as exemplars/prototypes
+and perform some editings on them. Some repre-
+sentative applications in the ﬁeld of deep learning
+include machine translation (Gu et al., 2018), sen-
+timent transfer (Li et al., 2018; Guu et al., 2018),
+QA (Karpukhin et al., 2020; Mao et al., 2020),
+dialogue generation (Yan et al., 2016; Cai et al.,
+2018; Song et al., 2016; Pandey et al., 2018; We-
+ston et al., 2018; Wu et al., 2019), text summa-
+rization (Cao et al., 2017; Peng et al., 2019), data-
+to-text generation (Peng et al., 2019), and text-to-
+code generation (Hashimoto et al., 2018). How-
+ever, all these retrieve-and-edit frameworks re-
+quire their decoders to be trained from scratch.
+This makes the editor network task- and data-speciﬁc. In contrast, GPT- 3in one perspective can
+be regarded naturally as a universal editor, adap-
+tive to a wide range of tasks. Our work uniquely
+examines how to maximize the advantage of using
+GPT-3without ﬁne-tuning. For example, the more
+semantically similar context we provide to GPT- 3,
+the better results the model can generate. Other
+editors or generators do not have this ability.
+Improve NLP Systems with kNN A recent line
+of work tries to incorporate nonparametric meth-
+ods to improve a given model’s performance.
+These methods ﬁrst access the test sample’s hid-
+den representation and look for the nearest neigh-
+bors of this test sample in the database. Once the
+nearest neighbors are found, their labels are used
+to augment the model’s prediction. For example,
+the newly introduced kNN-LM (Khandelwal et al.,
+2019),kNN-MT (Khandelwal et al., 2020), and
+BERT-kNN (Kassner and Sch ¨utze, 2020) generate
+the next token by retrieving the nearest kneigh-
+bors from the datastore. Another related work
+iskNN classiﬁcation model (Rajani et al., 2020),
+where they use kNN as backoff when the con-
+ﬁdence is low from the ﬁne-tuned classiﬁcation
+model. There are two key differences between
+our work and other approaches. First, other ap-
+proaches modiﬁes the model’s next token distribu-
+tion using the nearest kneighbors. However, we
+only changes the conditional text using the nearest
+kneighbors. Second, other approaches can access
+the model’s parameters and embeddings which we
+do not have access to. Instead, we use some other
+independently pre-trained models to get the sen-
+tence embeddings to retrieve nearest kneighbors.
+7 Conclusion
+This work presented a ﬁrst step towards investi-
+gating the sensitivity of GPT- 3to in-context ex-
+amples. To this end, we proposed KATE, a
+non-parametric selection approach that retrieves
+in-context examples according to their semantic
+similarity to the test samples. On several natu-
+ral language understanding and generation tasks,
+the proposed method improves GPT- 3’s perfor-
+mance, over the random sampling baseline, by a
+signiﬁcant margin. Moreover, we found that ﬁne-
+tuning the sentence embeddings for retrieval on
+task-related datasets gave rise to further empirical
+gains. Detailed ablation studies were conducted
+to explore the robustness of KATE to different hy-
+perprameters, such as the number of in-context ex-
+
+==== Page 10 ====
+amples, examples’ order, etc. We hope this work
+could provide insights for better understanding the
+behaviors of GPT- 3and represents a helpful step
+towards further improving its few-shot capabili-
+ties.
+References
+Jonathan Berant, Andrew Chou, Roy Frostig, and Percy
+Liang. 2013. Semantic parsing on freebase from
+question-answer pairs. In Proceedings of the 2013
+conference on empirical methods in natural lan-
+guage processing , pages 1533–1544.
+Tom B Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, et al. 2020. Language models are few-shot
+learners. arXiv preprint arXiv:2005.14165 .
+Deng Cai, Yan Wang, Wei Bi, Zhaopeng Tu, Xiaojiang
+Liu, Wai Lam, and Shuming Shi. 2018. Skeleton-to-
+response: Dialogue generation guided by retrieval
+memory. arXiv preprint arXiv:1809.05296 .
+Ziqiang Cao, Furu Wei, Wenjie Li, and Sujian Li.
+2017. Faithful to the original: Fact aware neu-
+ral abstractive summarization. arXiv preprint
+arXiv:1711.04434 .
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2018. Bert: Pre-training of deep
+bidirectional transformers for language understand-
+ing. arXiv preprint arXiv:1810.04805 .
+Bhuwan Dhingra, Manaal Faruqui, Ankur Parikh,
+Ming-Wei Chang, Dipanjan Das, and William W
+Cohen. 2019. Handling divergent reference texts
+when evaluating table-to-text generation. arXiv
+preprint arXiv:1906.01081 .
+Jiatao Gu, Yong Wang, Kyunghyun Cho, and Vic-
+tor OK Li. 2018. Search engine guided neural ma-
+chine translation. In AAAI , pages 5133–5140.
+Kelvin Guu, Tatsunori B Hashimoto, Yonatan Oren,
+and Percy Liang. 2018. Generating sentences by
+editing prototypes. Transactions of the Association
+for Computational Linguistics , 6:437–450.
+Tatsunori B Hashimoto, Kelvin Guu, Yonatan Oren,
+and Percy S Liang. 2018. A retrieve-and-edit frame-
+work for predicting structured outputs. In Advances
+in Neural Information Processing Systems , pages
+10052–10062.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy
+Zou, Mantas Mazeika, Dawn Song, and Jacob Stein-
+hardt. 2020. Measuring massive multitask language
+understanding. arXiv preprint arXiv:2009.03300 .Frank J ¨akel, Bernhard Sch ¨olkopf, and Felix A Wich-
+mann. 2008. Generalization and similarity in ex-
+emplar models of categorization: Insights from ma-
+chine learning. Psychonomic Bulletin & Review ,
+15(2):256–271.
+Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke
+Zettlemoyer. 2017. Triviaqa: A large scale distantly
+supervised challenge dataset for reading comprehen-
+sion. arXiv preprint arXiv:1705.03551 .
+Vladimir Karpukhin, Barlas O ˘guz, Sewon Min, Ledell
+Wu, Sergey Edunov, Danqi Chen, and Wen-
+tau Yih. 2020. Dense passage retrieval for
+open-domain question answering. arXiv preprint
+arXiv:2004.04906 .
+Nora Kassner and Hinrich Sch ¨utze. 2020. Bert-
+knn: Adding a knn search component to pretrained
+language models for better qa. arXiv preprint
+arXiv:2005.00766 .
+Urvashi Khandelwal, Angela Fan, Dan Jurafsky,
+Luke Zettlemoyer, and Mike Lewis. 2020. Near-
+est neighbor machine translation. arXiv preprint
+arXiv:2010.00710 .
+Urvashi Khandelwal, Omer Levy, Dan Jurafsky, Luke
+Zettlemoyer, and Mike Lewis. 2019. Generalization
+through memorization: Nearest neighbor language
+models. arXiv preprint arXiv:1911.00172 .
+Tom Kwiatkowski, Jennimaria Palomaki, Olivia Red-
+ﬁeld, Michael Collins, Ankur Parikh, Chris Alberti,
+Danielle Epstein, Illia Polosukhin, Jacob Devlin,
+Kenton Lee, et al. 2019. Natural questions: a bench-
+mark for question answering research. Transactions
+of the Association for Computational Linguistics ,
+7:453–466.
+Guillaume Lample and Alexis Conneau. 2019. Cross-
+lingual language model pretraining. arXiv preprint
+arXiv:1901.07291 .
+Mike Lewis, Yinhan Liu, Naman Goyal, Mar-
+jan Ghazvininejad, Abdelrahman Mohamed, Omer
+Levy, Ves Stoyanov, and Luke Zettlemoyer. 2019.
+Bart: Denoising sequence-to-sequence pre-training
+for natural language generation, translation, and
+comprehension. arXiv preprint arXiv:1910.13461 .
+Patrick Lewis, Ethan Perez, Aleksandara Piktus,
+Fabio Petroni, Vladimir Karpukhin, Naman Goyal,
+Heinrich K ¨uttler, Mike Lewis, Wen-tau Yih, Tim
+Rockt ¨aschel, et al. 2020. Retrieval-augmented gen-
+eration for knowledge-intensive nlp tasks. arXiv
+preprint arXiv:2005.11401 .
+Juncen Li, Robin Jia, He He, and Percy Liang.
+2018. Delete, retrieve, generate: A simple approach
+to sentiment and style transfer. arXiv preprint
+arXiv:1804.06437 .
+Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Man-
+dar Joshi, Danqi Chen, Omer Levy, Mike Lewis,
+Luke Zettlemoyer, and Veselin Stoyanov. 2019.
+
+==== Page 11 ====
+Roberta: A robustly optimized bert pretraining ap-
+proach. arXiv preprint arXiv:1907.11692 .
+Andrew Maas, Raymond E Daly, Peter T Pham, Dan
+Huang, Andrew Y Ng, and Christopher Potts. 2011.
+Learning word vectors for sentiment analysis. In
+Proceedings of the 49th annual meeting of the as-
+sociation for computational linguistics: Human lan-
+guage technologies , pages 142–150.
+Yuning Mao, Pengcheng He, Xiaodong Liu, Ye-
+long Shen, Jianfeng Gao, Jiawei Han, and Weizhu
+Chen. 2020. Generation-augmented retrieval for
+open-domain question answering. arXiv preprint
+arXiv:2009.08553 .
+Gaurav Pandey, Danish Contractor, Vineet Kumar, and
+Sachindra Joshi. 2018. Exemplar encoder-decoder
+for neural conversation generation. In Proceed-
+ings of the 56th Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers) , pages 1329–1338.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic eval-
+uation of machine translation. In Proceedings of the
+40th annual meeting of the Association for Compu-
+tational Linguistics , pages 311–318.
+Ankur P Parikh, Xuezhi Wang, Sebastian Gehrmann,
+Manaal Faruqui, Bhuwan Dhingra, Diyi Yang, and
+Dipanjan Das. 2020. ToTTo: A controlled table-to-
+text generation dataset. In Proceedings of EMNLP .
+Hao Peng, Ankur P Parikh, Manaal Faruqui, Bhuwan
+Dhingra, and Dipanjan Das. 2019. Text genera-
+tion with exemplar-based adaptive decoding. arXiv
+preprint arXiv:1904.04428 .
+Alec Radford, Karthik Narasimhan, Tim Salimans, and
+Ilya Sutskever. 2018. Improving language under-
+standing by generative pre-training.
+Alec Radford, Jeffrey Wu, Rewon Child, David Luan,
+Dario Amodei, and Ilya Sutskever. 2019. Language
+models are unsupervised multitask learners. OpenAI
+blog, 1(8):9.
+Colin Raffel, Noam Shazeer, Adam Roberts, Katherine
+Lee, Sharan Narang, Michael Matena, Yanqi Zhou,
+Wei Li, and Peter J Liu. 2019. Exploring the limits
+of transfer learning with a uniﬁed text-to-text trans-
+former. arXiv preprint arXiv:1910.10683 .
+Nazneen Fatema Rajani, Ben Krause, Wengpeng Yin,
+Tong Niu, Richard Socher, and Caiming Xiong.
+2020. Explaining and improving model behav-
+ior with k nearest neighbor representations. arXiv
+preprint arXiv:2010.09030 .
+Nils Reimers and Iryna Gurevych. 2019. Sentence-
+bert: Sentence embeddings using siamese bert-
+networks. arXiv preprint arXiv:1908.10084 .Nils Reimers and Iryna Gurevych. 2020. Mak-
+ing monolingual sentence embeddings multilin-
+gual using knowledge distillation. arXiv preprint
+arXiv:2004.09813 .
+Richard Socher, Alex Perelygin, Jean Wu, Jason
+Chuang, Christopher D Manning, Andrew Y Ng,
+and Christopher Potts. 2013. Recursive deep mod-
+els for semantic compositionality over a sentiment
+treebank. In Proceedings of the 2013 conference on
+empirical methods in natural language processing ,
+pages 1631–1642.
+Yiping Song, Rui Yan, Xiang Li, Dongyan Zhao, and
+Ming Zhang. 2016. Two are better than one: An en-
+semble of retrieval-and generation-based dialog sys-
+tems. arXiv preprint arXiv:1610.07149 .
+Eiichiro Sumita and HDA Hitoshi. 1991. Experiments
+and prospects of example-based machine transla-
+tion. In 29th Annual Meeting of the Association for
+Computational Linguistics , pages 185–192.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information process-
+ing systems , 30:5998–6008.
+Alex Wang, Amanpreet Singh, Julian Michael, Felix
+Hill, Omer Levy, and Samuel R Bowman. 2018.
+Glue: A multi-task benchmark and analysis platform
+for natural language understanding. arXiv preprint
+arXiv:1804.07461 .
+Jason Weston, Emily Dinan, and Alexander H Miller.
+2018. Retrieve and reﬁne: Improved sequence
+generation models for dialogue. arXiv preprint
+arXiv:1808.04776 .
+Yu Wu, Furu Wei, Shaohan Huang, Yunli Wang, Zhou-
+jun Li, and Ming Zhou. 2019. Response generation
+by context-aware prototype editing. In Proceedings
+of the AAAI Conference on Artiﬁcial Intelligence ,
+volume 33, pages 7281–7288.
+Linting Xue, Noah Constant, Adam Roberts, Mi-
+hir Kale, Rami Al-Rfou, Aditya Siddhant, Aditya
+Barua, and Colin Raffel. 2020. mt5: A mas-
+sively multilingual pre-trained text-to-text trans-
+former. arXiv preprint arXiv:2010.11934 .
+Rui Yan, Yiping Song, and Hua Wu. 2016. Learning
+to respond with deep neural networks for retrieval-
+based human-computer conversation system. In
+Proceedings of the 39th International ACM SIGIR
+conference on Research and Development in Infor-
+mation Retrieval , pages 55–64.
+Zhilin Yang, Zihang Dai, Yiming Yang, Jaime Car-
+bonell, Russ R Salakhutdinov, and Quoc V Le. 2019.
+Xlnet: Generalized autoregressive pretraining for
+language understanding. In Advances in neural in-
+formation processing systems , pages 5753–5763.
+
+==== Page 12 ====
+Morteza Ziyadi, Yuting Sun, Abhishek Goswami,
+Jade Huang, and Weizhu Chen. 2020. Example-
+based named entity recognition. arXiv preprint
+arXiv:2008.10570 .
+

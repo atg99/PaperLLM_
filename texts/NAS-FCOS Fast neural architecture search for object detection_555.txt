@@ -1,0 +1,844 @@
+==== Page 1 ====
+NAS-FCOS: Fast Neural Architecture Search for Object Detection∗
+Ning Wang†‡, Yang Gao†‡, Hao Chen⋄, Peng Wang†‡, Zhi Tian⋄, Chunhua Shen⋄, Yanning Zhang†‡
+†School of Computer Science, Northwestern Polytechnical University, China
+‡National Engineering Lab for Integrated Aero-Space-Ground-Ocean Big Data Application Technology, China
+⋄The University of Adelaide, Australia
+Abstract
+The success of deep neural networks relies on signiﬁ-
+cant architecture engineering. Recently neural architecture
+search (NAS) has emerged as a promise to greatly reduce
+manual effort in network design by automatically search-
+ing for optimal architectures, although typically such al-
+gorithms need an excessive amount of computational re-
+sources, e.g., a few thousand GPU-days. To date, on chal-
+lenging vision tasks such as object detection, NAS, espe-
+cially fast versions of NAS, is less studied. Here we propose
+to search for the decoder structure of object detectors with
+search efﬁciency being taken into consideration. To be more
+speciﬁc, we aim to efﬁciently search for the feature pyra-
+mid network (FPN) as well as the prediction head of a sim-
+ple anchor-free object detector, namely FCOS [24], using
+a tailored reinforcement learning paradigm. With carefully
+designed search space, search algorithms and strategies for
+evaluating network quality, we are able to efﬁciently search
+a top-performing detection architecture within 4days us-
+ing8V100 GPUs. The discovered architecture surpasses
+state-of-the-art object detection models (such as Faster R-
+CNN, RetinaNet and FCOS) by 1.5to3.5points in AP on
+the COCO dataset,with comparable computation complex-
+ity and memory footprint, demonstrating the efﬁcacy of the
+proposed NAS for object detection.
+1. Introduction
+Object detection is one of the fundamental tasks in com-
+puter vision, and has been researched extensively. In the
+past few years, state-of-the-art methods for this task are
+based on deep convolutional neural networks (such as Faster
+R-CNN [20], RetinaNet [11]), due to their impressive per-
+formance. Typically, the designs of object detection net-
+works are much more complex than those for image clas-
+siﬁcation, because the former need to localize and classify
+multiple objects in an image simultaneously while the latter
+∗NW, YG, HC contributed to this work equally.only need to output image-level labels. Due to its complex
+structure and numerous hyper-parameters, designing effec-
+tive object detection networks is more challenging and usu-
+ally needs much manual effort.
+On the other hand, Neural Architecture Search (NAS)
+approaches [4, 17, 32] have been showing impressive results
+on automatically discovering top-performing neural net-
+work architectures in large-scale search spaces. Compared
+to manual designs, NAS methods are data-driven instead of
+experience-driven, and hence need much less human inter-
+vention. As deﬁned in [3], the workﬂow of NAS can be
+divided into the following three processes: 1) sampling ar-
+chitecture from a search space following some search strate-
+gies;2) evaluating the performance of the sampled archi-
+tecture; and 3) updating the parameters based on the perfor-
+mance.
+One of the main problems prohibiting NAS from being
+used in more realistic applications is its search efﬁciency.
+The evaluation process is the most time consuming part be-
+cause it involves a full training procedure of a neural net-
+work. To reduce the evaluation time, in practice a proxy
+task is often used as a lower cost substitution. In the proxy
+task, the input, network parameters and training iterations
+are often scaled down to speedup the evaluation. However,
+there is often a performance gap for samples between the
+proxy tasks and target tasks, which makes the evaluation
+process biased. How to design proxy tasks that are both
+accurate and efﬁcient for speciﬁc problems is a challeng-
+ing problem. Another solution to improve search efﬁciency
+is constructing a supernet that covers the complete search
+space and training candidate architectures with shared pa-
+rameters [15, 18]. However, this solution leads to signiﬁ-
+cantly increased memory consumption and restricts itself to
+small-to-moderate sized search spaces.
+To our knowledge, studies on efﬁcient and accurate NAS
+approaches to object detection networks are rarely touched,
+despite its signiﬁcant importance. To this end, we present
+a fast and memory saving NAS method for object detection
+networks, which is capable of discovering top-performing
+architectures within signiﬁcantly reduced search time. Our
+11943
+
+
+==== Page 2 ====
+overall detection architecture is based on FCOS [24], a sim-
+ple anchor-free one-stage object detection framework, in
+which the feature pyramid network and prediction head are
+searched using our proposed NAS method.
+Our main contributions are summarized as follows.
+•In this work, we propose a fast and memory-efﬁcient
+NAS method for searching both FPN and head archi-
+tectures, with carefully designed proxy tasks, search
+space and evaluation strategies, which is able to ﬁnd
+top-performing architectures over 3,000architectures
+using28GPU-days only.
+Speciﬁcally, this high efﬁciency is enabled with the
+following designs.
+−Developing a fast proxy task training scheme by
+skipping the backbone ﬁnetuning stage;
+−Adapting progressive search strategy to reduce time
+cost taken by the extended search space;
+−Using a more discriminative criterion for evaluation
+of searched architectures.
+−Employing an efﬁcient anchor-free one-stage detec-
+tion framework with simple post processing;
+•Using NAS, we explore the workload relationship be-
+tween FPN and head, proving the importance of weight
+sharing in head.
+•We show that the overall structure of NAS-FCOS is
+general and ﬂexible in that it can be equipped with var-
+ious backbones including MobileNetV 2, ResNet- 50,
+ResNet-101 and ResNeXt- 101, and surpasses state-
+of-the-art object detection algorithms using compa-
+rable computation complexity and memory footprint.
+More speciﬁcally, our model can improve the AP by
+1.5∼3.5points on all above models comparing to
+their FCOS counterparts.
+2. Related Work
+2.1. Object Detection
+The frameworks of deep neural networks for object de-
+tection can be roughly categorized into two types: one-stage
+detectors [12] and two-stage detectors [6, 20].
+Two-stage detection frameworks ﬁrst generate class-
+independent region proposals using a region proposal net-
+work (RPN), and then classify and reﬁne them using ex-
+tra detection heads. In spite of achieving top perfor-
+mance, the two-stage methods have noticeable drawbacks:
+they are computationally expensive and have many hyper-
+parameters that need to be tuned to ﬁt a speciﬁc dataset.
+In comparison, the structures of one-stage detectors are
+much simpler. They directly predict object categories andbounding boxes at each location of feature maps generated
+by a single CNN backbone.
+Note that most state-of-the-art object detectors (includ-
+ing both one-stage detectors [12, 16, 19] and two-stage de-
+tectors [20]) make predictions based on anchor boxes of
+different scales and aspect ratios at each convolutional fea-
+ture map location. However, the usage of anchor boxes
+may lead to high imbalance between object and non-object
+examples and introduce extra hyper-parameters. More re-
+cently, anchor-free one-stage detectors [9, 10, 24, 29, 30]
+have attracted increasing research interests, due to their sim-
+ple fully convolutional architectures and reduced consump-
+tion of computational resources.
+2.2. Neural Architecture Search
+NAS is usually time consuming. We have seen great
+improvements from 24,000 GPU-days [32] to 0.2GPU-
+day [28]. The trick is to ﬁrst construct a supernet contain-
+ing the complete search space and train the candidates all
+at once with bi-level optimization and efﬁcient weight shar-
+ing [13, 15]. But the large memory allocation and difﬁ-
+culties in approximated optimization prohibit the search for
+more complex structures.
+Recently researchers [1, 5, 23] propose to apply single-
+path training to reduce the bias introduced by approxima-
+tion and model simpliﬁcation of the supernet. DetNAS [2]
+follows this idea to search for an efﬁcient object detection
+architecture. One limitation of the single-path approach is
+that the search space is restricted to a sequential structure.
+Single-path sampling and straight through estimate of the
+weight gradients introduce large variance to the optimiza-
+tion process and prohibit the search for more complex struc-
+tures under this framework. Within this very simple search
+space, NAS algorithms can only make trivial decisions like
+kernel sizes for manually designed modules.
+Object detection models are different from single-path
+image classiﬁcation networks in their way of merging multi-
+level features and distributing the task to parallel prediction
+heads. Feature pyramid networks (FPNs) [4, 8, 11, 14, 27],
+designed to handle this job, plays an important role in
+modern object detection models. NAS-FPN [4] targets on
+searching for an FPN alternative based on one-stage frame-
+work RetinaNet [12]. Feature pyramid architectures are
+sampled with a recurrent neural network (RNN) controller.
+The RNN controller is trained with reinforcement learn-
+ing (RL). However, the search is very time-consuming even
+though a proxy task with ResNet-10 backbone is trained to
+evaluate each architecture.
+Since all these three kinds of research ( [2, 4] and ours)
+focus on object detection framework, we demonstrate the
+differences among them that DetNAS [2] aims to search
+for the designs of better backbones, while NAS-FPN [4]
+searches the FPN structure, and our search space contains
+11944
+
+
+==== Page 3 ====
+both FPN and head structure.
+To speed up reward evaluation of RL-based NAS, the
+work of [17] proposes to use progressive tasks and other
+training acceleration methods. By caching the encoder fea-
+tures, they are able to train semantic segmentation decoders
+with very large batch sizes very efﬁciently. In the sequel of
+this paper, we refer to this technique as fast decoder adap-
+tation. However, directly applying this technique to object
+detection tasks does not enjoy similar speed boost, because
+they are either not in using a fully-convolutional model [11]
+or require complicated post processing that are not scalable
+with the batch size [12].
+To reduce the post processing overhead, we resort to
+a recently introduced anchor-free one-stage framework,
+namely, FCOS [24], which signiﬁcantly improve the search
+efﬁciency by cancelling the processing time of anchor-box
+matching in RetinaNet.
+Compared to its anchor-based counterpart, FCOS signif-
+icantly reduces the training memory footprint while being
+able to improve the performance.
+3. Our Approach
+In our work, we search for anchor-free fully convolu-
+tional detection models with fast decoder adaptation. Thus,
+NAS methods can be easily applied.
+3.1. Problem Formulation
+We base our search algorithm upon a one-stage frame-
+work FCOS due to its simplicity. Our training tuples
+{(x,Y)}consist of input image tensors xof size(3×H×
+W)and FCOS output targets Yin a pyramid representa-
+tion, which is a list of tensors yleach of size ((K+ 4 +
+1)×Hl×Wl)whereHl×Wlis feature map size on level
+pof the pyramid. (K+ 4 + 1) is the output channels of
+FCOS, the three terms are length- Kone-hot classiﬁcation
+labels,4bounding box regression targets and 1centerness
+factor respectively.
+The network g:x→ˆYin original FCOS consists of
+three parts, a backbone b, FPNfand multi-level subnets
+we call prediction heads hin this paper. First backbone
+b:x→Cmaps the input tensor to a set of intermediate-
+leveled features C={c3,c4,c5}, with resolution (Hi×
+Wi) = (H/2i×W/2i). Then FPN f:C→Pmaps
+the features to a feature pyramid P={p3,p4,p5,p6,p7}.
+Then the prediction head h:p→yis applied to each level
+ofPand the result is collected to create the ﬁnal prediction.
+To avoid overﬁtting, same his often applied to all instances
+inP.
+Since objects of different scales require different effec-
+tive receptive ﬁelds, the mechanism to select and merge
+intermediate-leveled features Cis particularly important in
+object detection network design. Thus, most researches [16,20] are carried out on designing fandhwhile using widely-
+adopted backbone structures such as ResNet [7]. Following
+this principle, our search goal is to decide when to choose
+which features from Cand how to merge them.
+To improve the efﬁciency, we reuse the parameters in b
+pretrained on target dataset and search for the optimal struc-
+tures after that. For the convenience of the following state-
+ment, we call the network components to search for, namely
+fandh, together the decoder structure for the objection de-
+tection network.
+fandhtake care of different parts of the detection job. f
+extracts features targeting different object scales in the pyra-
+mid representations P, whilehis a uniﬁed mapping applied
+to each feature in Pto avoid overﬁtting. In practice, people
+seldom discuss the possibility of using a more diversiﬁed f
+to extract features at different levels or how many layers in
+hneed to be shared across the levels. In this work, we use
+NAS as an automatic method to test these possibilities.
+3.2. Search Space
+Considering the different functions of fandh, we ap-
+ply two search space respectively. Given the particularity
+of FPN structure, a basic block with new overall connection
+andf’s output design is built for it. For simplicity, sequen-
+tial space is applied for hpart.
+We replace the cell structure with atomic operations to
+provide even more ﬂexibility. To construct one basic block,
+we ﬁrst choose two layers x1,x2from the sampling pool
+Xatid1,id2, then two operations op1,op2 are applied
+to each of them and an aggregation operation agg merges
+the two output into one feature. To build a deep decoder
+structure, we apply multiple basic blocks with their outputs
+added to the sampling pool. Our basic block bbt:Xt−1→
+Xtat time step ttransforms the sampling pool Xt−1to
+Xt=Xt−1∪{xt}, wherextis the output of bbt.
+The candidate operations are listed in Table 1. We in-
+clude only separable/depth-wise convolutions so that the
+decoder can be efﬁcient. In order to enable the decoder to
+apply convolutional ﬁlters on irregular grids, here we have
+also included deformable 3×3convolutions [31]. For the
+aggregation operations, we include element-wise sum and
+concatenation followed by a 1×1convolution.
+The decoder conﬁguration can be represented by a se-
+ID Description
+0 separable conv 3×3
+1 separable conv 3×3with dilation rate 3
+2 separable conv 5×5with dilation rate 6
+3 skip-connection
+4 deformable 3×3convolution
+Table 1. Unary operations used in the search process.
+11945
+
+
+==== Page 4 ====
+quence with three components, FPN conﬁguration, head
+conﬁguration and weight sharing stages. We provide de-
+tailed descriptions to each of them in the following sections.
+The complete diagram of our decoder structure is shown in
+Fig. 1.
+3.2.1 FPN Search Space
+As mentioned above, the FPN fmaps the convolutional
+featuresCtoP. First, we initialize the sampling pool as
+X0=C. Our FPN is deﬁned by applying the basic block
+7times to the sampling pool, f:=bbf
+1◦bbf
+2◦ ··· ◦bbf
+7.
+To yield pyramid features P, we collect the last three basic
+block outputs {x5,x6,x7}as{p3,p4,p5}.
+To allow shared information across all layers, we use
+a simple rule to create global features. If there is some
+dangling layer xtwhich is not sampled by later blocks
+{bbf
+i|i > t}nor belongs to the last three layers t <5, we
+use element-wise add to merge it to all output features
+p∗
+i=pi+xt, i∈ {3,4,5}. (1)
+Same as the aggregation operations, if the features have dif-
+ferent resolution, the smaller one is upsampled with bilinear
+interpolation.
+To be consistent with FCOS, p6andp7are obtained via
+a3×3stride-2convolution on p5andp6respectively.
+3.2.2 Prediction Head Search Space
+Prediction head hmaps each feature in the pyramid Pto the
+output of corresponding y, which in FCOS and RetinaNet,
+consists of four 3×3convolutions. To explore the potential
+of the head, we therefore extend a sequential search space
+for its generation. Speciﬁcally, our head is deﬁned as a se-
+quence of six basic operations. Compared with candidate
+operations in the FPN structures, the head search space has
+two slight differences. First, we add standard convolution
+modules (including conv 1x1and conv3x3) to the head sam-
+pling pool for better comparison. Second, we follow the
+design of FCOS by replacing all the Batch Normalization
+(BN) layers to Group Normalization (GN) [25] in the oper-
+ations sampling pool of head, considering that head needs
+to share weights between different levels, which causes BN
+invalid. The ﬁnal output of head is the output of the last
+(sixth) layer.
+3.2.3 Searching for Head Weight Sharing
+To add even more ﬂexibility and understand the effect of
+weight sharing in prediction heads, we further add an index
+ias the location where the prediction head starts to share
+weights. For every layer before stage i, the head hwill
+create independent set of weights for each FPN output level,
+otherwise, it will use the global weights for sharing purpose.Considering the independent part of the heads being
+extended FPN branch and the shared part as head with
+adaptive-length, we can further balance the workload for
+each individual FPN branch to extract level-speciﬁc features
+and the prediction head shared across all levels.
+3.3. Search Strategy
+RL based strategy is applied to the search process. We
+rely on an LSTM-based controller to predict the full con-
+ﬁguration. We consider using a progressive search strat-
+egy rather than the joint search for both FPN structure and
+prediction head part, since the former requires less com-
+puting resources and time cost than the latter. The training
+dataset is randomly split into a meta-train Dtand meta-val
+Dvsubset. To speed up the training, we ﬁx the backbone
+network and cache the pre-computed backbone output C.
+This makes our single architecture training cost indepen-
+dent from the depth of backbone network. Taking this ad-
+vantage, we can apply much more complex backbone struc-
+tures and utilize high quality multilevel features as our de-
+coder’s input. We ﬁnd that the process of backbone ﬁne-
+tuning can be skipped if the cached features are powerful
+enough. Speedup techniques such as Polyak weight averag-
+ing are also applied during the training.
+The most widely used detection metric is average preci-
+sion (AP). However, due to the difﬁculty of object detection
+task, at the early stages, AP is too low to tell the good archi-
+tectures from the bad ones, which makes the controller take
+much more time to converge. To make the architecture eval-
+uation process easier even at the early stages of the training,
+we therefore use negative loss sum as the reward instead of
+average precision:
+R(a) =−/summationdisplay
+(x,Y)∈Dv(Lcls(x,Y|a)
++Lreg(x,Y|a)+Lctr(x,Y|a))(2)
+whereLcls,Lreg,Lctrare the three loss terms in FCOS.
+Gradient of the controller is estimated via proximal policy
+optimization (PPO) [22].
+4. Experiments
+4.1. Implementation Details
+4.1.1 Searching Phase
+We design a fast proxy task for evaluating the decoder archi-
+tectures sampled in the searching phase. PASCAL VOC is
+selected as the proxy dataset, which contains 5715 training
+images with object bounding box annotations of 20classes.
+Transfer capacity of the structures can be illustrated since
+the search and full training phase use different datasets.
+The VOC training set is randomly split into a meta-train
+11946
+
+
+==== Page 5 ====
+P5
+P4P6P7
+P3C2C3C4C5FPNy5
+y4
+y3
+y2
+y1
+ImageHead
+Head
+Head
+Head
+Headindependent part shared part
+Headcls
+ctr
+reg
+Figure 1. A conceptual example of our NAS-FCOS decoder. It consists of two sub networks, an FPN fand a set of prediction heads h
+which have shared structures. One notable difference with other FPN-based one-stage detectors is that our heads have partially shared
+weights. Only the last several layers of the predictions heads (marked as yellow) are tied by their weights. The number of layers to share
+is decided automatically by the search algorithm. Note that both FPN and head are in our actual search space; and have more layers than
+shown in this ﬁgure. Here the ﬁgure is for illustration only.
+set with4,000 images and a meta-val set with 1715 im-
+ages. For each sampled architecture, we train it on meta-
+train and compute the reward (2) on meta-val. Input images
+are resized to short size 384and then randomly cropped to
+384×384. Target object sizes of interest are scaled cor-
+respondingly. We use Adam optimizer with learning rate
+8e−4and batch size 200. Polyak averaging is applied with
+the decay rates of 0.9. The decoder is evaluated after 300
+iterations. As we use fast decoder adaptation, the backbone
+features are ﬁxed and cached during the search phase. To
+enhance the cached backbone features, we ﬁrst initialize
+them with pre-trained weights provided by open-source im-
+plementation of FCOS and then ﬁnetune on VOC using the
+training strategies of FCOS. Note that the above ﬁnetuning
+process is only performed once at the begining of the search
+phase.
+A progressive strategy is used for the search of fandh.
+We ﬁrst search for the FPN part and retain the original head.
+All operations in the FPN structure have 64output channels.
+The decoder inputs Care resized to ﬁt output channel width
+of FPN via 1×1convolutions. After this step, a searched
+FPN structure is ﬁxed and the second stage searching for the
+head will be started based on it. Most parameters for search-
+ing head are identical to those for searching FPN structure,
+with the exception that the output channel width is adjusted
+from64to128to deliver more information.
+For the FPN search part, the controller model nearly con-
+verged after searching over 2.8K architectures on the proxy
+task as shown in Fig. 2. Then, the top- 20best performing
+architectures on the proxy task are selected for the next full
+training phase. For the head search part, we choose the best
+searched FPN among the top- 20architectures and pre-fetch
+its features. It takes about 600rounds for the controller to
+-1.05
+-1.10
+-1.15
+-1.20
+-1.25
+-1.30
+-1.35
+stepsReward
+      200      400      600      800     1.0K    1. 2K     1.4K    1.6K    1.8K    2.0K    2.2K    2.4K     2.6K     2.8K    3.0K
+Figure 2. Performance of reward during the proxy task, which has
+been growing throughout the process, indicating that the model of
+reinforcement learning works.
+nearly converge, which is much faster than that for search-
+ing FPN architectures. After that, we select for full training
+the top-10heads that achieve best performance on the proxy
+task. In total, the whole search phase can be ﬁnished within
+4days using 8V100 GPUs.
+4.1.2 Full Training Phase
+In this phase, we fully train the searched models on the MS
+COCO training dataset, and select the best one by eval-
+uating them on MS COCO validation images. Note that
+our training conﬁgurations are exactly the same as those
+in FCOS for fair comparison. Input images are resized to
+short size 800and the maximum long side is set to be 1333 .
+The models are trained using 4V100 GPUs with batch size
+16for90K iterations. The initial learning rate is 0.01and
+reduces to one tenth at the 60K-th and 80K-th iterations.
+The improving tricks are applied only on the ﬁnal model
+(w/improv).
+11947
+
+
+==== Page 6 ====
+Decoder Backbone FLOPs (G) Params (M) AP
+FPN-RetinaNet @ 256 MobileNetV 2133.4 11 .330.8
+FPN-FCOS @ 256 MobileNetV 2105.4 9 .831.2
+NAS-FCOS (ours) @ 128 MobileNetV 239.3 5 .932.0
+NAS-FCOS (ours) @ 128-256 MobileNetV 295.6 9 .933.8
+NAS-FCOS (ours) @ 256 MobileNetV 2121.8 16 .134.7
+FPN-RetinaNet @ 256 R-50 198.0 33 .636.1
+FPN-FCOS @ 256 R-50 169.9 32 .037.4
+NAS-FCOS (ours) @ 128 R-50 104.0 27 .837.9
+NAS-FCOS (ours) @ 128-256 R-50 160.4 31 .839.1
+NAS-FCOS (ours) @ 256 R-50 189.6 38 .439.8
+FPN-RetinaNet @ 256 R-101 262.4 52 .537.8
+FPN-FCOS @ 256 R-101 234.3 50 .941.5
+NAS-FCOS (ours) @ 256 R-101 254.0 57 .343.0
+FPN-FCOS @ 256 X-64x4d-101 371.2 89 .643.2
+NAS-FCOS (ours) @ 128-256 X-64x4d-101 361.6 89 .444.5
+FPN-FCOS @ 256w/improvements X- 64x4d-101 371.2 89 .644.7
+NAS-FCOS (ours) @ 128-256w/improvements X- 64x4d-101 361.6 89 .446.1
+Table 2. Results on test-dev set of MS COCO after full training. R- 50and R-101represents ResNet backbones and X- 64x4d-101represents
+ResNeXt- 101(64×4d). All networks share the same input image resolution. FLOPs and parameters are being measured on 1088×800,
+which is the median of the input size on COCO. For RetinaNet and FCOS, we use ofﬁcial models provided by the authors. For our NAS-
+FCOS, @ 128and @256means that the decoder channel width is 128and256respectively. @ 128-256is the decoder with 128FPN width
+and256head width. The same improving tricks used on the newest FCOS version are used in our model for fair comparison.
+dconv3x3
+dconv3x3
+skip
+connectiondconv3x3P3
+dconv3x3dconv3x3
+concat
+dconv3x3concat
+dconv3x3C5C3C4
+dconv3x3dconv3x3
+skip
+connectionconcatdconv3x3
+dconv3x3
+dconv3x3
+P4
+P5concat
+concat
+concatconcat
+Figure 3. Our discovered FPN structure. C2is omitted from this
+ﬁgure since it is not chosen by this particular structure during the
+search process.
+4.2. Search Results
+The best FPN structure is illustrated in Fig. 3. The con-
+troller identiﬁes that deformable convolution and concate-
+nation are the best performing operations for unary and ag-
+gregation respectively. From Fig. 4, we can see that the
+controller chooses to use 4operations (with two skip con-
+nections), rather than the maximum allowed 6operations.
+Note that the discovered “dconv + 1x1conv” structure
+achieves a good trade-off between accuracy and FLOPs.
+Compared with the original head, our searched head hasdconv3x3skip
+connectconv3x3skip
+connectdconv3x3 conv1x1 x y
+Figure 4. Our discovered Head structure.
+fewer FLOPs/Params (FLOPs 79.24G vs.89.16G, Params
+3.41M vs.4.92M) and signiﬁcantly better performance (AP
+38.7vs.37.4).
+We use the searched decoder together with either light-
+weight backbones such as MobileNet-V2 [21] or more pow-
+erful backbones such as ResNet- 101 [7] and ResNeXt-
+101[26]. To balance the performance and efﬁciency, we
+implement three decoders with different computation bud-
+gets: one with feature dimension of 128(@128), one with
+256(@256) and another with FPN channel width 128and
+prediction head 256(@128-256). The results on the COCO
+test-dev with short side being 800is shown in Table 2. The
+searched decoder with feature dimension of 256 (@256)
+surpasses its FCOS counterpart by 1.5to3.5points in AP
+under different backbones. The one with 128 channels
+(@128) has signiﬁcantly reduced parameters and calcula-
+tion, making it more suitable for resource-constrained en-
+vironments. In particular, our searched model with 128
+channels and MobileNetV2 backbone suparsses the origi-
+nal FCOS with the same backbone by 0.8AP points with
+only1/3FLOPS. The third type of decoder (@ 128-256)
+achieves a good balance between accuracy and parameters.
+Note that our searched model outperforms the strongest
+FCOS variant by 1.4AP points ( 46.1vs.44.7) with slightly
+smaller FLOPs and Params. The comparison of FLOPs and
+11948
+
+
+==== Page 7 ====
+0.20.180.3
+0.240.320.420.740.9
+0.780.92
+0.860.95
+0 1 2 3 4 5 6 7 8 9 10 11 12 13
+Statistical Period00.20.40.60.81Proportion of Fully Shared StructureFigure 5. Trend graph of head weight sharing during search. The
+coordinates in the horizontal axis represent the number of the sta-
+tistical period. A period consists of 50head structures. The verti-
+cal axis represents the proportion of heads that fully share weights
+in50structures.
+-1.6 -1.5 -1.4 -1.3 -1.2 -1.1 -1
+Reward0.190.210.230.250.270.290.310.330.35APSample Arch
+   Fit Curve
+Figure 6. Correlation between the search reward obtained on the
+VOC meta-val dataset and the AP evaluated on COCO-val.
+number of parameters with other models are illustrated in
+Fig. 7 and Fig. 8 respectively.
+In order to understand the importance of weight sharing
+in head, we add the number of layers shared by weights
+as an object of the search. Fig. 5 shows a trend graph of
+head weight sharing during search. We set 50structures as
+a statistical cycle. As the search deepens, the proportion
+of fully shared structures increases, indicating that on the
+multi-scale detection model, head weight sharing is a ne-
+cessity.
+We also demonstrate the comparison with other NAS
+methods for object detection in Table 3. Our method is able
+to search for twice more architectures than DetNAS [2] per
+GPU-day. Note that the AP of NAS-FPN [4] is achieved by
+stacking the searched FPN 7times, while we do not stack
+our searched FPN. Our model with ResNeXt-101 ( 64x4d)
+as backbone outperforms NAS-FPN by 1.3AP points while
+using only 1/3FLOPs and less calculation cost.
+0 20 40 60 80 100 120 140 160 180 200 220 240 260 280 300
+FLOPs (GMac)2829303132333435363738394041424344AP
+ResNet-50
+ResNet-101
+MobileNet-V2
+Model Backbone
+Mobile-NAS-FCOS
+(ours)@256
+Mobile-NAS-FCOS (ours)@128-256
+Mobile-FPN-Retinanet@256Mobile-NAS-FCOS (ours)@128R50-NAS-FCOS (ours)@128-256
+Mobile-FPN-FCOS@256R50-NAS-FCOS (ours)@128R50-NAS-FCOS (ours)@256
+R50-FPN-RetinaNet
+@256R50-FPN-FCOS
+@256R101-FPN-RetinaNet
+@256R101-FPN-FCOS@256R101-NAS-FCOS (ours)@256Figure 7. Diagram of the relationship between FLOPs and AP with
+different backbones. Points of different shapes represent different
+backbones. NAS-FCOS@ 128 has a slight increase in precision
+which also gains the advantage of computation quantity. One with
+256channels obtains the highest precision with more computation
+complexity. Using FPN channel width 128 and prediction head
+256(@128-256) offers a trade-off.
+0 10 20 30 40 50 60 70
+Params (M)2930313233343536373839404142434445AP
+ResNet-50
+ResNet-101
+MobileNet-V2
+Model Backbone
+Mobile-FPN-Retinanet@256Mobile-FPN-FCOS@256Mobile-NAS-FCOS (ours)@128Mobile-NAS-FCOS (ours)@128-256Mobile-NAS-FCOS
+(ours)@256R50-FPN-RetinaNet
+@256R50-FPN-FCOS
+@256R50-NAS-FCOS (ours)@128R50-NAS-FCOS (ours)@128-256R50-NAS-FCOS (ours)@256
+R101-FPN-RetinaNet
+@256R101-FPN-FCOS@256R101-NAS-FCOS (ours)@256
+Figure 8. Diagram of the relationship between parameters and AP
+with different backbones. Adjusting the number of channels in
+the FPN structure and head helps to achieve a balance between
+accuracy and parameters.
+We further measure the correlation between rewards ob-
+tained during the search process with the proxy dataset
+and APs attained by same architectures trained on COCO.
+Speciﬁcally, we randomly sample 15architectures from all
+the searched structures trained on COCO with batch size
+16. Since full training on COCO is time-consuming, we
+reduce the iterations to 60K. The model is then evaluated
+on the COCO 2017 validation set. As visible in Fig. 6,
+there is a strong correlation between search rewards and
+APs obtained from COCO. Poor- and well-performing ar-
+chitectures can be distinguished by the rewards on the proxy
+task very well.
+4.3. Ablation Study
+4.3.1 Design of Reinforcement Learning Reward
+As we discussed above, it is common to use widely ac-
+cepted indicators as rewards for speciﬁc tasks in the search,
+11949
+
+
+==== Page 8 ====
+Arch FLOPs (G) Search Cost (GPU-day) Searched Archs AP
+NAS-FPN @ 256R-50 >325.0 333×#TPUs 17000 <38.0
+NAS-FPN 7@256R-50 1125.5 333×#TPUs 17000 44.8
+DetNAS-FPN-Faster - 44 2200 40.2
+DetNAS-RetinaNet - 44 2200 33.3
+NAS-FCOS (ours) @ 256R-50 189.6 28 3000 39.8
+NAS-FCOS (ours) @ 128-256X-64x4d-101 361.6 28 3000 46.1
+Table 3. Comparison with other NAS methods. For NAS-FPN, the input size is 1280×1280 and the search cost should be timed by their
+number of TPUs used to train each architecture. Note that the FLOPs and AP of NAS-FPN @ 256here are from Figure 11in NAS-FPN [4],
+and NAS-FPN 7@256stacks the searched FPN structure 7times. The input images are resized such that their shorter size is 800 pixels in
+DetNASNet [2] and our models.
+30
+100
+StepsAP25
+20
+15
+10
+5
+200 300 400 500 600 700 800 9001000
+Figure 9. Comparison of two different RL reward designs. The
+vertical axis represents AP obtained from the proxy task on the
+validation dataset.
+Decoder Search Space AP
+FPN-FCOS @ 256 - 37.4
+NAS-FCOS @ 256 honly 38.7
+NAS-FCOS @ 256 fonly 38.9
+NAS-FCOS @ 256 f+h39.8
+Table 4. Comparisons between APs obtained under different
+search space with ResNet-50 backbone.
+such as mIOU for segmentation and AP for object detection.
+However, we found that using AP as reward did not show a
+clear upward trend in short-term search rounds (blue curve
+in Fig. 9). We further analyze the possible reason to be that
+the controller tries to learn a mapping from the decoder to
+the reward while the calculation of AP itself is complicated,
+which makes it difﬁcult to learn this mapping within a lim-
+ited number of iterations. In comparison, we clearly see the
+increase of AP with the validation loss as RL rewards (red
+curve in Fig. 9).
+4.3.2 Effectiveness of Search Space
+To further discuss the impact of the search spaces fand
+h, we design three experiments for veriﬁcation. One is to
+searchfwith the original head being ﬁxed, one is to searchhwith the original FPN being ﬁxed and another is to search
+the entire decoder ( f+h). As shown in Table 4, it turns out
+that searching fbrings slightly more beneﬁts than searching
+honly. And our progressive search which combines both f
+andhachieves a better result.
+4.3.3 Impact of Deformable Convolution
+As aforementioned, deformable convolutions are included
+in the set of candidate operations for both fandh, which
+are able to adapt to the geometric variations of objects. For
+fair comparison, we also replace the whole standard 3×3
+convolutions with deformable 3×3convolutions in FPN
+structure of the original FCOS and repeat them twice, mak-
+ing the FLOPs and parameters nearly equal to our searched
+model. The new model is therefore called DeformFPN-
+FCOS. It turns out that our NAS-FCOS model still achieves
+better performance (AP = 38.9with FPN search only, and
+AP= 39.8with both FPN and Head searched) than the
+DeformFPN-FCOS model (AP = 38.4) under this circum-
+stance.
+5. Conclusion
+In this paper, we have proposed to use Neural Archi-
+tecture Search to further optimize the process of designing
+object detection networks. It is shown in this work that
+top-performing detectors can be efﬁciently searched using
+carefully designed proxy tasks, search strategies and model
+evaluation metrics. The experiments on COCO demon-
+strates the efﬁciency of our discovered model NAS-FCOS
+and its ﬂexibility to be used with various backbone archi-
+tectures.
+Acknowledgements
+NW, YG, PW’s participation in this work were in part
+supported by the National Natural Science Foundation of
+China (No.61876152, No.U19B2037). CS’ participation
+was in part supported by ARC DP project “Deep Learning
+that Scales”.
+11950
+
+
+==== Page 9 ====
+References
+[1] Han Cai, Ligeng Zhu, and Song Han. Proxylessnas: Direct
+neural architecture search on target task and hardware. In
+Proc. Int. Conf. Learn. Representations , 2019.
+[2] Yukang Chen, Tong Yang, Xiangyu Zhang, Gaofeng Meng,
+Chunhong Pan, and Jian Sun. DetNAS: Neural architecture
+search on object detection. In Proc. Advances in Neural Inf.
+Process. Syst. , 2019.
+[3] Thomas Elsken, Jan Hendrik Metzen, and Frank Hutter.
+Neural architecture search: A survey. In J. Mach. Learn.
+Res., 2019.
+[4] Golnaz Ghiasi, Tsung-Yi Lin, Ruoming Pang, and Quoc V .
+Le. NAS-FPN: Learning scalable feature pyramid architec-
+ture for object detection. In Proc. IEEE Conf. Comp. Vis.
+Patt. Recogn. , 2019.
+[5] Zichao Guo, Xiangyu Zhang, Haoyuan Mu, Wen Heng,
+Zechun Liu, Yichen Wei, and Jian Sun. Single path one-shot
+neural architecture search with uniform sampling. In arXiv
+preprint arXiv:1904.00420 , 2019.
+[6] Kaiming He, Georgia Gkioxari, Piotr Doll ´ar, and Ross Gir-
+shick. Mask r-cnn. In Proc. IEEE Conf. Comp. Vis. Patt.
+Recogn. , pages 2961–2969, 2017.
+[7] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Identity mappings in deep residual networks. In Proc. Eur.
+Conf. Comp. Vis. , pages 630–645, 2016.
+[8] Alexander Kirillov, Ross Girshick, Kaiming He, and Piotr
+Dollr. Panoptic feature pyramid networks. In Proc. IEEE
+Conf. Comp. Vis. Patt. Recogn. , 2019.
+[9] Tao Kong, Fuchun Sun, Huaping Liu, Yuning Jiang, and
+Jianbo Shi. Foveabox: Beyond anchor-based object detec-
+tor. In arXiv preprint arXiv:1904.03797 , 2019.
+[10] Hei Law and Jia Deng. Cornernet: Detecting objects as
+paired keypoints. In Proc. Eur. Conf. Comp. Vis. , pages 734–
+750, 2018.
+[11] Tsung-Yi Lin, Piotr Doll ´ar, Ross Girshick, Kaiming He,
+Bharath Hariharan, and Serge Belongie. Feature pyramid
+networks for object detection. In Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , pages 2117–2125, 2017.
+[12] Tsung-Yi Lin, Priya Goyal, Ross Girshick, Kaiming He, and
+Piotr Doll ´ar. Focal loss for dense object detection. In Proc.
+IEEE Conf. Comp. Vis. Patt. Recogn. , pages 2980–2988,
+2017.
+[13] Chenxi Liu, Liang-Chieh Chen, Florian Schroff, Hartwig
+Adam, Wei Hua, Alan Yuille, and Li Fei-Fei. Auto-deeplab:
+Hierarchical neural architecture search for semantic image
+segmentation. In Proc. IEEE Conf. Comp. Vis. Patt. Recogn. ,
+2019.
+[14] Huanyu Liu, Chao Peng, Changqian Yu, Jingbo Wang, Xu
+Liu, Gang Yu, and Wei Jiang. An end-to-end network for
+panoptic segmentation. In Proc. IEEE Conf. Comp. Vis. Patt.
+Recogn. , 2019.
+[15] Hanxiao Liu, Karen Simonyan, and Yiming Yang. Darts:
+Differentiable architecture search. In Proc. Int. Conf. Learn.
+Representations , 2019.
+[16] Wei Liu, Dragomir Anguelov, Dumitru Erhan, Christian
+Szegedy, Scott Reed, Cheng-Yang Fu, and Alexander Berg.SSD: Single shot multibox detector. In Proc. Eur. Conf.
+Comp. Vis. , pages 21–37, 2016.
+[17] Vladimir Nekrasov, Hao Chen, Chunhua Shen, and Ian Reid.
+Fast neural architecture search of compact semantic segmen-
+tation models via auxiliary cells. In Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , 2019.
+[18] Hieu Pham, Melody Y . Guan, Barret Zoph, Quoc V . Le, and
+Jeff Dean. Efﬁcient neural architecture search via parameter
+sharing. In Proc. Int. Conf. Mach. Learn. , 2018.
+[19] Joseph Redmon and Ali Farhadi. Yolov3: An incremental
+improvement. In arXiv preprint arXiv:1804.02767 , 2018.
+[20] Shaoqing Ren, Kaiming He, Ross Girshick, and Jian Sun.
+Faster R-CNN: Towards real-time object detection with re-
+gion proposal networks. In Proc. Advances in Neural Inf.
+Process. Syst. , pages 91–99, 2015.
+[21] Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zh-
+moginov, and Liang-Chieh Chen. Mobilenetv2: Inverted
+residuals and linear bottlenecks. In Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , pages 4510–4520, 2018.
+[22] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Rad-
+ford, and Oleg Klimov. Proximal policy optimization algo-
+rithms. In arXiv preprint arXiv:1707.06347 , 2017.
+[23] Dimitrios Stamoulis, Ruizhou Ding, Di Wang, Dim-
+itrios Lymberopoulos, Bodhi Priyantha, Jie Liu, and Di-
+ana Marculescu. Single-path NAS: Designing hardware-
+efﬁcient convnets in less than 4 hours. In arXiv preprint
+arXiv:1904.02877 , 2019.
+[24] Zhi Tian, Chunhua Shen, Hao Chen, and Tong He. FCOS:
+Fully convolutional one-stage object detection. In Proc.
+IEEE Int. Conf. Comp. Vis. , 2019.
+[25] Yuxin Wu and Kaiming He. Group normalization. In Proc.
+Eur. Conf. Comp. Vis. , pages 3–19, 2018.
+[26] Saining Xie, Ross Girshick, Piotr Dollr, Zhuowen Tu, and
+Kaiming He. Aggregated residual transformations for deep
+neural networks. In Proc. IEEE Conf. Comp. Vis. Patt.
+Recogn. , 2017.
+[27] Ting Zhao and Xiangqian Wu. Pyramid feature attention net-
+work for saliency detection. In Proc. IEEE Conf. Comp. Vis.
+Patt. Recogn. , 2019.
+[28] Hongpeng Zhou, Minghao Yang, Jun Wang, and Wei Pan.
+BayesNAS: A bayesian approach for neural architecture
+search. In Proc. Int. Conf. Mach. Learn. , 2019.
+[29] Xingyi Zhou, Dequan Wang, and Philipp Kr ¨ahenb ¨uhl. Ob-
+jects as points. In arXiv preprint arXiv:1904.07850 , 2019.
+[30] Chenchen Zhu, Yihui He, and Marios Savvides. Feature se-
+lective anchor-free module for single-shot object detection.
+InProc. IEEE Conf. Comp. Vis. Patt. Recogn. , 2019.
+[31] Xizhou Zhu, Han Hu, Stephen Lin, and Jifeng Dai. De-
+formable convnets v2: More deformable, better results. In
+Proc. IEEE Conf. Comp. Vis. Patt. Recogn. , 2019.
+[32] Barret Zoph and Quoc V . Le. Neural architecture search with
+reinforcement learning. In Proc. Int. Conf. Learn. Represen-
+tations , 2017.
+11951
+
+

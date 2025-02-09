@@ -1,0 +1,913 @@
+==== Page 1 ====
+SUNRISE: A Simple Uniﬁed Framework
+for Ensemble Learning in Deep Reinforcement Learning
+Kimin Lee1Michael Laskin1Aravind Srinivas1Pieter Abbeel1
+Abstract
+Off-policy deep reinforcement learning (RL) has
+been successful in a range of challenging domains.
+However, standard off-policy RL algorithms can
+suffer from several issues, such as instability in Q-
+learning and balancing exploration and exploita-
+tion. To mitigate these issues, we present SUN-
+RISE, a simple uniﬁed ensemble method, which
+is compatible with various off-policy RL algo-
+rithms. SUNRISE integrates two key ingredi-
+ents: (a) ensemble-based weighted Bellman back-
+ups, which re-weight target Q-values based on
+uncertainty estimates from a Q-ensemble, and
+(b) an inference method that selects actions us-
+ing the highest upper-conﬁdence bounds for ef-
+ﬁcient exploration. By enforcing the diversity
+between agents using Bootstrap with random ini-
+tialization, we show that these different ideas
+are largely orthogonal and can be fruitfully in-
+tegrated, together further improving the perfor-
+mance of existing off-policy RL algorithms, such
+as Soft Actor-Critic and Rainbow DQN, for both
+continuous and discrete control tasks on both
+low-dimensional and high-dimensional environ-
+ments. Our training code is available at https:
+//github.com/pokaxpoka/sunrise .
+1. Introduction
+Model-free reinforcement learning (RL), with high-capacity
+function approximators, such as deep neural networks
+(DNNs), has been used to solve a variety of sequential
+decision-making problems, including board games ( Silver
+et al.,2017;2018), video games ( Mnih et al. ,2015;Vinyals
+et al.,2019 ), and robotic manipulation ( Kalashnikov et al. ,
+2018 ). It has been well established that the above suc-
+cesses are highly sample inefﬁcient (Kaiser et al. ,2020 ).
+Recently, a lot of progress has been made in more sample-
+1University of California, Berkeley. Correspondence to: Kimin
+Lee<kiminlee@berkeley.edu >.
+Proceedings of the 38thInternational Conference on Machine
+Learning , PMLR 139, 2021. Copyright 2021 by the author(s).efﬁcient model-free RL algorithms through improvements
+in off-policy learning both in discrete and continuous do-
+mains ( Fujimoto et al. ,2018 ;Haarnoja et al. ,2018 ;Hessel
+et al.,2018;Amos et al. ,2020). However, there are still sub-
+stantial challenges when training off-policy RL algorithms.
+First, Q-learning often converges to sub-optimal solutions
+due to error propagation in the Bellman backup, i.e., the
+errors induced in the target value can lead to an increase in
+overall error in the Q-function ( Kumar et al. ,2019 ;2020 ).
+Second, it is hard to balance exploration and exploitation,
+which is necessary for efﬁcient RL ( Chen et al. ,2017 ;Os-
+band et al. ,2016a ) (see Section 2for further details).
+One way to address the above issues with off-policy RL algo-
+rithms is to use ensemble methods, which combine multiple
+models of the value function and (or) policy ( Chen et al. ,
+2017 ;Lan et al. ,2020 ;Osband et al. ,2016a ;Wiering &
+Van Hasselt ,2008 ). For example, double Q-learning ( Has-
+selt,2010 ;Van Hasselt et al. ,2016 ) addressed the value
+overestimation by maintaining two independent estimators
+of the action values and later extended to continuous con-
+trol tasks in TD3 ( Fujimoto et al. ,2018 ). Bootstrapped
+DQN ( Osband et al. ,2016a ) leveraged an ensemble of Q-
+functions for more effective exploration, and Chen et al.
+(2017 ) further improved it by adapting upper-conﬁdence
+bounds algorithms ( Audibert et al. ,2009 ;Auer et al. ,2002 )
+based on uncertainty estimates from ensembles. However,
+most prior works have studied the various axes of improve-
+ments from ensemble methods in isolation and have ignored
+the error propagation aspect.
+In this paper, we present SUNRISE, a simple uniﬁed ensem-
+ble method that is compatible with most modern off-policy
+RL algorithms, such as Q-learning and actor-critic algo-
+rithms. Our main idea is to reweight sample transitions
+based on uncertainty estimates from a Q-ensemble. Be-
+cause prediction errors can be characterized by uncertainty
+estimates from ensembles (i.e., variance of predictions) as
+shown in Figure 1(b), we ﬁnd that the proposed method
+signiﬁcantly improves the signal-to-noise in the Q-updates
+and stabilizes the learning process. Additionally, for ef-
+ﬁcient exploration, We deﬁne an upper-conﬁdence bound
+(UCB) based on the mean and variance of Q-functions simi-
+lar to Chen et al. (2017), and introduce an inference method,
+
+==== Page 2 ====
+SUNRISE
+which selects actions with highest UCB for efﬁcient explo-
+ration. This inference method can encourage exploration
+by providing a bonus for visiting unseen state-action pairs,
+where ensembles produce high uncertainty, i.e., high vari-
+ance (see Figure 1(b)). By enforcing the diversity between
+agents using Bootstrap with random initialization ( Osband
+et al.,2016a ), we ﬁnd that these different ideas can be fruit-
+fully integrated, and they are largely complementary (see
+Figure 1(a)).
+We demonstrate the effectiveness of the proposed method us-
+ing Soft Actor-Critic (SAC; Haarnoja et al. 2018) for contin-
+uous control benchmarks (speciﬁcally, OpenAI Gym ( Brock-
+man et al. ,2016 ) and DeepMind Control Suite ( Tassa et al. ,
+2018 )) and Rainbow DQN ( Hessel et al. ,2018 ) for dis-
+crete control benchmarks (speciﬁcally, Atari games ( Belle-
+mare et al. ,2013 )). In our experiments, SUNRISE consis-
+tently improves the performance of existing off-policy RL
+methods. Furthermore, we ﬁnd that the proposed weighted
+Bellman backups yield improvements in environments with
+noisy reward, which have a low signal-to-noise ratio.
+2. Related work
+Off-policy RL algorithms . Recently, various off-policy RL
+algorithms have provided large gains in sample-efﬁciency
+by reusing past experiences ( Fujimoto et al. ,2018;Haarnoja
+et al. ,2018 ;Hessel et al. ,2018 ). Rainbow DQN ( Hessel
+et al. ,2018 ) achieved state-of-the-art performance on the
+Atari games ( Bellemare et al. ,2013 ) by combining sev-
+eral techniques, such as double Q-learning ( Van Hasselt
+et al.,2016) and distributional DQN ( Bellemare et al. ,2017).
+For continuous control tasks, SAC ( Haarnoja et al. ,2018 )
+achieved state-of-the-art sample-efﬁciency results by incor-
+porating the maximum entropy framework. Our ensemble
+method brings orthogonal beneﬁts and is complementary
+and compatible with these existing state-of-the-art algo-
+rithms.
+Stabilizing Q-learning . It has been empirically observed
+that instability in Q-learning can be caused by applying
+the Bellman backup on the learned value function ( Hasselt ,
+2010 ;Van Hasselt et al. ,2016 ;Fujimoto et al. ,2018 ;Song
+et al. ,2019 ;Kim et al. ,2019 ;Kumar et al. ,2019 ;2020 ).
+By following the principle of double Q-learning ( Hasselt ,
+2010;Van Hasselt et al. ,2016), twin-Q trick ( Fujimoto et al. ,
+2018 ) was proposed to handle the overestimation of value
+functions for continuous control tasks. Song et al. (2019 )
+andKim et al. (2019 ) proposed to replace the max operator
+with Softmax and Mellowmax, respectively, to reduce the
+overestimation error. Recently, Kumar et al. (2020) handled
+the error propagation issue by reweighting the Bellman
+backup based on cumulative Bellman errors. However, our
+method is different in that we propose an alternative way that
+also utilizes ensembles to estimate uncertainty and providemore stable, higher-signal-to-noise backups.
+Ensemble methods in RL . Ensemble methods have been
+studied for different purposes in RL ( Wiering & Van Hasselt ,
+2008 ;Osband et al. ,2016a ;Anschel et al. ,2017 ;Agarwal
+et al.,2020;Lan et al. ,2020).Chua et al. (2018) showed that
+modeling errors in model-based RL can be reduced using an
+ensemble of dynamics models, and Kurutach et al. (2018 )
+accelerated policy learning by generating imagined experi-
+ences from the ensemble of dynamics models. For efﬁcient
+exploration, Osband et al. (2016a ) and Chen et al. (2017 )
+also leveraged the ensemble of Q-functions. However, most
+prior works have studied the various axes of improvements
+from ensemble methods in isolation, while we propose a
+uniﬁed framework that handles various issues in off-policy
+RL algorithms.
+Exploration in RL . To balance exploration and exploita-
+tion, several methods, such as the maximum entropy frame-
+works ( Ziebart ,2010 ;Haarnoja et al. ,2018 ), exploration
+bonus rewards ( Bellemare et al. ,2016 ;Houthooft et al. ,
+2016 ;Pathak et al. ,2017 ;Choi et al. ,2019 ) and randomiza-
+tion ( Osband et al. ,2016a ;b), have been proposed. Despite
+the success of these exploration methods, a potential draw-
+back is that agents can focus on irrelevant aspects of the
+environment because these methods do not depend on the
+rewards. To handle this issue, Chen et al. (2017 ) proposed
+an exploration strategy that considers both best estimates
+(i.e., mean) and uncertainty (i.e., variance) of Q-functions
+for discrete control tasks. We further extend this strategy to
+continuous control tasks and show that it can be combined
+with other techniques.
+3. Background
+Reinforcement learning . We consider a standard RL
+framework where an agent interacts with an environment
+in discrete time. Formally, at each timestep t, the agent
+receives a state stfrom the environment and chooses an
+action atbased on its policy ⇡. The environment returns
+a reward rtand the agent transitions to the next state st+1.
+The return Rt=P1
+k=0 krt+kis the total accumulated
+rewards from timestep twith a discount factor  2[0,1).
+RL then maximizes the expected return.
+Soft Actor-Critic . SAC ( Haarnoja et al. ,2018 ) is an off-
+policy actor-critic method based on the maximum entropy
+RL framework ( Ziebart ,2010 ), which encourages the ro-
+bustness to noise and exploration by maximizing a weighted
+objective of the reward and the policy entropy (see Ap-
+pendix Afor further details). To update the parameters,
+SAC alternates between a soft policy evaluation and a soft
+policy improvement. At the soft policy evaluation step, a
+soft Q-function, which is modeled as a neural network with
+parameters ✓, is updated by minimizing the following soft
+
+==== Page 3 ====
+SUNRISEWeighted Bellman backupReplay bufferUCB explorationAction Actor NActor 2Actor 1Critic 1Critic 2Critic NBootstrap with random initialization(a) SUNRISE: actor-critic version(b) Uncertainty estimates
+Figure 1. (a) Illustration of our framework. We consider Nindependent agents (i.e., no shared parameters between agents) with one replay
+buffer. (b) Uncertainty estimates from an ensemble of neural networks on a toy regression task (see Appendix Cfor more experimental
+details). The black line is the ground truth curve, and the red dots are training samples. The blue lines show the mean and variance of
+predictions over ten ensemble models. The ensemble can produce well-calibrated uncertainty estimates (i.e., variance) on unseen samples.
+Bellman residual:
+LSAC
+critic (✓)=E⌧t⇠B[LQ(⌧t,✓)], (1)
+LQ(⌧t,✓)= 
+Q✓(st,at) rt  ¯V(st+1) 2, (2)
+with ¯V(st)=Eat⇠⇡ ⇥
+Q¯✓(st,at) ↵log⇡ (at|st)⇤i
+,
+where ⌧t=(st,at,rt,st+1)is a transition, Bis a replay
+buffer, ¯✓are the delayed parameters, and ↵is a temperature
+parameter. At the soft policy improvement step, the policy ⇡
+with its parameter  is updated by minimizing the following
+objective:
+LSAC
+actor( )=Est⇠B⇥
+L⇡(st, )⇤
+, (3)
+L⇡(st, )=Eat⇠⇡ ⇥
+↵log⇡ (at|st) Q✓(st,at)⇤
+.(4)
+Here, the policy is modeled as a Gaussian with mean and
+covariance given by neural networks to handle continuous
+action spaces.
+4. SUNRISE
+In this section, we propose the ensemble-based weighted
+Bellman backups, and then introduce SUNRISE: Simple
+UNiﬁed framework for ReInforcement learning using
+enSEmbles, which combines various ensemble methods. In
+principle, our method can be used in conjunction with most
+modern off-policy RL algorithms, such as SAC ( Haarnoja
+et al.,2018 ) and Rainbow DQN ( Hessel et al. ,2018 ). For
+the exposition, we describe only the SAC version in the
+main body. The Rainbow DQN version follows the same
+principles and is fully described in Appendix B.
+4.1. Weighted Bellman backups
+Formally, we consider an ensemble of NSAC agents, i.e.,
+{Q✓i,⇡ i}N
+i=1, where ✓iand idenote the parameters of
+thei-th soft Q-function and policy.1Since conventional
+1We remark that each Q-function Q✓i(s, a)has a unique target
+Q-function Q¯✓i(s, a).Q-learning is based on the Bellman backup in ( 2), it can
+be affected by error propagation. I.e., error in the tar-
+get Q-function Q¯✓(st+1,at+1)gets propagated into the Q-
+function Q✓(st,at)at the current state. In other words,
+errors in the previous Q-function induce the “noise” to
+the learning “signal” (i.e., true Q-value) of the current Q-
+function. Recently, Kumar et al. (2020 ) showed that this
+error propagation can cause inconsistency and unstable con-
+vergence. To mitigate this issue, for each agent i, we con-
+sider a weighted Bellman backup as follows:
+LWQ(⌧t,✓i)
+=w(st+1,at+1) 
+Q✓i(st,at) rt  ¯V(st+1) 2,(5)
+where ⌧t=( st,at,rt,st+1)is a transition, at+1⇠
+⇡ i(a|st), and w(s, a)is a conﬁdence weight based on en-
+semble of target Q-functions:
+w(s, a)=  
+ ¯Qstd(s, a)⇤T 
++0.5, (6)
+where T> 0is a temperature,  is the sigmoid function,
+and¯Qstd(s, a)is the empirical standard deviation of all tar-
+get Q-functions {Q¯✓i}N
+i=1. Note that the conﬁdence weight
+is bounded in [0.5,1.0]because standard deviation is al-
+ways positive.2The proposed objective LWQdown-weights
+the sample transitions with high variance across target Q-
+functions, resulting in a loss function for the Q-updates that
+has a better signal-to-noise ratio (see Section 6.1for more
+detailed discussions).
+4.2. Combination with additional techniques
+We integrate the proposed weighted Bellman backup with
+UCB exploration into a single framework by utilizing the
+bootstrap with random initialization.
+Bootstrap with random initialization . To train the ensem-
+ble of agents, we use the bootstrap with random initializa-
+tion ( Efron ,1982;Osband et al. ,2016a ), which enforces the
+2We ﬁnd that it is empirically stable to set minimum value of
+weight w(s, a)as 0.5.
+
+==== Page 4 ====
+SUNRISE
+diversity between agents through two simple ideas: First,
+we initialize the model parameters of all agents with ran-
+dom parameter values for inducing an initial diversity in the
+models. Second, we apply different samples to train each
+agent. Speciﬁcally, for each SAC agent iin each timestep
+t, we draw the binary masks mt,ifrom the Bernoulli dis-
+tribution with parameter  2(0,1], and store them in the
+replay buffer. Then, when updating the model parameters
+of agents, we multiply the bootstrap mask to each objec-
+tive function, such as: mt,iL⇡(st, i)andmt,iLWQ(⌧t,✓i)
+in (4) and ( 5), respectively. We remark that Osband et al.
+(2016a ) applied this simple technique to train an ensemble
+of DQN ( Mnih et al. ,2015 ) only for discrete control tasks,
+while we apply to SAC ( Haarnoja et al. ,2018) and Rainbow
+DQN ( Hessel et al. ,2018 ) for both continuous and discrete
+tasks with additional techniques.
+UCB exploration . The ensemble can also be leveraged
+for efﬁcient exploration ( Chen et al. ,2017 ;Osband et al. ,
+2016a ) because it can express higher uncertainty on unseen
+samples. Motivated by this, by following the idea of Chen
+et al. (2017 ), we consider an optimism-based exploration
+that chooses the action that maximizes
+at= max
+a{Qmean(st,a)+ Qstd(st,a)}, (7)
+where Qmean(s, a)andQstd(s, a)are the empirical mean
+and standard deviation of all Q-functions {Q✓i}N
+i=1, and
+the >0is a hyperparameter. This inference method can
+encourage exploration by adding an exploration bonus (i.e.,
+standard deviation Qstd) for visiting unseen state-action
+pairs similar to the UCB algorithm ( Auer et al. ,2002 ). We
+remark that this inference method was originally proposed
+inChen et al. (2017 ) for efﬁcient exploration in discrete
+action spaces. However, in continuous action spaces, ﬁnding
+the action that maximizes the UCB is not straightforward.
+To handle this issue, we propose a simple approximation
+scheme, which ﬁrst generates Ncandidate action set from
+ensemble policies {⇡ i}N
+i=1, and then chooses the action
+that maximizes the UCB (Line 4 in Algorithm 1). For
+evaluation, we approximate the maximum a posterior action
+by averaging the mean of Gaussian distributions modeled
+by each ensemble policy.
+The full procedure of our uniﬁed framework, coined SUN-
+RISE, is summarized in Algorithm 1.
+5. Experimental results
+We designed our experiments to answer the following ques-
+tions:
+•Can SUNRISE improve off-policy RL algorithms,
+such as SAC ( Haarnoja et al. ,2018 ) and Rainbow
+DQN ( Hessel et al. ,2018 ), for both continuous (seeAlgorithm 1 SUNRISE: SAC version
+1:foreach iteration do
+2: foreach timestep tdo
+3: // UCB EXPLORATION
+4: Collect Naction samples: At={at,i⇠
+⇡ i(a|st)|i2{1,...,N }}
+5: Choose the action that maximizes UCB: at=
+arg max
+at,i2AtQmean(st,at,i)+ Qstd(st,at,i)
+6: Collect state st+1and reward rtfrom the environ-
+ment by taking action at
+7: Sample bootstrap masks Mt={mt,i⇠
+Bernoulli ( )—i2{1,...,N }}
+8: Store transitions ⌧t=(st,at,st+1,rt)and masks
+in replay buffer B B[{ (⌧t,Mt)}
+9: end for
+10: // U PDATE AGENTS VIA BOOTSTRAP AND
+WEIGHTED BELLMAN BACKUP
+11: foreach gradient step do
+12: Sample random minibatch {(⌧j,Mj)}B
+j=1⇠B
+13: foreach agent ido
+14: Update the Q-function by minimizing
+1
+BPB
+j=1mj,iLWQ(⌧j,✓i)in (5)
+15: Update the policy by minimizing
+1
+BPB
+j=1mj,iL⇡(sj, i)in (4)
+16: end for
+17: end for
+18:end for
+Table 1and Table 2) and discrete (see Table 3) control
+tasks?
+•How crucial is the proposed weighted Bellman back-
+ups in ( 5) for improving the signal-to-noise in Q-
+updates (see Figure 2)?
+•Can UCB exploration be useful for solving tasks with
+sparse rewards (see Figure 3(b))?
+•Is SUNRISE better than a single agent with more
+updates and parameters (see Figure 3(c))?
+•How does ensemble size affect the performance (see
+Figure 3(d))?
+5.1. Setups
+Continuous control tasks . We evaluate SUNRISE on sev-
+eral continuous control tasks using simulated robots from
+OpenAI Gym ( Brockman et al. ,2016 ) and DeepMind Con-
+trol Suite ( Tassa et al. ,2018). For OpenAI Gym experiments
+with proprioceptive inputs (e.g., positions and velocities),
+we compare to PETS ( Chua et al. ,2018 ), a state-of-the-art
+model-based RL method based on ensembles of dynamics
+models; POPLIN-P ( Wang & Ba ,2020 ), a state-of-the-art
+model-based RL method which uses a policy network to
+
+==== Page 5 ====
+SUNRISE
+generate actions for planning; POPLIN-A ( Wang & Ba ,
+2020 ), variant of POPLIN-P which adds noise in the ac-
+tion space; METRPO ( Kurutach et al. ,2018 ), a hybrid RL
+method which augments TRPO ( Schulman et al. ,2015 ) us-
+ing ensembles of dynamics models; and two state-of-the-art
+model-free RL methods, TD3 ( Fujimoto et al. ,2018 ) and
+SAC ( Haarnoja et al. ,2018 ). For our method, we consider
+a combination of SAC and SUNRISE, as described in Al-
+gorithm 1. Following the setup in Wang & Ba (2020 ) and
+Wang et al. (2019 ), we report the mean and standard devia-
+tion across ten runs after 200K timesteps on ﬁve complex
+environments: Cheetah, Walker, Hopper, Ant and SlimHu-
+manoid with early termination (ET). More experimental
+details and learning curves with 1M timesteps are in Ap-
+pendix D.
+For DeepMind Control Suite with image inputs, we com-
+pare to PlaNet ( Hafner et al. ,2019 ), a model-based RL
+method which learns a latent dynamics model and uses it
+for planning; Dreamer ( Hafner et al. ,2020 ), a hybrid RL
+method which utilizes the latent dynamics model to gener-
+ate synthetic roll-outs; SLAC ( Lee et al. ,2020 ), a hybrid
+RL method which combines the latent dynamics model
+with SAC; and three state-of-the-art model-free RL methods
+which apply contrastive learning (CURL; Srinivas et al.
+2020 ) or data augmentation (RAD ( Laskin et al. ,2020 ) and
+DrQ ( Kostrikov et al. ,2021 )) to SAC. For our method, we
+consider a combination of RAD (i.e., SAC with random
+crop) and SUNRISE. Following the setup in RAD, we re-
+port the mean and standard deviation across ﬁve runs after
+100k (i.e., low sample regime) and 500k (i.e., asymptotically
+optimal regime) environment steps on six environments:
+Finger-spin, Cartpole-swing, Reacher-easy, Cheetah-run,
+Walker-walk, and Cup-catch. More experimental details and
+learning curves are in Appendix F.
+Discrete control benchmarks . For discrete control tasks,
+we demonstrate the effectiveness of SUNRISE on several
+Atari games ( Bellemare et al. ,2013 ). We compare to Sim-
+PLe ( Kaiser et al. ,2020 ), a hybrid RL method which up-
+dates the policy only using samples generated by learned
+dynamics model; Rainbow DQN ( Hessel et al. ,2018 ) with
+modiﬁed hyperparameters for sample-efﬁciency ( van Has-
+selt et al. ,2019 ); Random agent ( Kaiser et al. ,2020 ); two
+state-of-the-art model-free RL methods which apply the con-
+trastive learning (CURL; Srinivas et al. 2020 ) and data aug-
+mentation (DrQ; Kostrikov et al. 2021 ) to Rainbow DQN;
+and Human performances reported in Kaiser et al. (2020 )
+andvan Hasselt et al. (2019 ). Following the setups in Sim-
+PLe, we report the mean across three runs after 100K in-
+teractions (i.e., 400K frames with action repeat of 4). For
+our method, we consider a combination of sample-efﬁcient
+versions of Rainbow DQN and SUNRISE (see Algorithm 3
+in Appendix B). More experimental details and learning
+curves are in Appendix G.For our method, we do not alter any hyperparameters of
+the original RL algorithms and train ﬁve ensemble agents.
+There are only three additional hyperparameters  ,T, and
+ for bootstrap, weighted Bellman backup, and UCB ex-
+ploration, where we provide details in Appendix D,F, and
+G.
+5.2. Comparative evaluation
+OpenAI Gym . Table 1shows the average returns of eval-
+uation roll-outs for all methods. SUNRISE consistently
+improves the performance of SAC across all environments
+and outperforms the model-based RL methods, such as
+POPLIN-P and PETS, on all environments except Ant and
+SlimHumanoid-ET. Even though we focus on performance
+after small samples because of the recent emphasis on mak-
+ing RL more sample efﬁcient, we ﬁnd that the gain from
+SUNRISE becomes even more signiﬁcant when training
+longer (see Figure 3(c)and Appendix D). We remark that
+SUNRISE is more compute-efﬁcient than modern model-
+based RL methods, such as POPLIN and PETS, because
+they also utilize ensembles (of dynamics models) and per-
+form planning to select actions. Namely, SUNRISE is sim-
+ple to implement, computationally efﬁcient, and readily
+parallelizable.
+DeepMind Control Suite . As shown in Table 2, SUNRISE
+also consistently improves the performance of RAD (i.e.,
+SAC with random crop) on all environments from Deep-
+Mind Control Suite. This implies that the proposed method
+can be useful for high-dimensional and complex input obser-
+vations. Moreover, our method outperforms existing pixel-
+based RL methods in almost all environments. We remark
+that SUNRISE can also be combined with DrQ, and expect
+that it can achieve better performances on Cartpole-swing
+and Cup-catch at 100K environment steps.
+Atari games . We also evaluate SUNRISE on discrete con-
+trol tasks from the Atari benchmark using Rainbow DQN.
+Table 3shows that SUNRISE improves the performance of
+Rainbow in almost all environments, and outperforms the
+state-of-the-art CURL and SimPLe on 11 out of 26 Atari
+games. Here, we remark that SUNRISE is also compatible
+with CURL, which could enable even better performance.
+These results demonstrate that SUNRISE is a general ap-
+proach.
+5.3. Ablation study
+Effects of weighted Bellman backups . To verify the effec-
+tiveness of the proposed weighted Bellman backup ( 5) in
+improving signal-to-noise in Q-updates, we evaluate on a
+modiﬁed OpenAI Gym environments with noisy rewards.
+Following Kumar et al. (2019), we add Gaussian noise to the
+reward function: r0(s, a)=r(s, a)+z,where z⇠N(0,1)
+only during training, and report the deterministic ground-
+
+==== Page 6 ====
+SUNRISE
+Cheetah Walker Hopper Ant SlimHumanoid-ET
+PETS 2288.4 ±1019.0 282.5 ±501.6 114.9 ±621.0 1165.5 ±226.9 2055.1 ±771.5
+POPLIN-A 1562.8 ±1136.7 -105.0 ±249.8 202.5 ±962.5 1148.4 ±438.3 -
+POPLIN-P 4235.0 ±1133.0 597.0 ±478.8 2055.2 ±613.8 2330.1 ±320.9 -
+METRPO 2283.7 ±900.4 -1609.3 ±657.5 1272.5 ±500.9 282.2 ±18.0 76.1 ±8.8
+TD3 3015.7 ±969.8 -516.4 ±812.2 1816.6 ±994.8 870.1 ±283.8 1070.0 ±168.3
+SAC 4474.4 ±700.9 299.5 ±921.9 1781.3 ±737.2 979.5 ±253.2 1371.8 ±473.4
+SUNRISE 4501.8 ±443.8 1236.5 ±1123.9 2643.2 ±472.3 1502.4 ±483.5 1926.6 ±375.0
+Table 1. Performance on OpenAI Gym at 200K timesteps. The results show the mean and standard deviation averaged over ten runs. For
+baseline methods, we report the best number in prior works ( Wang & Ba ,2020 ;Wang et al. ,2019 ).
+500K step PlaNet Dreamer SLAC CURL DrQ RAD SUNRISE
+Finger-spin 561±284 796±183 673±92 926±45 938±103 975±16 983±1
+Cartpole-swing 475±71 762±27 - 845±45 868±10 873±3 876±4
+Reacher-easy 210±44 793±164 - 929±44 942±71 916±49 982±3
+Cheetah-run 305±131 570±253 640±19 518±28 660±96 624±10 678±46
+Walker-walk 351±58 897±49 842±51 902±43 921±45 938±9 953±13
+Cup-catch 460±380 879±87 852±71 959±27 963±9 966±9 969±5
+100K step
+Finger-spin 136±216 341±70 693±141 767±56 901±104 811±146 905±57
+Cartpole-swing 297±39 326±27 - 582±146 759±92 373±90 591±55
+Reacher-easy 20±50 314±155 - 538±233 601±213 567±54 722±50
+Cheetah-run 138±88 235±137 319±56 299±48 344±67 381±79 413±35
+Walker-walk 224±48 277±12 361±73 403±24 612±164 641±89 667±147
+Cup-catch 0±0 246±174 512±110 769±43 913±53 666±181 633±241
+Table 2. Performance on DeepMind Control Suite at 100K and 500K environment steps. The results show the mean and standard deviation
+averaged ﬁve runs. For baseline methods, we report the best numbers reported in prior works ( Kostrikov et al. ,2021 ).
+truth reward during evaluation. For our method, we also
+consider a variant of SUNRISE, which updates Q-functions
+without the proposed weighted Bellman backup to isolate its
+effect. We compare to DisCor ( Kumar et al. ,2020 ), which
+improves SAC by reweighting the Bellman backup based
+on estimated cumulative Bellman errors (see Appendix E
+for more details).
+Figure 2shows the learning curves of all methods on Ope-
+nAI Gym with noisy rewards. The proposed weighted Bell-
+man backup signiﬁcantly improves both sample-efﬁciency
+and asymptotic performance of SUNRISE, and outperforms
+baselines such as SAC and DisCor. One can note the per-
+formance gain due to our weighted Bellman backup be-
+comes more signiﬁcant in complex environments, such
+as SlimHumanoid-ET. We remark that DisCor still suffers
+from error propagation issues in complex environments like
+SlimHumanoid-ET and Ant because there are some approx-
+imation errors in estimating cumulative Bellman errors (see
+Section 6.1for more detailed discussion). These results im-
+ply that errors in the target Q-function can be characterized
+by the proposed conﬁdent weight in ( 6) effectively.We also consider another variant of SUNRISE, which
+updates Q-functions with random weights sampled from
+[0.5,1.0]uniformly at random. In order to evaluate the
+performance of SUNRISE, we increase the noise rate by
+adding Gaussian noise with a large standard deviation to the
+reward function: r0(s, a)=r(s, a)+z,where z⇠N(0,5).
+Figure 3(a)shows the learning curves of all methods on
+the SlimHumanoid-ET environment over 10 random seeds.
+First, one can not that SUNRISE with random weights (red
+curve) is worse than SUNRISE with the proposed weighted
+Bellman backups (blue curve). Additionally, even without
+UCB exploration, SUNRISE with the proposed weighted
+Bellman backups (purple curve) outperforms all baselines.
+This implies that the proposed weighted Bellman backups
+can handle the error propagation effectively even though
+there is a large noise in reward function.
+Effects of UCB exploration . To verify the advantage of
+UCB exploration in ( 7), we evaluate on Cartpole-swing
+with sparse-reward from DeepMind Control Suite. For our
+method, we consider a variant of SUNRISE, which selects
+action without UCB exploration. As shown in Fig 3(b),
+SUNRISE with UCB exploration (blue curve) signiﬁcantly
+
+==== Page 7 ====
+SUNRISE
+Game Human Random SimPLe CURL DrQ Rainbow SUNRISE
+Alien 7127.7 227.8 616.9 558.2 761.4 789.0 872.0
+Amidar 1719.5 5.8 88.0 142.1 97.3 118.5 122.6
+Assault 742.0 222.4 527.2 600.6 489.1 413.0 594.8
+Asterix 8503.3 210.0 1128.3 734.5 637.5 533.3 755.0
+BankHeist 753.1 14.2 34.2 131.6 196.6 97.7 266.7
+BattleZone 37187.5 2360.0 5184.4 14870.0 13520.6 7833.3 15700.0
+Boxing 12.1 0.1 9.1 1.2 6.9 0.6 6.7
+Breakout 30.5 1.7 16.4 4.9 14.5 2.3 1.8
+ChopperCommand 7387.8 811.0 1246.9 1058.5 646.6 590.0 1040.0
+CrazyClimber 35829.4 10780.5 62583.6 12146.5 19694.1 25426.7 22230.0
+DemonAttack 1971.0 152.1 208.1 817.6 1222.2 688.2 919.8
+Freeway 29.6 0.0 20.3 26.7 15.4 28.7 30.2
+Frostbite 4334.7 65.2 254.7 1181.3 449.7 1478.3 2026.7
+Gopher 2412.5 257.6 771.0 669.3 598.4 348.7 654.7
+Hero 30826.4 1027.0 2656.6 6279.3 4001.6 3675.7 8072.5
+Jamesbond 302.8 29.0 125.3 471.0 272.3 300.0 390.0
+Kangaroo 3035.0 52.0 323.1 872.5 1052.4 1060.0 2000.0
+Krull 2665.5 1598.0 4539.9 4229.6 4002.3 2592.1 3087.2
+KungFuMaster 22736.3 258.5 17257.2 14307.8 7106.4 8600.0 10306.7
+MsPacman 6951.6 307.3 1480.0 1465.5 1065.6 1118.7 1482.3
+Pong 14.6 -20.7 12.8 -16.5 -11.4 -19.0 -19.3
+PrivateEye 69571.3 24.9 58.3 218.4 49.2 97.8 100.0
+Qbert 13455.0 163.9 1288.8 1042.4 1100.9 646.7 1830.8
+RoadRunner 7845.0 11.5 5640.6 5661.0 8069.8 9923.3 11913.3
+Seaquest 42054.7 68.4 683.3 384.5 321.8 396.0 570.7
+UpNDown 11693.2 533.4 3350.3 2955.2 3924.9 3816.0 5074.0
+Table 3. Performance on Atari games at 100K interactions. The results show the scores averaged three runs. For baseline methods, we
+report the best numbers reported in prior works ( Kaiser et al. ,2020 ;van Hasselt et al. ,2019 ).
+improves the sample-efﬁciency on the environment with
+sparse rewards.
+Comparison with a single agent with more up-
+dates/parameters . One concern in utilizing the ensemble
+method is that its gains may come from more gradient up-
+dates and parameters. To clarify this concern, we compare
+SUNRISE (5 ensembles using 2-layer MLPs with 256 hid-
+den units each) to a single agent, which consists of 2-layer
+MLPs with 1024 (and 256) hidden units with 5 updates us-
+ing different random minibatches. Figure 3(c)shows that
+the learning curves on SlimHumanoid-ET, where SUNRISE
+outperforms all baselines. This implies that the gains from
+SUNRISE can not be achieved by simply increasing the
+number of updates/parameters. More experimental results
+on other environments are also available in Appendix D.
+Effects of ensemble size . We analyze the effects of en-
+semble size Non the Ant environment from OpenAI Gym.
+Figure 3(d)shows that the performance can be improved
+by increasing the ensemble size, but the improvement is
+saturated around N=5. Thus, we use ﬁve ensemble agents
+for all experiments. More experimental results on otherenvironments are also available in Appendix D, where the
+overall trend is similar.
+6. Discussion
+6.1. Intuition for weighted Bellman backups
+(Kumar et al. ,2020 ) show that naive Bellman backups can
+suffer from slow learning in certain environments, requiring
+exponentially many updates. To handle this problem, they
+propose the weighted Bellman backups, which make steady
+learning progress by inducing some optimal data distribution
+(see ( Kumar et al. ,2020 ) for more details). Speciﬁcally, in
+addition to a standard Q-learning, DisCor trains an error
+model   (s, a), which approximates the cumulative sum
+of discounted Bellman errors over the past iterations of
+training. Then, using the error model, DisCor reweights
+the Bellman backups based on a conﬁdence weight deﬁned
+as follows: w(s, a)/exp⇣
+    (s,a)
+T⌘
+,where  is a
+discount factor and Tis a temperature.
+However, we remark that DisCor can still suffer from the
+error propagation issues because there is also an approxima-
+
+==== Page 8 ====
+SUNRISEAverage return05,00010,00015,000
+Timesteps02.5×1055.0×105SlimHumanoid-ET
+Average return−3000−2000−10000100020003000
+Timesteps01×1052×105Hopper
+Average return−3000−2000−10000100020003000
+Timesteps01×1052×105Walker
+Average return01000200030004000500060007000
+Timesteps01×1052×105Cheetah
+Average return0500100015002000
+Timesteps01×1052×105AntSACDisCorSUNRISE (without WBB)SUNRISE (with WBB)
+Figure 2. Learning curves on OpenAI Gym with noisy rewards. To verify the effects of the weighted Bellman backups (WBB), we consider
+SUNRISE with WBB and without WBB. The solid line and shaded regions represent the mean and standard deviation, respectively, across
+four runs.SACDisCorSUNRISE (with RW & UCB)SUNRISE (with UCB)SUNRISE (with WBB & UCB)SUNRISE (with WBB)Average return2,0004,0006,0008,00010,00012,00014,000
+Timesteps01×1052×1053×1054×1055×105(a) Large noiseRADSUNRISE (without UCB)SUNRISE (with UCB)Score02004006008001000
+Environment steps 02×1054×1056×1058×10510×105(b) Sparse rewardSAC (log α= 0)SAC (log α= 1)SAC (log α= 10)SUNRISEAverage return010,00020,00030,00040,000
+Timesteps02×1054×1056×1058×10510×105(c) Gradient updateSACSUNRISE (N=2)SUNRISE (N=5)SUNRISE (N=10)Average return0500100015002000
+Timesteps05×10410×10415×10420×104(d) Ensemble size
+Figure 3. (a) Learning curves of SUNRISE with random weight (RW) and the proposed weighted Bellman backups (WBB) on the
+SlimHumanoid-ET environment with noisy rewards. (b) Effects of UCB exploration on the Cartpole environment with sparse reward. (c)
+Learning curves of SUNRISE and single agent with hhidden units and ﬁve gradient updates per each timestep on the SlimHumanoid-ET
+environment. (d) Learning curves of SUNRISE with varying values of ensemble size Non the Ant environment.
+tion error in estimating cumulative Bellman errors. There-
+fore, we consider an alternative approach that utilizes the un-
+certainty from ensembles. Because it has been observed that
+the ensemble can produce well-calibrated uncertainty esti-
+mates (i.e., variance) on unseen samples ( Lakshminarayanan
+et al.,2017 ), we expect that the weighted Bellman backups
+based on ensembles can handle error propagation more ef-
+fectively. Indeed, in our experiments, we ﬁnd that ensemble-
+based weighted Bellman backups can give rise to more
+stable training and improve the data-efﬁciency of various
+off-policy RL algorithms.
+6.2. Computation overhead
+One can expect that there is an additional computation over-
+head by introducing ensembles. When we have Nensemble
+agents, our method requires N⇥inferences for weighted
+Bellman backups and 2N⇥inferences ( Nfor actors and N
+for critics). However, we remark that our method can be
+more computationally efﬁcient because it is parallelizable.
+Also, as shown in Figure 3(c), the gains from SUNRISE
+can not be achieved by simply increasing the number of
+updates/parameters.7. Conclusion
+In this paper, we introduce SUNRISE, a simple uniﬁed en-
+semble method, which integrates the proposed weighted
+Bellman backups with bootstrap with random initialization,
+and UCB exploration to handle various issues in off-policy
+RL algorithms. Especially, we present the ensemble-based
+weighted Bellman backups, which stabilizes and improves
+the learning process by re-weighting target Q-values based
+on uncertainty estimates Our experiments show that SUN-
+RISE consistently improves the performances of existing
+off-policy RL algorithms, such as Soft Actor-Critic and
+Rainbow DQN, and outperforms state-of-the-art RL algo-
+rithms for both continuous and discrete control tasks on both
+low-dimensional and high-dimensional environments. We
+hope that SUNRISE could be useful to other relevant topics
+such as sim-to-real transfer ( Tobin et al. ,2017 ), imitation
+learning ( Torabi et al. ,2018 ), understanding the connec-
+tion between on-policy and off-policy RL ( Schulman et al. ,
+2017), ofﬂine RL ( Agarwal et al. ,2020), and planning ( Srini-
+vas et al. ,2018 ;Tamar et al. ,2016 ).
+
+==== Page 9 ====
+SUNRISE
+Acknowledgements
+This research is supported in part by ONR PECASE
+N000141612723, Open Philanthropy, Darpa LEARN
+project, Darpa LwLL project, NSF NRI #2024675, Ten-
+cent, and Berkeley Deep Drive. We would like to thank
+Hao Liu for improving the presentation and giving helpful
+feedback. We would also like to thank Aviral Kumar and
+Kai Arulkumaran for providing tips on implementation of
+DisCor and Rainbow.
+References
+Agarwal, R., Schuurmans, D., and Norouzi, M. An opti-
+mistic perspective on ofﬂine reinforcement learning. In
+International Conference on Machine Learning , 2020.
+Amos, B., Stanton, S., Yarats, D., and Wilson, A. G. On
+the model-based stochastic value gradient for continuous
+reinforcement learning. arXiv preprint arXiv:2008.12775 ,
+2020.
+Anschel, O., Baram, N., and Shimkin, N. Averaged-dqn:
+Variance reduction and stabilization for deep reinforce-
+ment learning. In International Conference on Machine
+Learning , 2017.
+Audibert, J.-Y., Munos, R., and Szepesv ´ari, C. Exploration–
+exploitation tradeoff using variance estimates in multi-
+armed bandits. Theoretical Computer Science , 410(19):
+1876–1902, 2009.
+Auer, P., Cesa-Bianchi, N., and Fischer, P. Finite-time
+analysis of the multiarmed bandit problem. Machine
+learning , 47(2-3):235–256, 2002.
+Bellemare, M., Srinivasan, S., Ostrovski, G., Schaul, T.,
+Saxton, D., and Munos, R. Unifying count-based explo-
+ration and intrinsic motivation. In Advances in Neural
+Information Processing Systems , 2016.
+Bellemare, M. G., Naddaf, Y., Veness, J., and Bowling, M.
+The arcade learning environment: An evaluation plat-
+form for general agents. Journal of Artiﬁcial Intelligence
+Research , 47:253–279, 2013.
+Bellemare, M. G., Dabney, W., and Munos, R. A distribu-
+tional perspective on reinforcement learning. In Interna-
+tional Conference on Machine Learning , 2017.
+Brockman, G., Cheung, V., Pettersson, L., Schneider, J.,
+Schulman, J., Tang, J., and Zaremba, W. Openai gym.
+arXiv preprint arXiv:1606.01540 , 2016.
+Chen, R. Y., Sidor, S., Abbeel, P., and Schulman, J.
+Ucb exploration via q-ensembles. arXiv preprint
+arXiv:1706.01502 , 2017.Choi, J., Guo, Y., Moczulski, M., Oh, J., Wu, N., Norouzi,
+M., and Lee, H. Contingency-aware exploration in re-
+inforcement learning. In International Conference on
+Learning Representations , 2019.
+Chua, K., Calandra, R., McAllister, R., and Levine, S. Deep
+reinforcement learning in a handful of trials using proba-
+bilistic dynamics models. In Advances in Neural Infor-
+mation Processing Systems , 2018.
+Efron, B. The jackknife, the bootstrap, and other resampling
+plans , volume 38. Siam, 1982.
+Fujimoto, S., Van Hoof, H., and Meger, D. Addressing
+function approximation error in actor-critic methods. In
+International Conference on Machine Learning , 2018.
+Haarnoja, T., Zhou, A., Abbeel, P., and Levine, S. Soft
+actor-critic: Off-policy maximum entropy deep reinforce-
+ment learning with a stochastic actor. In International
+Conference on Machine Learning , 2018.
+Hafner, D., Lillicrap, T., Fischer, I., Villegas, R., Ha, D.,
+Lee, H., and Davidson, J. Learning latent dynamics for
+planning from pixels. In International Conference on
+Machine Learning , 2019.
+Hafner, D., Lillicrap, T., Ba, J., and Norouzi, M. Dream
+to control: Learning behaviors by latent imagination. In
+International Conference on Learning Representations ,
+2020.
+Hasselt, H. V. Double q-learning. In Advances in Neural
+Information Processing Systems , 2010.
+Hessel, M., Modayil, J., Van Hasselt, H., Schaul, T., Ostro-
+vski, G., Dabney, W., Horgan, D., Piot, B., Azar, M., and
+Silver, D. Rainbow: Combining improvements in deep
+reinforcement learning. In AAAI Conference on Artiﬁcial
+Intelligence , 2018.
+Houthooft, R., Chen, X., Duan, Y., Schulman, J., De Turck,
+F., and Abbeel, P. Vime: Variational information maxi-
+mizing exploration. In Advances in Neural Information
+Processing Systems , 2016.
+Kaiser, L., Babaeizadeh, M., Milos, P., Osinski, B., Camp-
+bell, R. H., Czechowski, K., Erhan, D., Finn, C., Koza-
+kowski, P., Levine, S., et al. Model-based reinforcement
+learning for atari. In International Conference on Learn-
+ing Representations , 2020.
+Kalashnikov, D., Irpan, A., Pastor, P., Ibarz, J., Herzog,
+A., Jang, E., Quillen, D., Holly, E., Kalakrishnan, M.,
+Vanhoucke, V., et al. Qt-opt: Scalable deep reinforce-
+ment learning for vision-based robotic manipulation. In
+Conference on Robot Learning , 2018.
+
+==== Page 10 ====
+SUNRISE
+Kim, S., Asadi, K., Littman, M., and Konidaris, G. Deep-
+mellow: removing the need for a target network in deep
+q-learning. In International Joint Conference on Artiﬁcial
+Intelligence , 2019.
+Kostrikov, I., Yarats, D., and Fergus, R. Image augmentation
+is all you need: Regularizing deep reinforcement learning
+from pixels. In International Conference on Learning
+Representations , 2021.
+Kumar, A., Fu, J., Soh, M., Tucker, G., and Levine, S.
+Stabilizing off-policy q-learning via bootstrapping error
+reduction. In Advances in Neural Information Processing
+Systems , 2019.
+Kumar, A., Gupta, A., and Levine, S. Discor: Corrective
+feedback in reinforcement learning via distribution cor-
+rection. In Advances in Neural Information Processing
+Systems , 2020.
+Kurutach, T., Clavera, I., Duan, Y., Tamar, A., and Abbeel,
+P. Model-ensemble trust-region policy optimization. In
+International Conference on Learning Representations ,
+2018.
+Lakshminarayanan, B., Pritzel, A., and Blundell, C. Simple
+and scalable predictive uncertainty estimation using deep
+ensembles. In Advances in Neural Information Process-
+ing Systems , 2017.
+Lan, Q., Pan, Y., Fyshe, A., and White, M. Maxmin q-
+learning: Controlling the estimation bias of q-learning. In
+International Conference on Learning Representations ,
+2020.
+Laskin, M., Lee, K., Stooke, A., Pinto, L., Abbeel, P., and
+Srinivas, A. Reinforcement learning with augmented data.
+InAdvances in Neural Information Processing Systems ,
+2020.
+Lee, A. X., Nagabandi, A., Abbeel, P., and Levine, S.
+Stochastic latent actor-critic: Deep reinforcement learn-
+ing with a latent variable model. In Advances in Neural
+Information Processing Systems , 2020.
+Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A. A., Veness,
+J., Bellemare, M. G., Graves, A., Riedmiller, M., Fidje-
+land, A. K., Ostrovski, G., et al. Human-level control
+through deep reinforcement learning. Nature , 518(7540):
+529, 2015.
+Osband, I., Blundell, C., Pritzel, A., and Van Roy, B. Deep
+exploration via bootstrapped dqn. In Advances in Neural
+Information Processing Systems , 2016a.
+Osband, I., Van Roy, B., and Wen, Z. Generalization and
+exploration via randomized value functions. In Interna-
+tional Conference on Machine Learning , 2016b.Pathak, D., Agrawal, P., Efros, A. A., and Darrell, T.
+Curiosity-driven exploration by self-supervised predic-
+tion. In International Conference on Machine Learning ,
+2017.
+Schaul, T., Quan, J., Antonoglou, I., and Silver, D. Priori-
+tized experience replay. In International Conference on
+Learning Representations , 2016.
+Schulman, J., Levine, S., Abbeel, P., Jordan, M., and Moritz,
+P. Trust region policy optimization. In International
+Conference on Machine Learning , 2015.
+Schulman, J., Chen, X., and Abbeel, P. Equivalence be-
+tween policy gradients and soft q-learning. arXiv preprint
+arXiv:1704.06440 , 2017.
+Silver, D., Schrittwieser, J., Simonyan, K., Antonoglou,
+I., Huang, A., Guez, A., Hubert, T., Baker, L., Lai, M.,
+Bolton, A., et al. Mastering the game of go without
+human knowledge. Nature , 550(7676):354, 2017.
+Silver, D., Hubert, T., Schrittwieser, J., Antonoglou, I., Lai,
+M., Guez, A., Lanctot, M., Sifre, L., Kumaran, D., Grae-
+pel, T., et al. A general reinforcement learning algorithm
+that masters chess, shogi, and go through self-play. Sci-
+ence , 362(6419):1140–1144, 2018.
+Song, Z., Parr, R., and Carin, L. Revisiting the softmax
+bellman operator: New beneﬁts and new perspective. In
+International Conference on Machine Learning , 2019.
+Srinivas, A., Jabri, A., Abbeel, P., Levine, S., and Finn, C.
+Universal planning networks. In International Confer-
+ence on Machine Learning , 2018.
+Srinivas, A., Laskin, M., and Abbeel, P. Curl: Contrastive
+unsupervised representations for reinforcement learning.
+InInternational Conference on Machine Learning , 2020.
+Tamar, A., Wu, Y., Thomas, G., Levine, S., and Abbeel, P.
+Value iteration networks. In Advances in Neural Informa-
+tion Processing Systems , 2016.
+Tassa, Y., Doron, Y., Muldal, A., Erez, T., Li, Y., Casas, D.
+d. L., Budden, D., Abdolmaleki, A., Merel, J., Lefrancq,
+A., et al. Deepmind control suite. arXiv preprint
+arXiv:1801.00690 , 2018.
+Tobin, J., Fong, R., Ray, A., Schneider, J., Zaremba, W.,
+and Abbeel, P. Domain randomization for transferring
+deep neural networks from simulation to the real world.
+InInternational Conference on Intelligent Robots and
+Systems , 2017.
+Torabi, F., Warnell, G., and Stone, P. Behavioral cloning
+from observation. In International Joint Conferences on
+Artiﬁcial Intelligence Organization , 2018.
+
+==== Page 11 ====
+SUNRISE
+Van Hasselt, H., Guez, A., and Silver, D. Deep reinforce-
+ment learning with double q-learning. In AAAI Confer-
+ence on Artiﬁcial Intelligence , 2016.
+van Hasselt, H. P., Hessel, M., and Aslanides, J. When to
+use parametric models in reinforcement learning? In Ad-
+vances in Neural Information Processing Systems , 2019.
+Vinyals, O., Babuschkin, I., Czarnecki, W. M., Mathieu, M.,
+Dudzik, A., Chung, J., Choi, D. H., Powell, R., Ewalds,
+T., Georgiev, P., et al. Grandmaster level in starcraft ii
+using multi-agent reinforcement learning. Nature , 575
+(7782):350–354, 2019.
+Wang, T. and Ba, J. Exploring model-based planning with
+policy networks. In International Conference on Learning
+Representations , 2020.
+Wang, T., Bao, X., Clavera, I., Hoang, J., Wen, Y., Lan-
+glois, E., Zhang, S., Zhang, G., Abbeel, P., and Ba,
+J. Benchmarking model-based reinforcement learning.
+arXiv preprint arXiv:1907.02057 , 2019.
+Wiering, M. A. and Van Hasselt, H. Ensemble algorithms in
+reinforcement learning. IEEE Transactions on Systems,
+Man, and Cybernetics , 38(4):930–936, 2008.
+Yarats, D., Zhang, A., Kostrikov, I., Amos, B., Pineau, J.,
+and Fergus, R. Improving sample efﬁciency in model-
+free reinforcement learning from images. arXiv preprint
+arXiv:1910.01741 , 2019.
+Ziebart, B. D. Modeling purposeful adaptive behavior with
+the principle of maximum causal entropy. 2010.
+

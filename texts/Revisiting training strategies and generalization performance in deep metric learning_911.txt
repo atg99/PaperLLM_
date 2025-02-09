@@ -1,0 +1,986 @@
+==== Page 1 ====
+Revisiting Training Strategies and Generalization Performance
+in Deep Metric Learning
+Karsten Roth* 1 2Timo Milbich* 2Samarth Sinha1 3Prateek Gupta1 4Bj¨orn Ommer2Joseph Paul Cohen1
+Abstract
+Deep Metric Learning (DML) is arguably one of
+the most inﬂuential lines of research for learn-
+ing visual similarities with many proposed ap-
+proaches every year. Although the ﬁeld beneﬁts
+from the rapid progress, the divergence in training
+protocols, architectures, and parameter choices
+make an unbiased comparison difﬁcult. To pro-
+vide a consistent reference point, we revisit the
+most widely used DML objective functions and
+conduct a study of the crucial parameter choices
+as well as the commonly neglected mini-batch
+sampling process. Under consistent comparison,
+DML objectives show much higher saturation
+than indicated by literature. Further based on
+our analysis, we uncover a correlation between
+the embedding space density and compression to
+the generalization performance of DML models.
+Exploiting these insights, we propose a simple,
+yet effective, training regularization to reliably
+boost the performance of ranking-based DML
+models on various standard benchmark datasets.
+Code and a publicly accessible WandB-repo
+are available at https://github.com/Confusezius/
+Revisiting Deep Metric Learning PyTorch.
+1. Introduction
+Learning visual similarity is important for a wide range of
+vision tasks, such as image clustering (Bouchacourt et al.,
+2018), face detection (Schroff et al., 2015) or image retrieval
+(Wu et al., 2017). Measuring similarity requires learning
+an embedding space which captures images and reasonably
+reﬂects similarities using a deﬁned distance metric. One
+of the most adopted classes of algorithms for this task is
+*Equal contribution1Mila, Universit ´e de Montr ´eal2HCI/IWR,
+Heidelberg University3University of Toronto4The Alan Turing
+Institute, University of Oxford. Correspondence to: Karsten Roth
+<karsten.rh1@gmail.com >.
+Proceedings of the 37thInternational Conference on Machine
+Learning , Online, PMLR 119, 2020. Copyright 2020 by the au-
+thor(s).
+Figure 1. Mean recall performance and standard deviation of vari-
+ous DML objectives trained with (green) and without (orange) our
+proposed regularization. For all benchmarks, see appendix.
+Deep Metric Learning (DML) which leverages deep neural
+networks to learn such a distance preserving embedding.
+Due to the growing interest in DML, a large corpus of litera-
+ture has been proposed contributing to its success. However,
+as recent DML approaches explore more diverse research
+directions such as architectures (Xuan et al., 2018; Jacob
+et al., 2019), objectives functions (Wang et al., 2019b; Yuan
+et al., 2019) and additional training tasks (Roth et al., 2019;
+Lin et al., 2018), an unbiased comparison of their results
+becomes more and more difﬁcult. Further, undisclosed
+technical details (s.a. data augmentations or training regu-
+larization) pose a challenge to the reproducibility of such
+methods, which is of great concern in the machine learn-
+ing community in general (Bouthillier et al., 2019). One
+goal of this work is to counteract this worrying trend by
+providing a comprehensive comparison of important and
+current DML baselines under identical training conditions
+on standard benchmark datasets (Fig. 1). In addition, we
+thoroughly review common design choices of DML models
+which strongly inﬂuence generalization performance to al-
+low for better comparability of current and future work.
+On that basis, we extend our analysis to: (i)The process of
+data sampling which is well-known to impact the DML op-
+timization (Schroff et al., 2015). While previous works only
+studied this process in the speciﬁc context of triplet min-
+ing strategies for ranking-based objectives (Wu et al., 2017;
+Harwood et al., 2017), we examine the model-agnostic case
+of sampling informative mini-batches. (ii)The generaliza-
+tion capabilities of DML models by analyzing the structure
+
+==== Page 2 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+of their learned embedding spaces. While we are not able
+to reliably link typically targeted concepts such as large
+inter-class margins (Liu et al., 2017; Deng et al., 2018)
+and intra-class variance (Lin et al., 2018) to generalization
+performance, we uncover a strong correlation to the com-
+pression of the learned representations. Lastly, based on this
+observation, we propose a simple, yet effective, regulariza-
+tion technique which effectively boosts the performance of
+ranking-based approaches on standard benchmark datasets
+as also demonstrated in Fig. 1. In summary, our most im-
+portant contributions can be described as follows:
+We provide an exhaustive analysis of recent DML ob-
+jective functions, their training strategies, the inﬂuence
+of data-sampling, and model design choices to set a
+standard benchmark. To this end, we will make our
+code publicly available.
+We provide new insights into DML generalization by
+analyzing its correlation to the embedding space com-
+pression (as measured by its spectral decay), inter-class
+margins and intra-class variance.
+Based on the result above, we propose a simple tech-
+nique to regularize the embedding space compression
+which we ﬁnd to boost generalization performance of
+ranking-based DML approaches.
+This work is structured as follows: After reviewing related
+work inx2, we discuss and motivate our analyzed compo-
+nents of DML models and their training setup in x3. Finally
+inx4 we present the ﬁndings of our study, analyze DML
+generalization inx5 and close with a conclusion in x6.
+2. Related Works
+Deep Metric Learning: Deep Metric Learning (DML)
+has become increasingly important for applications ranging
+from image retrieval (Movshovitz-Attias et al., 2017; Roth
+et al., 2019; Wu et al., 2017; Lin et al., 2018) to zero-shot
+classiﬁcation (Schroff et al., 2015; Sanakoyeu et al., 2019)
+and face veriﬁcation (Hu et al., 2014; Liu et al., 2017). Many
+approaches use ranking-based objectives based on tuples of
+samples such as pairs (Hadsell et al., 2006), triplets (Wu
+et al., 2017; Yu et al., 2018), quadruplets(Chen et al., 2017)
+or higher-order variants like N-Pairs(Sohn, 2016), lifted
+structure losses (Oh Song et al., 2016; Yu et al., 2018) or
+NCA-based criteria(Movshovitz-Attias et al., 2017). Fur-
+ther, classiﬁcation-based methods adjusted to DML (Deng
+et al., 2018; Zhai & Wu, 2018) have proven to be effec-
+tive for learning distance preserving embedding spaces. To
+address the computational complexity of tuple-based meth-
+ods1, different sampling strategies have been introduced
+1As an example, the number of triplets scales with O(N3),
+whereNis the dataset size.(Schroff et al., 2015; Wu et al., 2017; Ge, 2018; Roth et al.,
+2020). Moreover, proxy-based approaches address this issue
+by approximating class distributions using only few virtual
+representatives (Movshovitz-Attias et al., 2017; Qian et al.,
+2019).
+Additionally, more involved research extending above ob-
+jectives has been proposed: Sanakoyeu et al. (2019) follow
+a divide-and-conquer strategy by splitting and subsequently
+merging both the data and embedding space; Opitz et al.
+(2018); Xuan et al. (2018) employ an ensemble of special-
+ized learners and Roth et al. (2019); Milbich et al. (2020a;b)
+combine DML with feature mining or self-supervised learn-
+ing. Moreover, Lin et al. (2018) and Zheng et al. (2019)
+generate artiﬁcial samples to effectively augment the train-
+ing data, thus learning more complex ranking relations. The
+majority of these methods are trained using the essential
+objective functions and, further, hinge on the training param-
+eters discussed in our study, thus directly beneﬁting from
+our ﬁndings. Moreover, we propose an effective regulariza-
+tion technique to improve ranking-based objectives.
+Mini-batch selection: The beneﬁts of large mini-batches
+for training are well studied (Smith et al., 2017; Goyal et al.,
+2017; Keskar et al., 2016). However, there has been limited
+research examining effective strategies for the creation of
+mini-batches. Research into mini-batch creation has been
+done to improve convergence in optimization methods for
+classiﬁcation tasks(Mirzasoleiman et al., 2020; Johnson &
+Guestrin, 2018) or to construct informative mini-batches us-
+ing core-set selection to optimize generative models (Sinha
+et al., 2019). Similarly, we analyze mining strategies maxi-
+mizing data diversity and compare their impact to standard
+heuristics employed in DML (Wu et al., 2017; Roth et al.,
+2019; Sanakoyeu et al., 2019)).
+Generalization in DML: Generalization capabilities of rep-
+resentations (Achille & Soatto, 2016; Shwartz-Ziv & Tishby,
+2017) and, in particular, of discriminative models has been
+well studied (Jiang* et al., 2020; Belghazi et al., 2018; Goyal
+et al., 2017), e.g. in the light of compression (Tishby &
+Zaslavsky, 2015; Shwartz-Ziv & Tishby, 2017) which is
+covered by strong experimental support (Goyal et al., 2019;
+Belghazi et al., 2018; Alemi et al., 2016). Verma et al. (2018)
+link compression to a ’ﬂattening’ of a representation in the
+context of classiﬁcation. We apply this concept to analyze
+generalization in DML and ﬁnd that strong compression
+actually hurts DML generalization. Existing works on gen-
+eralization in metric learning focus on robustness of linear
+or kernel-based distance metrics (Bellet & Habrard, 2015;
+Bellet, 2013) and examine bounds on the generalization
+error (Huai et al., 2019). In contrast, we examine the corre-
+lation between generalization and structural characteristics
+of the learned embedding space.
+
+==== Page 3 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+3. Training a Deep Metric Learning Model
+In this section, we brieﬂy summarize key components for
+training a DML model and motivate the main aspects of
+our study. We ﬁrst introduce the common categories of
+training objectives which we consider for comparison in
+Sec. 3.1. Next, in Sec. 3.2 we examine the data sampling
+process and present strategies for sampling informative mini-
+batches. Finally, in Sec. 3.3, we discuss components of a
+DML model which impact its performance and exhibit an
+increased divergence in the ﬁeld, thus impairing objective
+comparisons.
+3.1. The objective function
+In Deep Metric Learning we learn an embedding function
+:X 7! RDmapping datapoints x2X into an
+embedding space , which allows to measure the similar-
+ity between xi;xjasd(xi;xj) :=d((xi);(xj))with
+d(:;:)being a predeﬁned distance function. For that, let
+:=be a deep neural network parametrised by with
+its output typically normalized to the real hypersphere SD
+for regularization purposes (Wu et al., 2017; Huai et al.,
+2019). In order to train to reﬂect the semantic similarity
+deﬁned by given labels y2Y, many objective functions
+have been proposed based on different concepts which we
+now brieﬂy summarize.
+Ranking-based: The most popular family are ranking-
+based loss functions operating on pairs (Hadsell et al., 2006),
+triplets (Schroff et al., 2015; Wu et al., 2017) or larger sets
+of datapoints (Sohn, 2016; Oh Song et al., 2016; Chen et al.,
+2017; Wang et al., 2019b). Learning is deﬁned as an
+ordering task, such that the distances d(xa;xp)between
+an anchorxaand positive xpof the same class, ya=yp, is
+minimized and the distances d(xa;xn)of to negative sam-
+plesxnwith different class labels, ya6=yn, is maximized.
+For example, triplet-based formulations typically optimize
+their relative distances as long as a margin is violated, i.e.
+as long asd(xa;xn) d(xa;xp)<. Further, ranking-
+based objectives are also extended to histogram matching,
+as proposed in (Ustinova & Lempitsky, 2016).
+Classiﬁcation-based: As DML is essentially solving a dis-
+criminative task, some approaches (Zhai & Wu, 2018; Deng
+et al., 2018; Liu et al., 2017) can be derived from softmax-
+logitsli=WT
+j(xi) +bj. For example, Deng et al. (2018)
+exploit the regularization to the real hypersphere SDand the
+equalityWT
+jxi=WT
+jk(xi)kcos'jto maximize the
+margin between classes by direct optimization over angles
+'j. Further, also standard cross-entropy optimization proves
+to be effective under normalization (Zhai & Wu, 2018).
+Proxy-based: These methods approximate the distributions
+for the full class by one (Movshovitz-Attias et al., 2017) or
+more (Qian et al., 2019) learned representatives. By con-
+sidering the class representatives for computing the trainingloss, individual samples are directly compared to an entire
+class. Additionally, proxy-based methods help to alleviate
+the issue of tuple mining which is encountered in ranking-
+based loss functions.
+3.2. Data sampling
+The synergy between tuple mining strategies and ranking
+losses has been widely studied (Wu et al., 2017; Schroff
+et al., 2015; Ge, 2018). To analyze the impact of data-
+sampling on performance in the scope of our study, we
+consider the process of mining informative mini-batches B.
+This process is independent of the speciﬁc training objective
+and so far has been commonly neglected in DML research.
+Following we present batch mining strategies operating on
+both labels and the data itself: label samplers , which are
+sampling heuristics that follow selection rules based on label
+information only, and embedded samplers , which operate on
+data embeddings themselves to create batches Bof diverse
+data statistics.
+Label Samplers: To control the class distribution within B,
+we examine two different heuristics based on the number, n,
+of ’Samples Per Class’ (SPC- n) heuristic:
+SPC-2/4/8: Given batch-size b, we randomly select b=n
+unique classes from which we select nsamples randomly.
+SPC-R: We randomly select b 1samples from the dataset
+and choose the last sample to have the same label as one of
+the otherb 1samples to ensure that at least one triplet can
+be mined fromB. Thus, we effectively vary the number of
+unique classes within mini-batches.
+Embedded Samplers: Increasing the batch-size bhas
+proven to be beneﬁcial for stabilizing optimization due to an
+effectively larger data diversity and richer training informa-
+tion (Mirzasoleiman et al., 2020; Brock et al., 2018; Sinha
+et al., 2019). As the DML training is commonly performed
+on a single GPU (limited especially due to tuple mining
+process on the mini-batch), the batch-size bis bounded by
+memory. Nevertheless, in order to ‘virtually’ maximize the
+data diversity, we distill the information content of a large
+set of samplesB;b=jBj> binto a mini-batch Bby
+matching the statistics of BandBunder the embedding
+. To avoid computational overhead, we sample Bfrom a
+continuously updated memory bank Mof embedded train-
+ing samples. Similar to Misra & van der Maaten (2019), M
+is generated by iteratively updating its elements based on
+the steady stream of training batches B. UsingM, we mine
+mini-batches by ﬁrst randomly sampling BfromMwith
+b= 1024 and subsequently ﬁnd a mini-batch Bto match
+its data statistics by using one of the following criteria:
+Greedy Coreset Distillation (GC): Greedy Coreset (Agar-
+wal et al., 2005) ﬁnds a batch Bby iteratively adding
+samplesx2 Bwhich maximize the distance from
+the samples that have already been selected x2 B ,
+thereby maximizing the covered space within by solv-
+
+==== Page 4 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+ingminB:jBj=bmaxx2Bminx2Bd(x;x).
+Matching of distance distributions (DDM): DDM aims to
+preserve the distance distribution of B. We randomly se-
+lectmcandidate mini-batches and choose the batch Bwith
+smallest Wasserstein distance between normalized distance
+histograms ofBandB(Rubner et al., 2000).
+FRD-Score Matching (FRD) : Similar to the recent GAN
+evaluation setting, we compute the frechet distance (Heusel
+et al., 2017)) between BandBto measure the simi-
+larity between their distributions using FRD (B;B) =
+kB Bk2
+2+Tr(B+B 2(BB)1=2), with;
+being the mean and covariance of the embedded set of sam-
+ples. Like in DDM, we select the closest batch BtoB
+amongmrandomly sampled candidates.
+3.3. Training parameters, regularization and
+architecture
+Network GN IBN R50
+CUB200, R@1 45.41 48.78 43.77
+CARS196, R@1 35.31 43.36 36.39
+SOP, R@1 44.28 49.05 48.65
+Table 1. Recall performance of commonly used network architec-
+tures after ImageNet pretraining . Final linear layer is randomly
+initialized and normalized.
+Next to the objectives and data sampling process, success-
+ful learning hinges on a reasonable choice of the training
+environment. While there is a multitude of parameters to be
+set, we identify several factors which both inﬂuence perfor-
+mance and exhibit an divergence in lately proposed works.
+Architectures : In recent DML literature predominantly three
+basis network architectures are used: GoogLeNet (Szegedy
+et al., 2015) (GN, typically with embedding dimensionality
+512), Inception-BN (Ioffe & Szegedy, 2015) (IBN, 512)
+and ResNet50 (He et al., 2016) (R50, 128) (with optionally
+frozen Batch-Normalization layers for improved conver-
+gence and stability across varying batch sizes2, see e.g. Roth
+et al. (2019); Cakir et al. (2019)). Due to the varying number
+of parameters and conﬁguration of layers, each architecture
+exhibits a different starting point for learning, based on its
+initialization by ImageNet pretraining (Deng et al., 2009).
+Table 1 compares their initial DML performance measured
+in Recall@1 (R@1). The reference to differences in archi-
+tecture is one of the main arguments used by individual
+works not compare themselves to competing approaches.
+Disconcertingly, even when reporting additional results us-
+ing adjusted networks is feasible, typically only results using
+a single architecture are reported. Consequently, a fair com-
+parison between approaches is heavily impaired.
+Weight Decay : Commonly, network optimization is regular-
+2Note that Batch-Normalization is still performed, but no pa-
+rameters are learned.ized using weight decay/L2-regularization (Krogh & Hertz,
+1992). In DML, particularly on small datasets its careful ad-
+justment is crucial to maximize generalization performance.
+Nevertheless, many works do not report this.
+Embedding dimensionality : Choosing a dimensionality D
+of the embedding space inﬂuences the learned manifold
+and consequently generalization performance. While each
+architecture typically uses an individual, standardized di-
+mensionality Din DML, recent works differ without re-
+porting proper baselines using an adjusted dimensionality.
+Again, comparison to existing works and the assessment of
+the actual contribution is impaired.
+Data Preprocessing : Preprocessing training images typi-
+cally signiﬁcantly inﬂuences both the learned features and
+model regularization. Thus, as recent approaches vary in
+their applied augmentation protocols, results are not nec-
+essarily comparable. This includes the trend for increased
+training and test image sizes.
+Batchsize : Batchsize determines the nature of the gradient
+updates to the network, e.g. datasets with many classes
+beneﬁt from large batchsizes due to better approximations
+of the training distribution. However, it is commonly not
+taken into account as a inﬂuential factor of variation.
+Advanced DML methodologies There are many extensions
+to objective functions, architectures and the training setup
+discussed so far. However, although extensions are highly
+individual, they still rely on these components and thus ben-
+eﬁt from ﬁndings in the following experiments, evaluations
+and analysis.
+4. Analyzing DML training strategies
+Datasets As benchmarking datasets, we use:
+CUB200-2011 : Contains 11,788 images in 200 classes of
+birds. Train/Test sets are made up of the ﬁrst/last 100 classes
+(5,864/5,924 images respectively) (Wah et al., 2011). Sam-
+ples are distributed evenly across classes.
+CARS196 : Has 16,185 images/196 car classes with even
+sample distribution. Train/Test sets use the ﬁrst/last 98
+classes (8054/8131 images) (Krause et al., 2013).
+Stanford Online Products (SOP) : Contains 120,053 prod-
+uct images divided into 22,634 classes. Train/Test sets are
+provided, contain 11,318 classes/59,551 images in the Train
+and 11,316 classes/60,502 images in the Test set (Oh Song
+et al., 2016). In SOP, unlike the other benchmarks, most
+classes have few instances, leading to signiﬁcantly different
+data distribution compared to CUB200-2011 and CARS196.
+4.1. Experimental Protocol
+Our training protocol follows parts of Wu et al. (2017),
+which utilize a ResNet50 architecture with frozen Batch-
+Normalization layers and embedding dim. 128 to be com-
+parable with already proposed results with this architec-
+
+==== Page 5 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+Figure 2. Evaluation of DML pipeline parameters and architec-
+tures on all benchmark datasets and their inﬂuence on relative
+improvement across different training criteria.
+ture. While both GoogLeNet (Szegedy et al., 2015) and
+Inception-BN (Ioffe & Szegedy, 2015) are also often em-
+ployed in DML literature, we choose ResNet50 due to its
+success in recent state-of-the-art approaches (Roth et al.,
+2019; Sanakoyeu et al., 2019). In line with standard prac-
+tices we randomly resize and crop images to 224224
+for training and center crop to the same size for evaluation.
+During training, random horizontal ﬂipping ( p= 0:5) is
+used. Optimization is performed using Adam (Kingma &
+Ba, 2015) with learning rate ﬁxed to 10 5andnolearning
+rate scheduling for unbiased comparison. Weight decay
+is set to a constant value of 410 4, as motivated in sec-
+tion 4.2. We implemented all models in PyTorch (Paszke
+et al., 2017), and experiments are performed on individual
+Nvidia Titan X, V100 and T4 GPUs with memory usage
+limited to 12GB. Each training is run over 150 epochs for
+CUB200-2011/CARS196 and 100 epochs for Stanford On-
+line Products, if not stated otherwise. For batch sampling
+we utilize the the SPC-2 strategy, as motivated in section
+4.3. Finally, each result is averaged over multiple seeds to
+avoid seed-based performance ﬂuctuations. All loss-speciﬁc
+hyperparameters are discussed in the supplementary mate-
+rial, along with their original implementation details. For
+our study, we examine the following evaluation metrics (de-
+scribed further in the supplementary): Recall at 1 and 2
+(Jegou et al., 2011), Normalized Mutual Information (NMI)
+(Manning et al., 2010), F1 score (Sohn, 2016), mean aver-
+age precision measured on recall of the number of samples
+per class (mAP@C) and mean average precision measured
+on the recall of 1000 samples (mAP@1000). Please see the
+supplementary (supp. A.3) for more information.
+4.2. Studying DML parameters and architectures
+Now we study the inﬂuence of parameters & architectures
+discussed in Sec. 3.3 using ﬁve different objectives. For
+each experiment, all metrics noted in Sec. 4.1 are measured.
+For each loss, every metric is normalized by the maximum
+across the evaluated value range. This enables an aggregated
+summary of performance across all metrics, where differ-
+ences correspond to relative improvement. Fig. 2 analyzeseach factor by evaluating a range of potential setups with the
+other parameters ﬁxed to values from Sec. 4.1: Increasing
+the batchsize generally improves results with gains varying
+among criteria, with particularly high relevance on the SOP
+dataset. For weight decay, we observe loss and dataset de-
+pendent behavior up to a relative performance change of 5%.
+Varying the data preprocessing protocol, e.g. augmentations
+and input image size, leads to large performance differences
+as well. Base follows our protocol described in Sec. 4.1.
+Red. refers to resizing of the smallest image side to 256
+and cropping to 224x224with horizontal ﬂipping. Biguses
+Base but crops images to 256x256. Finally, we extend Base
+toAdv. with color jittering, changes in brightness and hue.
+We ﬁnd that larger images provide better performance re-
+gardless of objective or dataset. Using the Adv. processing
+on the other hand is dependent on the dataset. Finally, we
+show that random resized cropping is a generally stronger
+operation than basic resizing and cropping.
+All these factors underline the importance of a complete
+declaration of the training protocol to facilitate reproducibil-
+ity and comparability. Similar results are observed for the
+choice of architecture and embedding dimensionality D. At
+the example of R50, our analysis shows that training objec-
+tives perform differently for a given Dbut seem to converge
+atD= 512 . However, for R50 Dis typically ﬁxed to
+128, thus disadvantaging some training objectives over oth-
+ers. Finally, comparing common DML architectures reveals
+their strong impact on performance with varying variance
+between loss functions. Highest consistencies seem to be
+achievable with R50 and IBN-based setups.
+Implications: In order to warrant unbiased comparability,
+equal and transparent training protocols and model archi-
+tectures are essential, as even small deviations can result in
+large deviations in performance.
+4.3. Batch sampling impacts DML training
+We now analyze how the data sampling process for mini-
+batches impacts the performance of DML models using the
+sampling strategies presented in Sec. 3.2. To conduct an
+unbiased study, we experiment with six conceptually differ-
+ent objective functions: Marginloss with Distance-Weighted
+Sampling, Triplet Loss with Random Sampling, ProxyNCA,
+Multi-Similarity Loss, Histogram loss and Normalized Soft-
+max loss. To aggregate our evaluation metrics (cf. 4.1),
+we utilize the same normalization procedure discussed in
+Sec. 4.2. Fig. 3 summarizes the results for each sampling
+strategy by reporting the distributions of normalized scores
+of all pairwise combinations of training loss and evaluation
+metrics. Our analysis reveals that the batch sampling pro-
+cess indeed effects DML training with a difference in mean
+performance up to 1:5%. While there is no clear winner
+across all datasets, we observe that the SPC-2 and FRD
+samplers perform very well and, in particular, consistently
+
+==== Page 6 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+(a) CUB200-2011
+ (b) CARS196
+ (c) SOP
+Figure 3. Comparison of mini-batch mining strategies on three different datasets. Performance measures Recall@1 and 2, NMI, mAP and
+F1 are normalized across metrics and loss function. We plot the distributions of relative performances for each strategy.
+Figure 4. Metrics Correlation matrix for standard (Recall, NMI)
+and underreported retrieval metrics. mAP denotes mAP@C. Please
+refer to the supplementary for more information.
+outperform the SPC-4 strategy which is commonly reported
+to be used in literature (Wu et al., 2017; Schroff et al., 2015).
+Implications: Our study indicates that DML beneﬁts from
+data diversity in mini-batches, independent of the chosen
+training objective. This coincides with the general beneﬁt
+of larger batchsizes as noted in section 4.2. While complex
+mining strategies may perform better, simple heuristics like
+SPC-2 are sufﬁcient.
+4.4. Comparing DML models
+Based on our training parameter and batch-sampling eval-
+uations we compare a large selection of 14different DML
+objectives and 4mining methods under ﬁxed training condi-
+tions (see 4.1 & 4.2), most of which claim state-of-the-art
+by a notable margin. For ranking-based models, we employ
+distance-based tuple mining (D) (Wu et al., 2017) which
+proved most effective. We also include random, semihard
+sampling (Schroff et al., 2015) and a soft version of hard
+sampling (Roth & Brattoli, 2019) for our tuple mining study
+using the classic triplet loss. Loss-speciﬁc hyperparame-
+ters are determined via small cross-validation gridsearches
+around originally proposed values to adjust for our training
+setup. Exact parameters and method details are listed in
+supp. A.1. Table 2 summarizes our evaluation results on all
+benchmarks ( with other metric rankings s.a. mAP@C or
+mAP@1000 in the supplementary (supp. I)), while Fig. 4
+measures correlations between all evaluation metrics. Par-ticularly on CUB200-2011 and CARS196 we ﬁnd a higher
+performance saturation between methods as compared to
+SOP due to strong differences in data distribution. Gen-
+erally, performance between criteria is much more similar
+than literature indicates, (see also concurrent work by Mus-
+grave et al. (2020)). We ﬁnd that representatives of ranking-
+based objectives outperform their classiﬁcation/NCE-based
+counterparts, though not signiﬁcantly. On average, margin
+loss (Wu et al., 2017) and multisimilarity loss (Wang et al.,
+2019a) offer the best performance across datasets, though
+not by a notable margin. Remarkably, under our carefully
+chosen training setting, a multitude of losses compete or
+even outperform more involved state-of-the-art DML ap-
+proaches on the SOP dataset. For a detailed comparison to
+the state-of-the-art, we refer to the supplementary (supp. F).
+Implications: Under the same setup, performance saturates
+across methods, contrasting results reported in literature.
+Taking into account standard deviations, usually left un-
+reported, improvements become even less signiﬁcant. In
+addition, carefully trained baseline models are able to out-
+perform state-of-the-art approaches which use considerable
+stronger architectures. Thus, to evaluate the true beneﬁt of
+proposed contributions, baseline models need to be compet-
+itive and implemented under comparable settings.
+5. Generalization in Deep Metric Learning
+The previous section showed how different model and train-
+ing parameter choices result in vastly different performances.
+However, how such differences can be explained best on
+basis of the learned embedding space is an open question
+and, for instance, studied under the concept of compres-
+sion (Tishby & Zaslavsky, 2015). Recent work (Verma
+et al., 2018) links compression to class-conditioned ﬂatten-
+ing of representation, indicated by an increased decay of
+singular values obtained by Singular Value Decomposition
+(SVD) on the data representations. Thus, class representa-
+tions occupy a more compact volume, thereby reducing the
+number of directions with signiﬁcant variance. The subse-
+
+==== Page 7 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+Benchmarks! CUB200-2011 CARS196 SOP
+Approaches# R@1 NMI R@1 NMI R@1 NMI
+Imagenet (Deng et al., 2009) 43:77 57:56 36:39 37:96 48:65 58:64
+Angular (Wang et al., 2017) 62:100:2767:590:26 78:000:3266:480:44 73:220:0789:530:01
+ArcFace (Deng et al., 2018) 62:670:6767:660:38 79:160:9766:991:08 77:710:1590:090:03
+Contrastive (Hadsell et al., 2006) (D) 61:500:1766:450:27 75:780:3964:040:13 73:210:0489:780:02
+GenLifted (Hermans et al., 2017) 59:590:6065:630:14 72:170:3863:750:35 75:210:1289:840:01
+Hist. (Ustinova & Lempitsky, 2016) 60:550:2665:260:23 76:470:3864:150:36 71:300:1088:930:02
+Margin (D,= 0:6) (Wu et al., 2017) 62:500:2467:020:37 77:700:3265:290:32 77:380:1190:450:03
+Margin (D,= 1:2) (Wu et al., 2017) 63:090:4668:210:33 79:860:3367:360:3478:430:0790:400:03
+Multisimilarity (Wang et al., 2019a) 62:800:7068:550:3881:680:1969:430:3877:990:0990:000:02
+Npair (Sohn, 2016) 61:630:5867:640:37 77:480:2866:550:19 75:860:0889:790:03
+Pnca (Movshovitz-Attias et al., 2017) 62:800:4866:930:38 78:480:5865:760:22  
+Quadruplet (D) (Chen et al., 2017) 61:710:6366:600:41 76:340:2764:790:50 76:950:1090:140:02
+SNR (D) (Yuan et al., 2019) 62:880:1867:160:25 78:690:1965:840:52 77:610:3490:100:08
+SoftTriple (Qian et al., 2019) 60:830:4764:270:36 75:660:4662:660:16  
+Softmax (Zhai & Wu, 2018) 61:660:3366:770:36 78:910:2766:350:30 76:920:6489:820:15
+Triplet (D) (Wu et al., 2017) 62:870:3567:530:14 79:130:2765:900:18 77:390:1590:060:02
+Triplet (H) (Roth & Brattoli, 2019) 61:610:2165:980:41 77:600:3365:370:26 73:500:0989:250:03
+Triplet (R) (Schroff et al., 2015) 58:480:3163:840:30 70:630:4361:090:27 67:860:1488:350:04
+Triplet (S) (Schroff et al., 2015) 60:090:4965:590:29 72:510:4762:840:41 73:610:1489:350:02
+R-Contrastive (D) 63:570:6667:630:31 81:060:4167:270:46 74:360:1189:940:02
+R-Margin (D, = 0:6) 64:930:4268:360:3282:370:1368:660:47 77:580:1190:420:03
+R-Margin (D, = 1:2) 63:320:3367:910:66 81:110:4967:720:7978:520:1090:330:02
+R-SNR (D) 62:970:3268:040:34 80:380:3567:600:20 77:690:2590:020:06
+R-Triplet (D) 63:280:1867:860:51 81:170:1167:790:23 77:330:1489:980:04
+Table 2. Comparison of Recall@1 and NMI performances for all objectives averaged over 5 runs. Each model is trained using the
+same training setting over 150 epochs for CUB/CARS and 100 epochs for SOP. ’R-’ denotes model trained with -regularization. Bold
+denotes best results excluding regularization. Boldblue marks overall best results. Please note that a ranking on all other metrics (s.a.
+mAP@C, mAP@1000) as well as a visual summary can be found in the supplementary (supp. I, supp. C)!
+quent strong focus on the most discriminative directions is
+shown to be beneﬁcial for classic classiﬁcation scenarios
+with i.i.d. train and test distributions. However, this overly
+discards features which could capture data characteristics
+outside the training distribution. Hence, generalization in
+transfer problems like DML is hindered due to the shift in
+training and testing distribution (Bellet & Habrard, 2015).
+We thus hypothesize that actually retaining a considerable
+amount of directions of signiﬁcant variance (DoV) is crucial
+to learn a well generalizing embedding function .
+To verify this assumption, we analyze the spectral decay
+of the embedded training data X:=f(x)jx2Xg via
+SVD. We then normalize the sorted spectrum of singular
+values (SV)SX3and compute the KL-divergence to a
+D-dim. discrete uniform distribution UD, i.e.() =
+KL(UDjjSX)4. We don’t consider individual training
+class representations, as testing and training distribution are
+shifted5. Lower values of ()indicate more directions
+of signiﬁcant variance. Using this measure, we analyze a
+large selection of DML objectives in Fig. 5 (rightmost) on
+3Excluding highest SV which can obfuscate remaining DoVs.
+4For simplicity we use the notation ()instead of(X).
+5For completeness, class-conditioned singular value spectra as
+Verma et al. (2018) are examined in supp. H.CUB200-2011, CARS196 and SOP6. Comparing R@1 and
+()reveals signiﬁcant inverse correlation (  0:63) be-
+tween generalization and the spectral decay of embedding
+spaces , which highlights the beneﬁt of more directions of
+variance in the presence of train-test distribution shifts.
+We now compare our ﬁnding to commonly exploited
+concepts for training such as (i)larger margins between
+classes (Deng et al., 2018; Liu et al., 2017), i.e. an
+increase in average inter-class distances inter() =
+1
+ZinterP
+yl;yk;l6=kd((yl);(yk));(ii)explicitly introduc-
+ing intra-class variance (Lin et al., 2018), which is indicated
+by an increase in average intra-class distance intra() =
+1
+ZintraP
+yl2YP
+i;j2yl;i6=jd(i;j). We also investi-
+gate (iii) their relation by using the ratio ratio() =
+intra()=inter(), which can be regarded as an embed-
+ding space density. Here, yl=fi:=(xi)jxi2
+X;yi=ylgdenotes the set of embedded samples of a class
+yl,(yl)their mean embedding and Zinter;Zintranormaliza-
+tion constants. Fig. 5 compares these measures with ().
+It is evident that neither of the distance related measures
+()consistently exhibits signiﬁcant correlation with gen-
+eralization performance when taking all three datasets into
+6A detailed comparison can be found in supp. I.
+
+==== Page 8 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+Figure 5. Correlation between generalization and structural prop-
+erties derived from Xusing different DML objectives on each
+dataset. Left-to-Right : Mean intra-class distances intra& inter-
+class distances inter, the ratiointra=interand spectral decay .
+Figure 6. Toy example illustrating the effect of -regularization.
+(Leftmost) training and test data. (Mid-left) A small, normal-
+ized two-layer fully-connected network trained with standard con-
+trastive loss fails to separate all test classes due to excessive com-
+pression of the learned embedding. (Mid-right) The regularized
+embedding successfully separates the test classes by introducing
+a lower spectral decay. (Rightmost) Singular value spectra of
+training embeddings learned with and without regularization.
+account. For CUB200-2011 and CARS196, we however
+ﬁnd that an increased embedding space density ( ratio)is
+linked to stronger generalisation. For SOP, its estimate is
+likely too noisy due to the strong imbalance between dataset
+size and amount of samples per class.
+Implications: Generalization in DML exhibits strong in-
+verse correlation to the SV spectrum decay of learned repre-
+sentations, as well as a weaker correlation to the embedding
+space density. This indicates that representation learning
+under considerable shifts between training and testing dis-
+tribution is hurt by excessive feature compression, but may
+beneﬁt from a more densely populated embedding space.
+5.1.-regularization for improved generalization
+We now exploit our ﬁndings to propose a simple -
+regularization for ranking-based approaches by counteract-
+ing the compression of representations. We randomly alter
+tuples by switching negative samples xnwith the positive
+Figure 7. Sing. Value Spectrum for models trained with (red) and
+without (blue) -regularization for various ranking-based criteria.
+xpin a given ranking-loss formulation (cf. Sec. 3.1) with
+probabilitypswitch. This pushes samples of the same class
+apart, enabling a DML model to capture extra non-label-
+discriminative features while dampening the compression
+induced by strong discriminative training signals.
+Fig. 6 depicts a 2D toy example (details supp. G) illustrating
+the effect of our proposed regularization while highlighting
+the issue of overly compressed data representations. Even
+though the training distribution exhibits features needed to
+separate all test classes, these features are disregarded by
+the strong discriminative training signal. Regularizing the
+compression by attenuating the spectral decay ()enables
+the model to capture more information and exhibit stronger
+generalization to the unseen test classes. In addition, Fig. 7
+veriﬁes that the -regularization also leads to a decreased
+spectral decay on DML benchmark datasets, resulting in
+improved recall performance (cf. Tab. 2 (bottom)), while
+being reasonably robust to changes in pswitch (see supp. B).
+In contrast, in the appendix we also see that encouraging
+higher compression seems to be detrimental to performance.
+Implications: Implicitly regularizing the number of direc-
+tions of signiﬁcant variance can improve generalization.
+6. Conclusion
+In this work, we counteract the worrying trend of diverging
+training protocols in Deep Metric Learning (DML). We con-
+duct a large, comprehensive study of important training com-
+ponents and objectives in DML to contribute to improved
+comparability of recent and future approaches. On this basis,
+we study generalization in DML and uncover a strong corre-
+lation to the level of compression and embedding density of
+learned data representation. Our ﬁndings reveal that highly
+compressed representations disregard helpful features for
+capturing data characteristics that transfer to unknown test
+distributions. To this end, we propose a simple technique
+for ranking-based methods to regularize the compression
+of the learned embedding space, which results in boosted
+performance across all benchmark datasets.
+
+==== Page 9 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+Acknowledgements
+We would like to thank Alex Lamb for insightful discus-
+sions, and Sharan Vaswani & Dmitry Serdyuk for their
+valuable feedback (all Mila). We also thank Nvidia for do-
+nating NVIDIA DGX-1, and Compute Canada for providing
+resources for this research.
+Reviewer Comments
+Re: Data Augmentation/Different Spatial Resolution:
+We agree that data augmentation is an important factor to
+regularize training. We have made sure to analyze the im-
+pact of different image augmentations and resolutions on
+the performance.
+Re: In-Shop dataset experiments: The data distribution
+of the In-Shop dataset is very similar to the SOP dataset,
+thus relative results are generally transferable, which is why
+we have decided not to include it in this work.
+Re: Grammar and typos: We thank the reviewers for
+pointing out these errors and have made sure to correct
+them.
+Re: Missing references: All mentioned references have
+been added.
+References
+Achille, A. and Soatto, S. Information dropout: Learning
+optimal representations through noisy computation, 2016.
+Agarwal, P. K., Har-Peled, S., and Varadarajan, K. R. Ge-
+ometric approximation via coresets. Combinatorial and
+computational geometry , 52:1–30, 2005.
+Alemi, A. A., Fischer, I., Dillon, J. V ., and Murphy, K. Deep
+variational information bottleneck, 2016.
+Belghazi, M. I., Baratin, A., Rajeswar, S., Ozair, S., Ben-
+gio, Y ., Courville, A., and Hjelm, R. D. Mine: Mutual
+information neural estimation, 2018.
+Bellet, A. Supervised metric learning with generalization
+guarantees, 2013.
+Bellet, A. and Habrard, A. Robustness and generalization
+for metric learning. Neurocomputing , 151:259–267, Mar
+2015. ISSN 0925-2312. doi: 10.1016/j.neucom.2014.09.
+044. URL http://dx.doi.org/10.1016/j.neucom.2014.09.
+044.
+Bouchacourt, D., Tomioka, R., and Nowozin, S. Multi-level
+variational autoencoder: Learning disentangled represen-
+tations from grouped observations. In AAAI 2018 , 2018.Bouthillier, X., Laurent, C., and Vincent, P. Unreproducible
+research is reproducible. In International Conference on
+Machine Learning , pp. 725–734, 2019.
+Brock, A., Donahue, J., and Simonyan, K. Large scale GAN
+training for high ﬁdelity natural image synthesis. CoRR ,
+abs/1809.11096, 2018. URL http://arxiv.org/abs/1809.
+11096.
+Cakir, F., He, K., Xia, X., Kulis, B., and Sclaroff, S. Deep
+metric learning to rank. In The IEEE Conference on
+Computer Vision and Pattern Recognition (CVPR) , June
+2019.
+Chen, W., Chen, X., Zhang, J., and Huang, K. Beyond
+triplet loss: a deep quadruplet network for person re-
+identiﬁcation. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition , 2017.
+Deng, J., Dong, W., Socher, R., Li, L.-J., Li, K., and Fei-
+Fei, L. ImageNet: A Large-Scale Hierarchical Image
+Database. In IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR) , 2009.
+Deng, J., Guo, J., Xue, N., and Zafeiriou, S. Arcface:
+Additive angular margin loss for deep face recognition,
+2018.
+Ge, W. Deep metric learning with hierarchical triplet loss.
+InProceedings of the European Conference on Computer
+Vision (ECCV) , pp. 269–285, 2018.
+Goyal, A., Islam, R., Strouse, D., Ahmed, Z., Botvinick,
+M., Larochelle, H., Bengio, Y ., and Levine, S. Infobot:
+Transfer and exploration via the information bottleneck,
+2019.
+Goyal, P., Doll ´ar, P., Girshick, R., Noordhuis, P.,
+Wesolowski, L., Kyrola, A., Tulloch, A., Jia, Y ., and
+He, K. Accurate, large minibatch sgd: Training imagenet
+in 1 hour. arXiv preprint arXiv:1706.02677 , 2017.
+Hadsell, R., Chopra, S., and LeCun, Y . Dimensionality re-
+duction by learning an invariant mapping. In Proceedings
+of the IEEE Conference on Computer Vision and Pattern
+Recognition , 2006.
+Harwood, B., Kumar, B., Carneiro, G., Reid, I., Drummond,
+T., et al. Smart mining for deep metric learning. In
+Proceedings of the IEEE International Conference on
+Computer Vision , pp. 2821–2829, 2017.
+He, K., Zhang, X., Ren, S., and Sun, J. Deep residual learn-
+ing for image recognition. In Proceedings of the IEEE
+conference on computer vision and pattern recognition ,
+pp. 770–778, 2016.
+Hermans, A., Beyer, L., and Leibe, B. In defense of the
+triplet loss for person re-identiﬁcation, 2017.
+
+==== Page 10 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+Heusel, M., Ramsauer, H., Unterthiner, T., Nessler, B., and
+Hochreiter, S. Gans trained by a two time-scale update
+rule converge to a local nash equilibrium, 2017.
+Hu, J., Lu, J., and Tan, Y . Discriminative deep metric
+learning for face veriﬁcation in the wild. In 2014 IEEE
+Conference on Computer Vision and Pattern Recognition ,
+2014.
+Huai, M., Xue, H., Miao, C., Yao, L., Su, L., Chen, C.,
+and Zhang, A. Deep metric learning: The generaliza-
+tion analysis and an adaptive algorithm. In Proceedings
+of the Twenty-Eighth International Joint Conference on
+Artiﬁcial Intelligence, IJCAI-19 , pp. 2535–2541. Inter-
+national Joint Conferences on Artiﬁcial Intelligence Or-
+ganization, 7 2019. doi: 10.24963/ijcai.2019/352. URL
+https://doi.org/10.24963/ijcai.2019/352.
+Ioffe, S. and Szegedy, C. Batch normalization: Accelerating
+deep network training by reducing internal covariate shift.
+International Conference on Machine Learning , 2015.
+Jacob, P., Picard, D., Histace, A., and Klein, E. Metric
+learning with horde: High-order regularizer for deep em-
+beddings. In The IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR) , 2019.
+Jegou, H., Douze, M., and Schmid, C. Product quantization
+for nearest neighbor search. IEEE transactions on pattern
+analysis and machine intelligence , 33(1):117–128, 2011.
+Jiang*, Y ., Neyshabur*, B., Krishnan, D., Mobahi, H., and
+Bengio, S. Fantastic generalization measures and where
+to ﬁnd them. In International Conference on Learn-
+ing Representations , 2020. URL https://openreview.net/
+forum?id=SJgIPJBFvH.
+Johnson, T. B. and Guestrin, C. Training deep models
+faster with robust, approximate importance sampling. In
+Bengio, S., Wallach, H., Larochelle, H., Grauman, K.,
+Cesa-Bianchi, N., and Garnett, R. (eds.), Advances in
+Neural Information Processing Systems 31 , pp. 7265–
+7275. Curran Associates, Inc., 2018.
+Keskar, N. S., Mudigere, D., Nocedal, J., Smelyanskiy,
+M., and Tang, P. T. P. On large-batch training for deep
+learning: Generalization gap and sharp minima. arXiv
+preprint arXiv:1609.04836 , 2016.
+Kim, W., Goyal, B., Chawla, K., Lee, J., and Kwon, K.
+Attention-based ensemble for deep metric learning. In
+Proceedings of the European Conference on Computer
+Vision (ECCV) , 2018.
+Kingma, D. P. and Ba, J. Adam: A method for stochastic
+optimization. 2015.Krause, J., Stark, M., Deng, J., and Fei-Fei, L. 3d ob-
+ject representations for ﬁne-grained categorization. In
+Proceedings of the IEEE International Conference on
+Computer Vision Workshops , pp. 554–561, 2013.
+Krogh, A. and Hertz, J. A. A simple weight decay can im-
+prove generalization. In Advances in Neural Information
+Processing Systems . 1992.
+Lin, X., Duan, Y ., Dong, Q., Lu, J., and Zhou, J. Deep
+variational metric learning. In The European Conference
+on Computer Vision (ECCV) , September 2018.
+Liu, W., Wen, Y ., Yu, Z., Li, M., Raj, B., and Song, L.
+Sphereface: Deep hypersphere embedding for face recog-
+nition. IEEE Conference on Computer Vision and Pattern
+Recognition (CVPR) , 2017.
+Lloyd, S. P. Least squares quantization in pcm. IEEE Trans.
+Information Theory , 28:129–136, 1982.
+Manning, C., Raghavan, P., and Sch ¨utze, H. Introduction to
+information retrieval. Natural Language Engineering , 16
+(1):100–103, 2010.
+Milbich, T., Roth, K., Bharadhwaj, H., Sinha, S., Bengio, Y .,
+Ommer, B., and Cohen, J. P. Diva: Diverse visual feature
+aggregation for deep metric learning. 2020a.
+Milbich, T., Roth, K., Brattoli, B., and Ommer, B. Sharing
+matters for generalization in deep metric learning, 2020b.
+Mirzasoleiman, B., Bilmes, J., and Leskovec, J. Coresets for
+accelerating incremental gradient methods, 2020. URL
+https://openreview.net/forum?id=SygRikHtvS.
+Misra, I. and van der Maaten, L. Self-supervised learning
+of pretext-invariant representations, 2019.
+Movshovitz-Attias, Y ., Toshev, A., Leung, T. K., Ioffe, S.,
+and Singh, S. No fuss distance metric learning using prox-
+ies. In Proceedings of the IEEE International Conference
+on Computer Vision , pp. 360–368, 2017.
+Musgrave, K., Belongie, S., and Lim, S.-N. A metric learn-
+ing reality check, 2020.
+Oh Song, H., Xiang, Y ., Jegelka, S., and Savarese, S. Deep
+metric learning via lifted structured feature embedding.
+InProceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , pp. 4004–4012, 2016.
+Opitz, M., Waltner, G., Possegger, H., and Bischof, H. Deep
+metric learning with bier: Boosting independent embed-
+dings robustly. IEEE transactions on pattern analysis
+and machine intelligence , 2018.
+
+==== Page 11 ====
+Revisiting Training Strategies and Generalization Performance in Deep Metric Learning
+Paszke, A., Gross, S., Chintala, S., Chanan, G., Yang, E.,
+DeVito, Z., Lin, Z., Desmaison, A., Antiga, L., and Lerer,
+A. Automatic differentiation in pytorch. In NIPS-W ,
+2017.
+Qian, Q., Shang, L., Sun, B., Hu, J., Li, H., and Jin, R. Soft-
+triple loss: Deep metric learning without triplet sampling.
+2019.
+Roth, K. and Brattoli, B. Deep-metric-learning-
+baselines. https://github.com/Confusezius/
+Deep-Metric-Learning-Baselines, 2019.
+Roth, K., Brattoli, B., and Ommer, B. Mic: Mining in-
+terclass characteristics for improved metric learning. In
+Proceedings of the IEEE International Conference on
+Computer Vision , pp. 8000–8009, 2019.
+Roth, K., Milbich, T., and Ommer, B. Pads: Policy-adapted
+sampling for visual similarity learning, 2020.
+Rubner, Y ., Tomasi, C., and Guibas, L. J. The earth mover’s
+distance as a metric for image retrieval. Int. J. Comput.
+Vision , 40(2):99–121, November 2000. ISSN 0920-5691.
+doi: 10.1023/A:1026543900054. URL https://doi.org/10.
+1023/A:1026543900054.
+Sanakoyeu, A., Tschernezki, V ., Buchler, U., and Ommer,
+B. Divide and conquer the embedding space for metric
+learning. In The IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR) , 2019.
+Schroff, F., Kalenichenko, D., and Philbin, J. Facenet: A
+uniﬁed embedding for face recognition and clustering. In
+Proceedings of the IEEE conference on computer vision
+and pattern recognition , pp. 815–823, 2015.
+Shwartz-Ziv, R. and Tishby, N. Opening the black box of
+deep neural networks via information, 2017.
+Sinha, S., Zhang, H., Goyal, A., Bengio, Y ., Larochelle,
+H., and Odena, A. Small-gan: Speeding up gan training
+using core-sets. arXiv preprint arXiv:1910.13540 , 2019.
+Smith, S. L., Kindermans, P.-J., Ying, C., and Le, Q. V .
+Don’t decay the learning rate, increase the batch size.
+arXiv preprint arXiv:1711.00489 , 2017.
+Sohn, K. Improved deep metric learning with multi-class
+n-pair loss objective. In Advances in Neural Information
+Processing Systems , pp. 1857–1865, 2016.
+Szegedy, C., Liu, W., Jia, Y ., Sermanet, P., Reed, S.,
+Anguelov, D., Erhan, D., Vanhoucke, V ., and Rabinovich,
+A. Going deeper with convolutions. In Proceedings
+of the IEEE conference on computer vision and pattern
+recognition , pp. 1–9, 2015.Tishby, N. and Zaslavsky, N. Deep learning and the infor-
+mation bottleneck principle, 2015.
+Ustinova, E. and Lempitsky, V . Learning deep embeddings
+with histogram loss. In Advances in Neural Information
+Processing Systems , 2016.
+Verma, V ., Lamb, A., Beckham, C., Najaﬁ, A., Mitliagkas,
+I., Courville, A., Lopez-Paz, D., and Bengio, Y . Manifold
+mixup: Better representations by interpolating hidden
+states, 2018.
+Wah, C., Branson, S., Welinder, P., Perona, P., and Belongie,
+S. The caltech-ucsd birds-200-2011 dataset. 2011.
+Wang, J., Zhou, F., Wen, S., Liu, X., and Lin, Y . Deep
+metric learning with angular loss. In Proceedings of the
+IEEE International Conference on Computer Vision , pp.
+2593–2601, 2017.
+Wang, X., Han, X., Huang, W., Dong, D., and Scott, M. R.
+Multi-similarity loss with general pair weighting for deep
+metric learning, 2019a.
+Wang, X., Hua, Y ., Kodirov, E., Hu, G., Garnier, R., and
+Robertson, N. M. Ranked list loss for deep metric learn-
+ing. The IEEE Conference on Computer Vision and Pat-
+tern Recognition (CVPR) , 2019b.
+Wu, C.-Y ., Manmatha, R., Smola, A. J., and Krahenbuhl,
+P. Sampling matters in deep embedding learning. In
+Proceedings of the IEEE International Conference on
+Computer Vision , pp. 2840–2848, 2017.
+Xuan, H., Souvenir, R., and Pless, R. Deep randomized
+ensembles for metric learning. In Proceedings of the
+European Conference on Computer Vision (ECCV) , pp.
+723–734, 2018.
+Yu, B., Liu, T., Gong, M., Ding, C., and Tao, D. Correcting
+the triplet selection bias for triplet loss. In Proceedings of
+the European Conference on Computer Vision (ECCV) ,
+pp. 71–87, 2018.
+Yuan, T., Deng, W., Tang, J., Tang, Y ., and Chen, B. Signal-
+to-noise ratio: A robust distance metric for deep metric
+learning. The IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR) , 2019.
+Zhai, A. and Wu, H.-Y . Classiﬁcation is a strong baseline
+for deep metric learning, 2018.
+Zheng, W., Chen, Z., Lu, J., and Zhou, J. Hardness-aware
+deep metric learning. The IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR) , 2019.
+
