@@ -1,0 +1,105 @@
+Algorithm 1 DiffusionDet Training
+def train_loss(images, gt_boxes):
+"""
+images: [B, H, W, 3]
+gt_boxes: [B, *, 4]
+# B: batch
+# N: number of proposal boxes
+"""
+# Encode image features
+feats = image_encoder(images)
+# Pad gt_boxes to N
+pb = pad_boxes(gt_boxes) # padded boxes: [B, N, 4]
+# Signal scaling
+pb = (pb *2 - 1) *scale
+# Corrupt gt_boxes
+t = randint(0, T) # time step
+eps = normal(mean=0, std=1) # noise: [B, N, 4]
+pb_crpt = sqrt( alpha_cumprod(t)) *pb +
+sqrt(1 - alpha_cumprod(t)) *eps
+# Predict
+pb_pred = detection_decoder(pb_crpt, feats, t)
+# Set prediction loss
+loss = set_prediction_loss(pb_pred, gt_boxes)
+return loss
+alpha cumprod(t) : cumulative product of αi,i.e.,Qt
+i=1αi
+by image encoder, and sends these RoI-features to detec-
+tion head to obtain box regression and classification results.
+For DiffusionDet, these proposal boxes are disturbed from
+ground truth boxes at training stage and directly sampled
+from Gaussian distribution at evaluation stage. Follow-
+ing [10, 90, 114], our detection decoder is composed of 6
+cascading stages (Figure 2b). The differences between our
+decoder and the one in Sparse R-CNN are that (1) Diffu-
+sionDet begins from random boxes while Sparse R-CNN
+uses a fixed set of learned boxes in inference; (2) Sparse R-
+CNN takes as input pairs of the proposal boxes and its cor-
+responding proposal feature, while DiffusionDet needs the
+proposal boxes only; (3) DiffusionDet can re-use the detec-
+tor head in an iterative way for evaluation and the parame-
+ters are shared across different steps, each of which is spec-
+ified to the diffusion process by timestep embedding [38],
+which is called iterative evaluation , while Sparse R-CNN
+uses the detection decoder only once in the forward pass.
+3.3. Training
+During training, we first construct the diffusion process
+from ground-truth boxes to noisy boxes and then train the
+model to reverse this process. Algorithm 1 provides the
+pseudo-code of DiffusionDet training procedure.
+Ground truth boxes padding. For modern object detec-
+tion benchmarks [20,34,57,80], the number of instances of
+interest typically varies across images. Therefore, we first
+padsome extra boxes to original ground truth boxes such
+that all boxes are summed up to a fixed number Ntrain . WeAlgorithm 2 DiffusionDet Sampling
+def infer(images, steps, T):
+"""
+images: [B, H, W, 3]
+# steps: number of sample steps
+# T: number of time steps
+"""
+# Encode image features
+feats = image_encoder(images)
+# noisy boxes: [B, N, 4]
+pb_t = normal(mean=0, std=1)
+# uniform sample step size
+times = reversed(linespace(-1, T, steps))
+# [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+time_pairs = list(zip(times[:-1], times[1:])
+for t_now, t_next in zip(time_pairs):
+# Predict pb_0 from pb_t
+pb_pred = detection_decoder(pb_t, feats, t_now)
+# Estimate pb_t at t_next
+pb_t = ddim_step(pb_t, pb_pred, t_now, t_next)
+# Box renewal
+pb_t = box_renewal(pb_t)
+return pb_pred
+linespace : generate evenly spaced values
+explore several padding strategies, for example, repeating
+existing ground truth boxes, concatenating random boxes
+or image-size boxes. Comparisons of these strategies are in
+Section 4.4, and concatenating random boxes works best.
+Box corruption. We add Gaussian noises to the padded
+ground truth boxes. The noise scale is controlled by αt(in
+Eq. (1)), which adopts the monotonically decreasing cosine
+schedule for αtin different time step t, as proposed in [67].
+Notably, the ground truth box coordinates need to be scaled
+as well since the signal-to-noise ratio has a significant ef-
+fect on the performance of diffusion model [13]. We ob-
+serve that object detection favors a relatively higher signal
+scaling value than image generation task [14, 16, 38]. More
+discussions are in Section 4.4.
+Training losses. The detection detector takes as input
+Ntrain corrupted boxes and predicts Ntrain predictions of
+category classification and box coordinates. We apply set
+prediction loss [10, 90, 114] on the set of Ntrain predic-
+tions. We assign multiple predictions to each ground truth
+by selecting the top kpredictions with the least cost by an
+optimal transport assignment method [18, 25, 26, 98].
+3.4. Inference
+The inference procedure of DiffusionDet is a denoising
+sampling process from noise to object boxes. Starting from
+boxes sampled in Gaussian distribution, the model progres-
+sively refines its predictions, as shown in Algorithm 2.
+Sampling step. In each sampling step, the random boxes
+19833

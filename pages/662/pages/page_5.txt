@@ -1,0 +1,108 @@
+I-GCN: A Graph Convolutional Network Accelerator with Runtime Locality Enhancement through Islandization MICRO ’21, October 18–22, 2021, Virtual Event, Greece
+are normally a small fraction of the entire graph, their associated
+data will likely be stored on-chip and sufficiently reused. Even if
+the hubs’ associated data is too large to fit in the on-chip memory,
+our method still reduces off-chip data movement.
+In summary, for GraphCONV processing of real-world graphs
+with component structures using I-GCN, most data are fetched only
+once, except the adjacency data of some island nodes which may
+need to be accessed multiple times during the multi-round island
+locating. We evaluate this in Section 4.6. Note that component
+structures are commonly observed in real-world graphs.
+Another benefit of islandization is that it assembles the redun-
+dant aggregation among shared neighbors in the processing of each
+island. These redundant operations, originally hidden in the large
+graph, are illuminated after islandization.
+As shown in Figure 3, islands are formed by nodes with intensive
+internal links, most of which are among shared neighbors. During
+the processing of the small and dense islands, it becomes easy
+to recognize these repeated computations and skip them. As an
+example, Figure 3(A) shows the sub-graph structure of the sixth
+island found in the first round. The bitmap at the lower-left corner is
+the purple block in the Round 1 adjacency matrix enlarged. The two
+hub vectors are from the L-shape, while the 7 ×7 matrix includes
+the adjacency data of the island nodes. During the evaluation of
+the island, Island Consumer will find the redundant aggregation
+operations for the shared neighbors and skip them. The redundancy
+removal methodology is discussed in detail in Section 3.3.
+3.1.2 I-GCN Overall Architecture. The overall architecture of I-
+GCN, including Island Locator and Island Consumer, is shown in
+Figure 3(B). The HUB Locator in the Island Detector is responsible
+for recognizing hubs. The hubs found are forwarded to TP-BFS
+Task Generator. TP-BFS is short for Threshold-based and Paral-
+lel Breadth-First Search . Task Generator will generate and assign
+BFS tasks for islandization. These tasks are conducted by TP-BFS
+Engines. Once TP-BFS locates an island, the related adjacency and
+node ID information are forwarded to Island Collector in Island
+Consumer. Island Collector distributes the island information to an
+idle PE for performing its combination and aggregation jobs. Fur-
+thermore, Island Collector also generates and distributes new tasks
+which include inter-hub connections based on the hub information
+collected by TP-BFS engines at each round. Detailed architectures
+are presented next.
+3.2 Island Locator
+We first introduce the algorithm used in the Island Locator and then
+present its architectural support. For clarity we use a homemade
+graph (Figure 4) to illustrate the process.
+3.2.1 Algorithm. Algorithm 1 describes the simplified workflow of
+the Island Locator; a toy example can be found in Figure 4. Overall
+the purpose of the algorithm is to locate the hubs and use their
+neighbors as starting points to search for islands (with the TP-BFS
+algorithm). To boost parallelism, the algorithm comprises three
+concurrent asynchronous tasks: hub detection (line 6), BFS task
+generation (line 7), and TP-BFS execution (line 8). Hub detection
+and TP-BFS are additionally performed in parallel across the 𝑃1
+and𝑃2parallel for loops in algorithm 2 (line4) and 4 (line5). AsAlgorithm 1 Island Locator Algorithm: Th1, Th2, and Th3 are
+executed concurrently and asynchronously.
+1:Inputs:𝑁: Node list of the input graph; (𝑃1,𝑃2): parallel factors for
+hub detection and island searching; 𝑇𝐻𝑜: initial threshold for hub
+nodes;𝑐𝑚𝑎𝑥: the maximum number of nodes that an island can have;
+Decay(): hub threshold decay function
+2:Outputs:𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 : list of islands’ nodes and hubs info
+3:𝑇𝐻𝑡𝑚𝑝=𝑇𝐻𝑜;𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 ={}
+4:while|𝑁|>0do
+5:𝑡𝑎𝑠𝑘={};ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 ={}
+# pop hub nodes from graph 𝑁toℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟
+6: Th1: detect_hub (𝑁,𝑃1,𝑇𝐻𝑡𝑒𝑚𝑝 ,ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 )
+# pop neighbors of nodes in ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 to𝑡𝑎𝑠𝑘
+7: Th2: task_assign (ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 ,𝑡𝑎𝑠𝑘 )
+# explore islands from nodes in 𝑡𝑎𝑠𝑘 using BFS
+8: Th3: TP-BFS (𝑡𝑎𝑠𝑘 ,𝑃2,𝑇𝐻𝑡𝑒𝑚𝑝 ,𝑐𝑚𝑎𝑥,𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 )
+9: [ Hold until parallel Th1/2/3 finish]
+10:𝑇𝐻𝑡𝑚𝑝=Decay(𝑇𝐻𝑡𝑚𝑝)
+11:return𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠
+Algorithm 2 detect_hub : sweep nodes and move nodes with
+degrees larger than thresholds to container ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟
+1:Inputs:𝑁: input graph node list; 𝑃1: parallel factor; 𝑇𝐻𝑡𝑚𝑝: threshold
+for hub’s degree; ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 : container of the hub nodes
+2:Outputs: None (modify ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 in place )
+3:for𝑏=0to⌈|𝑁|/𝑃1⌉do
+4: for𝑝=0to𝑃1in parallel do
+5: Check node 𝑁[𝑏∗𝑃1+𝑝]as𝑛𝑜
+6: if𝑛𝑜∈𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 then
+7: Pop𝑛𝑜from𝑁
+8: else if𝑛𝑜.𝑑𝑒𝑔𝑟𝑒𝑒≥𝑇𝐻𝑡𝑚𝑝then
+9: Pop𝑛𝑜from𝑁toℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟
+Algorithm 3 task_assign : pop nodes from ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 and add
+them and their neighbors to task queue
+1:Inputs:ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 : container of the hub nodes; 𝑡𝑎𝑠𝑘 : container of
+nodes to be chosen as potential starting points for BFS
+2:Outputs: None (modify 𝑡𝑎𝑠𝑘 in place)
+3:while|ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟|>0do
+4: Pop a node from ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟
+5: Append the popped hub node and each of its neighbors to 𝑡𝑎𝑠𝑘 , in
+the form of tuples.
+mentioned in Section 3.1, locating islands is performed by rounds,
+which are iterations of line 4. 𝑇𝐻𝑡𝑚𝑝represents the most current
+hub detection threshold, which is modified at run-time. Note that
+synchronization is required among the three tasks at the start of
+each round (line 9). Specifically, the algorithm takes the input of
+(1) node list 𝑁; (2) parallel factors 𝑃1and𝑃2, which define the
+numbers of the parallel FIFOs and TP-BFS engines, respectively; (3)
+the initial hub threshold 𝑇𝐻𝑜, which marks the initial minimum
+degree of the hub nodes; (4) the maximum number of nodes in
+an island,𝑐𝑚𝑎𝑥; and (5) Decay(), which defines the function to
+decrease the hub detection threshold. The algorithm then outputs
+the abstract container 𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 , which encapsulates all island-related
+information. This includes island nodes’ indices and neighbors, the
+connected hub nodes’ indices and their connections with island

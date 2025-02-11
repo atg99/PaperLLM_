@@ -1,0 +1,124 @@
+Figure 5: Architecture support for dynamic tiling in the
+DepthConvmodulefora 3×3kernelwithTwofsize6/8/10.
+Stage 1 
+Intermediate 
+ResultsStage 2-6 
+Intermediate 
+ResultsStage 1, 3, 5  
+Concat 
+OutputsBackbone 
+Intermediate 
+ResultsBackbone 
+Concat 
+OutputsStage 2, 4, 6  
+Concat 
+OutputsDRAM address
+A B C
+Figure 6: Data organization for OpenPose.
+SIMD lane. Th(k)can be any arbitrary value. As mentioned before,
+the computation in depth conv module can be seen as a stencil
+kernel. Figure 5 depicts the 3 ×3 stencil window connected by line
+buffers. We realize dynamic tiling by connecting consecutive rows
+ofthelinebufferviaaMUX,enablingdatafeedingfromdifferent
+locations.
+3.1.1 DesignSpaceExploration. Giventhenetwork,theaccelerator
+architecture,andtheFPGA’sresourcesinformation,wewillperformthedesignspaceexplorationtoselecttheoptimaldesignparameters
+that maximize the performance on the target FPGA. Table 1 lists
+the design parameters to be determined.
+Twoanalyticalmodels resource_est() andlatency_est() arebuilt
+forestimatingtheresourceusageandlatencyofdesigns.Currently,
+theresourcemodelestimatesblockRAM(BRAM)andDSPusage
+that are usually the bottleneck of designs. The DSE process will
+sweepthroughthedesignspacewithallfeasiblecombinationsof
+design parameters. For each design parameter list, the resource
+usage is examined first. Designs that over-utilize the resource will
+be pruned away. Then, we follow a greedy algorithm to select the
+optimal tiling factors that minimize the latency layer by layer. The
+DSE process finishes within minutes on a standard workstation.
+3.2 Data Layout Optimization
+Datalayout optimizationsareapplied toreducethe numberofac-
+cesses to DRAM and increase the effective DRAM bandwidth. The
+first optimizationis on theconcatenation layers. ACNN network
+maycontainblocksthatconcatenatetheresultsofseverallayers.As
+showninFigure3,aftereachstageintheOpenPose-V2network,re-
+sultsfromtwobrancheswillbeconcatenatedwiththefirstoutputs
+from the backbone network. This then serves as the inputs for the
+followingstages.Figure6presentstheoptimizeddataorganization
+of the network.
+Theoutputsofthebackbone(region B)andeachstage(region
+A, C) are placed close to each other as shown in Figure 6. To be
+more specific, the outputs of Stage 1 will be written to region A.
+The regions A and B will serve as the inputs of Stage 2. In Stage 2,
+theoutputswillbewrittentoregionC.TheregionsBandCwill
+serveastheinputsofStage3similarly.Theoutputsofeachstage
+are written to regions A and C in a round-robin fashion. With this
+layout,theoutputsofstagebranchesareconcatenatedon-the-fly,
+eliminating unnecessary off-chip DRAM movements.
+TofurtherimprovetheeffectiveDRAMbandwidth,wechange
+the data layout of the feature maps from N(k)×H(k)×W(k)
+Tw(k)×Read 
+Image (1)Resize & 
+Pack (2)Process 
+Graph (3-8)
+Write 
+Results (10)Display 
+Results (10)Process 
+Results (9)
+Figure 7: First level of pipeline.
+Tw(k)toN(k)
+Tn(k)×H(k)×W(k)
+Tw(k)×Tn(k)×Tw(k). This allows us
+toincreasetheburstlengthfrom Tw(k)toTn(k)×Tw(k).ADSC
+layer can easily become communication-bound because of its low
+computationtocommunication(CTC)ratiosinceitismostlyusing
+1×1 convolution kernels. In this case, when the kernel size of the
+next layer is 1 ×1, since there is no overlapped region between
+differenttiles,wefurtherchangethedatalayouttoN(k)
+Tn(k)×H(k)
+Th(k)×
+W(k)
+Tw(k)×Tn(k)×Tw(k)×Th(k).Itfurtherincreasestheburstlength
+for these layers to Tn(k)×Th(k)×Tw(k). For other kernel sizes,
+padding is applied because a tile of Tn(k)×Tw(k)×Th(k)does
+not have all the data needed for the computation. We need to have
+(p−1)and((p−1)×Th(k)+(p−1)2)extra DRAM accesses with
+burst length of Tn(k)×Tw(k)andTn(k)respectively to fetch all
+the data ( pdenoting the kernel size). This increases the number
+of DRAM accesses with a burst length of Tn(k), which further
+increasesthecommunicationtimeandpreventsusfromapplying
+this data layout.
+4 TENSORFLOW INTEGRATION
+WechoseTensorFlowasourMLframeworksinceitisbeingwidely
+usedforinferenceintheMLcommunity(e.g.[ 12,15]).Toinvoke
+FPGA from TensorFlow, we redefine the nodes in the original com-
+putation graph. All computation nodes of CNN are merged intoone node that is implemented by FPGA. The rest of the graph is
+still processed on the CPU.
+When FPGA is connected to TensorFlow, the whole integration
+stackconsistsofthefollowingsteps:1)readingtheinputsofCNN,2)
+pre-processing include stages like image resizing, 3) re-organizing
+theinitialdatalayoutsinCPUmemory,4)transferringdatafrom
+CPUtoFPGAdevicememory,5)computationonFPGA,6)fetching
+the results back via PCIe, 7) reformatting and passing it to Ten-
+sorFlow, 8) non-CNN computation stages on CPU, 9) processing
+the results (e.g., estimating the human poses based on the attained
+results and drawing them for OpenPose network), and 10) writing
+out and displaying the results.
+Figure 2 shows the breakdown of these stages in the OpenPose
+application for an 384 ×384 RGB input. Among the whole pipeline,
+whichtakes208.8ms,theFPGAcomputationinStep5onlyrequires
+11.8%ofthetotaltime.Theintegrationoverheadshaveledto8 .45×
+performanceslowdown.Toreducetheseoverheadswehaveapplied
+an optimized software/hardware pipelining.
+A two-level pipelining is applied on the whole integration stack
+that enables the simultaneous processing of the aforementioned
+steps.ThefirstleveloverlapsTensorFlow’soverheads(steps1,2,
+9,10)withtherestofthesteps.ThesecondoneoverlapsFPGA’s
+computation with data movement steps (steps 3, 4, 6, 7).
+Figure 7 illustrates the first level of pipeline, which is applied at
+theTensorFlowlevel.Thenumbersinthefigureshowtherelated
+step number. Steps 1, 2, 9, and 10 and the rest of the steps are
+assignedtodifferentprocessesconnectedbyqueue.Therefore,steps
+Session: Deep Learning I
+ 
+FPGA ’20, February 23–25, 2020, Seaside, CA, USA
+136

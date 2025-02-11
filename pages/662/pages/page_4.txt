@@ -1,0 +1,106 @@
+MICRO ’21, October 18–22, 2021, Virtual Event, Greece Tong Geng, et al.
+On-chip
+StorageOff-chip
+AccessReuse
+𝑋𝑊Reuse
+𝐴Reuse
+𝑋𝑜Load
+ImbalanceRedundancy
+Removal
+PULL Low High Low High High No Hard
+PUSH High High High Low Low Yes Hard
+Islandization Low Low High High High No Easy
+Table 1: Comparison of PULL, PUSH, Island methods.
+of𝑋𝑜). In contrast, PUSH-Outer-Product (Figure 2-(c2)) method
+processes all channels at the same time. The entire input feature
+vector of each node is broadcast to all its neighbors in parallel. Once
+done, the feature aggregation of the entire graph finishes. In the
+matrix perspective, PUSH-Outer-Product processes the non-zeros
+of matrix A by column, accesses the features of XW by row, and
+updates the corresponding partial results of 𝑋𝑜with respect to the
+row IDs of non-zeros in matrix A.
+The advantage of PUSH-based methods over PULL is that the
+data of XW can be fully reused via feature broadcasting. However,
+the accesses to 𝑋𝑜then become scattered and random. Given the
+height of𝑋𝑜is equal to the number of nodes in the graph, which can
+be large, even a single column of 𝑋𝑜may not be able to be buffered
+on-chip. Frequent accesses to 𝑋𝑜thus render repeated data fetches
+from off-chip DRAM. Ideally, if the non-zeros from the same row of
+A can be clustered, they can reuse the same row of 𝑋𝑜, improving
+data locality and performance.
+PUSH-Column-Wise method is more popular than PUSH-Outer-
+Product in prior art because for graphs that a single column of
+𝑋𝑜can be put on-chip, PUSH-Column-Wise method can avoid the
+repeated off-chip data accesses over 𝑋𝑜. However, this does not
+work for large graphs. Consequently, PUSH-Column-Wise does not
+fundamentally handle the data locality issue. Additionally, it needs
+to repeatedly access matrix A which also incurs additional off-chip
+access.
+Table 1 summarizes the advantages and disadvantages of both
+approaches. The proposed islandization method is capable of over-
+coming all the drawbacks by clustering the non-zeros at runtime
+and provides nearly optimal data reuse in GCN inference. Further-
+more, with islandization, the unnecessary aggregation for com-
+monly shared neighbors can be identified much more easily for
+effective pruning.
+2.2.3 Combination Phase. As both combination and aggregation
+are based on SpMM kernels, the combination phase shares similar
+issues with aggregation phase. The only difference is that the weight
+matrix W in combination is normally much smaller than the feature
+matrix XW in aggregation, and can be more likely stored on-chip.
+Therefore, the data locality issue of the PULL-based method is less
+prominent than in aggregation. Consequently, I-GCN adopts the
+PULL-based method for combination.
+3 ALGORITHMS AND ARCHITECTURES
+This section first presents the overall workflow and hardware ar-
+chitecture of I-GCN. It then introduces the algorithms and the
+corresponding architectures of two major components of I-GCN:
+theIsland Locator and the Island Consumer .
+3.1 I-GCN Overview
+3.1.1 I-GCN Workflow. Figure 3 illustrates how I-GCN improves
+data locality through islandization: the clustering of graph nodes
+Figure 3: Detailed I-GCN workflow and overview of I-GCN
+architecture
+into islands. Elements of an island tend to have strong internal con-
+nections, and are connected to other islands through hubs – nodes
+with high fan-in/out degrees, which act as the points of contact
+for islands. Islandization is the process of finding these structures
+hidden in the original graph. At high level, I-GCN processing begins
+by locating these islands, after which it processes the graph at the
+granularity of hubs and islands rather than nodes, thus being able
+to improve locality and reduce redundant computation.
+I-GCN creates the islands gradually by round. Figure 3 shows the
+process using the CORA dataset. The scattered non-zeros belonging
+to the same island are clustered around the diagonal. The islands (in-
+cluding the hubs and nodes) are discovered in parallel by a hardware
+module called Island Locator . In each round, the Island Locator
+uses different thresholds to recognize hubs and then shapes the
+island by scanning the hubs’ neighbor nodes. As shown in Figure 3,
+the processing moves from the bottom-left corner of the adjacency
+matrix to the upper-right corner, along the anti-diagonal. In each
+round a portion of the non-zeros are gathered into an L-shape clus-
+ter (except the non-zeros around the anti-diagonal), leaving the
+remaining non-zeros untouched. With new hubs located at each
+round, new L-shape clusters are formed. This process continues un-
+til all non-zeros are clustered either into L-shapes (hubs) or around
+the anti-diagonal (islands) (see Round N in Figure 3).
+In parallel, whenever an island is formed its adjacency informa-
+tion is forwarded to the second module called Island Consumer .
+Island Consumer then processes the island as a small but dense
+sub-graph, fetches its node features, and performs the required com-
+bination and aggregation. Note that although the Island Locator
+forms the islands gradually by round, and requires per round syn-
+chronization, the Processing Elements in the Island Consumer can
+process an island as soon as it is formed without synchronization at
+the completion of each round: it does not need to wait until all the
+islands in an islandization round are formulated. I-GCN overlaps
+graph restructuring and graph processing.
+As shown in Figure 3, each node in an island, labeled as an
+island node, only connects to the nodes of the same island and
+the hub nodes connected to the island. This ensures that the space
+between the L-shapes is purely blank. Therefore, when processing
+a GraphCONV layer, the associated data of island nodes are only
+needed when the island is being processed. Consequently, they
+only need to be fetched from off-chip once. The hubs do have
+the chance of being used multiple times during the processing of
+different islands and inter-hub connections. However, since hubs

@@ -1,0 +1,67 @@
+Resurrecting Recurrent Neural Networks for Long Sequences
+Supplementary Materials
+A. Simplified Implementation of the Linear Recurrent Unit
+We present here a simplified JAX implementation (Bradbury et al., 2018) of the Linear Recurrent Unit (LRU). The state of
+the LRU is driven by the input (uk)L
+k=1of sequence length Laccording to the following formula (and efficiently parallelized
+using an associative scan): xk= Λxk−1+ exp( γlog)⊙(Buk), and the output is computed at each timestamp kas follows:
+yk=Cxk+Duk. In our code, B, C follow Glorot initialization, with Bscaled additionally by a factor 2 to account
+for halving the state variance by taking the real part of the output projection. Dis random H-dimensional and mutiplies
+elementwise each uk, where kis the timestamp. Λis initialized with the help of Lemma 3.2, with phase potentially restricted
+to a thin slice (see §3.4).
+1import jax
+2import jax.numpy as jnp
+3import numpy as np
+4parallel_scan = jax.lax.associative_scan
+5
+6def forward(lru_parameters, input_sequence):
+7 """Forward pass of the LRU layer. Output y and input_sequence are of shape (L, H)."""
+8
+9 # All LRU parameters
+10 nu_log, theta_log, B_re, B_im, C_re, C_im, D, gamma_log = lru_parameters
+11
+12 # Materializing the diagonal of Lambda and projections
+13 Lambda = jnp.exp(-jnp.exp(nu_log) + 1j *jnp.exp(theta_log))
+14 B_norm = (B_re + 1j *B_im) *jnp.expand_dims(jnp.exp(gamma_log), axis=-1)
+15 C = C_re + 1j *C_im
+16
+17 # Running the LRU + output projection
+18 # For details on parallel scan, check discussion in Smith et al (2022).
+19 Lambda_elements = jnp.repeat(Lambda[ None , ...], input_sequence.shape[0], axis=0)
+20 Bu_elements = jax.vmap( lambda u: B_norm @ u)(input_sequence)
+21 elements = (Lambda_elements, Bu_elements)
+22 _, inner_states = parallel_scan(binary_operator_diag, elements) # all x_k
+23 y = jax.vmap( lambda x, u: (C @ x).real + D *u)(inner_states, input_sequence)
+24
+25 return y
+26
+27def init_lru_parameters(N, H, r_min=0, r_max=1, max_phase=6.28):
+28 """Initialize parameters of the LRU layer."""
+29
+30 # N: state dimension, H: model dimension
+31 # Initialization of Lambda is complex valued distributed uniformly on ring
+32 # between r_min and r_max, with phase in [0, max_phase].
+33 u1 = np.random.uniform(size = (N,))
+34 u2 = np.random.uniform(size = (N,))
+35 nu_log = np.log(-0.5 *np.log(u1 *(r_max **2-r_min **2) + r_min **2))
+36 theta_log = np.log(max_phase *u2)
+37
+38 # Glorot initialized Input/Output projection matrices
+39 B_re = np.random.normal(size=(N,H))/np.sqrt(2 *H)
+40 B_im = np.random.normal(size=(N,H))/np.sqrt(2 *H)
+41 C_re = np.random.normal(size=(H,N))/np.sqrt(N)
+42 C_im = np.random.normal(size=(H,N))/np.sqrt(N)
+43 D = np.random.normal(size=(H,))
+44
+45 # Normalization factor
+46 diag_lambda = np.exp(-np.exp(nu_log) + 1j *np.exp(theta_log))
+47 gamma_log = np.log(np.sqrt(1-np.abs(diag_lambda) **2))
+48
+49 return nu_log, theta_log, B_re, B_im, C_re, C_im, D, gamma_log
+50
+51def binary_operator_diag(element_i, element_j):
+52 # Binary operator for parallel scan of linear recurrence.
+53 a_i, bu_i = element_i
+54 a_j, bu_j = element_j
+55 return a_j *a_i, a_j *bu_i + bu_j
+14

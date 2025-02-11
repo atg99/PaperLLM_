@@ -1,0 +1,99 @@
+embedding+FC+ReLUattention scores+queries
+phonemes or text. . .. . .
+. . .. . .
+x Nphoneme encoder
+spectrogram encoder decoder
+attention
+input spectrogram
+predicted spectrogram
+per-frame FC+ReLUx Nx Nphoneme durationsσ
+keysqueriesvaluesConv+ReLU. . .. . .
+Linear
+Positional encodingFigure 1: The duration extraction network. The encoders and
+the decoder use gated residual blocks (see Fig. 2). Convolutions
+in the spectrogram encoder and decoder are causal as the model
+predicts the next frame based on past ones (cf. Section 3.1).
+convolutions (over past frames only [ 11]) are used and the skip
+connection accumulates the ﬁnal output.
+Attention: We use dot-product attention [ 8], with phoneme
+encoder output as keys, phoneme encoder outputs summed with
+phoneme embeddings as values (similar to Deep V oice 3 [ 2]),
+and spectrogram encoder output as queries. The keys and queries
+are preconditioned via positional encoding [ 8] and an identical
+linear layer to bias the attention towards monotonicity [ 2, cf. Sec-
+tion 4.2]. The attention scores are weighted averages of the value
+vectors according to how much the values match a given query.
+This way, the model learns to select phonemes relevant for pre-
+diction of the next spectrogram frame.
+Decoder: On the input, the decoder sums attention scores with
+encoder outputs for better gradient ﬂow. The sum is then trans-
+formed by several gated residual blocks with progressively more
+dilated causal convolutions and several convolutional layers with
+ReLU activation to get the correct number of channels, and
+ﬁnally passed through a sigmoid prediction layer.
+Training: Target spectrograms are shifted one position to the
+left on the input and the model is forced to predict the next spec-
+trogram frame based on input phonemes and previous frames.
+Unlike Tacotron 2 [ 1], the network does not keep any hidden
+states and we can compute predictions for all time steps in paral-
+lel. To be able to use the sigmoid activation in the ﬁnal layer, we
+rescale the logarithmic mel spectrograms into the [0, 1] interval.
+We minimize the sum of mean absolute error (MAE) be-
+tween the target and predicted spectrograms and guided attention
+loss[3], which is used to aid monotonic alignments. The guided
++FCConv1D + T anh
+Conv1D +
+Sigmoid. FCResidual
+Skip+Figure 2: A gated residual block. “. ” and “+” represent element-
+wise multiplication and addition, respectively.
+attention loss for the attention matrix A2RNTis calculated
+as:
+GuidedAtt (A) =1
+NTNX
+n=1TX
+t=1An,tWn,t (1)
+where Wn,t= 1 – exp –(n/N–t/T)2
+2g2is the penalty matrix, Nis the
+number of phonemes and Tis the number of spectrogram frames.
+The parameter gcontrols the loss contribution of matrix elements
+An,tas we move further away from the diagonal.
+Data augmentation: To improve robustness to error propa-
+gation, we employ three data augmentations on the input spec-
+trograms: (1) We add a small amount of Gaussian noise to
+each spectrogram pixel. (2) We simulate the model outputs by
+feeding the input spectrogram through the network without gra-
+dient update in parallel mode (not sequentially). The resulting
+spectrogram is slightly degraded compared to the ground-truth
+spectrogram. We repeat this process multiple times to get an
+approximation of a sequentially generated spectrogram. We
+could simply generate the degraded spectrogram sequentially,
+but using the parallel mode several times is still faster than se-
+quential generation. Moreover, in early stages of training, the
+model is virtually unable to sequentially generate more than just
+a few frames correctly. We observe that this method improves
+the robustness of sequential generation drastically and the model
+is able to generate long sentences well with just minor mistakes.
+(3) We further degrade the input spectrograms by randomly re-
+placing several frames with random frames. This is done to
+encourage the model to use temporally more distant frames. Oth-
+erwise, the model tends to overﬁt to the newest frame on the
+input and ignores older information, which makes it less stable.
+Inference/duration extraction: Similarly to [ 2,3], we apply
+location masking of the attention positions to avoid phoneme
+skipping and enforce monotonic alignment. However, we run
+the inference in teacher-forcing mode – we feed the model with
+ground-truth frames to avoid error propagation and extract more
+reliable alignments. The resulting attention matrix is used to
+extract the duration of each phoneme by calculating the index
+of the most likely phoneme at each timestep and counting the
+number of occurrences of each index across time.
+3.2. Student network – Spectrogram synthesis
+The student model uses spectrograms with alignments predicted
+by the teacher model. Given input phonemes, it is trained to
+ﬁrst predict individual phoneme durations and then, based on
+the durations, the full mel spectrogram (see Fig. 3). The model
+consists of a phoneme encoder, duration predictor and a decoder.
+All three modules consist of progressively dilated residual convo-
+lutional blocks, each of which contains a 1D convolution, ReLU
+activation and temporal batch normalization. A residual connec-
+tion is applied for better gradient ﬂow. The phoneme encodings

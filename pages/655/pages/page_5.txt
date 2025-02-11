@@ -1,0 +1,117 @@
+new kinds of parallelism and data reuse to further improve
+performance; iii) single-paradigm design make them hard to
+fuse the execution of the two phases.
+Opportunities for Customization. Designing a specialized
+accelerator for a speciﬁc domain is an efﬁcient and prevalent
+solution to address the inefﬁciencies of existing architectures,
+since it can tailor the memory hierarchy and computation
+unit to the speciﬁc workload. For GCNs, we can build an
+accelerator with a hybrid architecture using different opti-
+mizations for the two phases. For the Aggregation phase, it
+is possible to obtain the knowledge of graph data in advance
+and schedule the accesses to alleviate the irregularity. More-
+over, the computation for each vertex can also be scheduled
+to exploit edge parallelism and intra-vertex parallelism. For
+theCombination phase, we draw inspirations from current
+neural network accelerators to efﬁciently perform MVMs in
+parallel with parameter sharing. Beyond the individual opti-
+mizations of the two phases, the serial inter-phase dataﬂow
+can be pipelined in ﬁner grain. Moreover, all off-chip mem-
+ory accesses can be controlled to improve the overall memory
+access efﬁciency. Putting all these together, there are huge
+opportunities to design an efﬁcient GCN accelerator with
+high performance.
+4. ARCHITECTURE DESIGN
+In this section, we design HyGCN to support the efﬁcient
+execution of GCNs. We ﬁrst introduce the programming
+model and then present details of the architecture design.
+4.1 Edge- and MVM-Centric PM
+The goal of building a programming model (PM) is to
+exploit available parallelisms and achieve hardware trans-
+parency for programmers [47]. For Aggregation , there are
+gather- and scatter-based processing methods. Since the
+scatter-based method usually produces large amount of atomic
+operations and requires a synchronization after the processing
+of all vertices, the degree of parallelism will be degraded [17].
+On the contrary, the gather-based method can control the
+program behavior easily and preserve the execution paral-
+lelism. Therefore, we select the gather-based processing in
+our design. Nevertheless, this processing mode leads to in-
+tensive memory access and vertex computation. To address
+this problem, we employ an edge-centric PM to exploit the
+edge-level parallelism. Each vertex possesses many incoming
+edges (neighbors), which can be aggregated in an edge-by-
+edge pipeline. In this way, workload for each vertex can be
+divided into subworkloads and assigned to each computation
+unit for processing in parallel. For Combination , the situation
+is relatively easier. Since the computation of each vertex acts
+like the MLP, we directly focus on the MVM operations.
+Our edge- and MVM-centric PM for GCNs is shown in
+Algorithm 1. At each vertex v2V, the sampled neighbor
+indices are read ﬁrst, which is a subset of all neighbors. Each
+index corresponds to an edge connecting vand a neighbor ver-
+texu, i.e. e(u;v). By traversing all sampled edges connected
+v, all the feature vectors of corresponding neighbors can be
+aggregated onto the feature vector of v. Then, a Combine
+function can start performing the Combination phase that is
+comprised of a series of MVMs. In this PM, the edge-level
+and MVM-level parallelism can be exploited.Note that in Algorithm 1 we do not express the Pool
+and Readout operations explicitly since they are not always
+needed. In fact, the Pool operation can be represented by two
+GCNs and additional matrix operations. The GCNs can be
+performed entirely by the two engines, the matrix transposes
+can be executed by the ﬂexible Aggregation engine, and the
+matrix multiplications can be executed by the Combination
+engine. The Readout operation can be expressed by an ad-
+ditional single vertex that connects all vertices in the graph,
+which can be accomplished by the Aggregation engine.
+Algorithm 1: Edge- and MVM-centric Programming
+Model for Aggregation and Combination Phase
+1initial SampleNum ;
+2initial SampleIndexArray ;
+3foreach node v2Vdo
+4 agg_res init();
+/Edge-centric Parallelism
+5 sample _idxs SampleIndexArray [v:nid];
+6 foreach sample_idx in sample_idxs do
+7 e(u;v) EdgeArray [sample _idx];
+8 agg_res Aggregate (agg_res;u:f eature );
+9 end
+/MVM-centric Parallelism
+10 v:f eature Combine (agg_res;weights ;biases );
+11end
+4.2 Architecture Overview
+Based on the proposed PM, Fig. 3 depicts the architecture
+ofHyGCN . We construct the system using a hybrid archi-
+tecture, which includes two engines ( Aggregation Engine
+andCombination Engine ) and one memory access handler.
+A communication interface ( Coordinator ) is introduced to
+bridge these two engines. Therefore, the interference between
+them is mitigated and their execution pipeline is established.
+Combination  Engine
+Activate UnitAggrega tion Engine
+Weight Buffer Input Buffer
+Output Buffer
+DRAMPE PE PE
+PE PE PEPE PE PE
+PE PE PESIMD
+SamplereSched
+SIMD SIMD
+vSched
+Edge Buffer
+Memory Access Handler
+CoordinatorAggregation  Buffer
+Sparsity
+Eliminator 
+Figure 3: Architecture overview of HyGCN .
+TheAggregation Engine aims to realize the efﬁcient ex-
+ecution of irregular accesses and computations. To exploit
+the edge-level parallelism, a task scheduler ( eSched ) is de-
+signed to assign the edge processing workloads onto SIMD
+cores. To support the Sampling operation, we introduce a
+Sampler into the Aggregation Engine . The Sampler selects
+edges from the edge list of each vertex using a uniform or
+predeﬁned distribution in terms of index interval. The former
+indices for edge sampling are based on dynamic generation
+while the latter ones are predeﬁned and can be read from
+5

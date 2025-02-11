@@ -1,0 +1,115 @@
+HAWQ-V3: Dyadic Neural Network Quantization
+bit-precision settings could result in a different model per-
+turbation. To make the problem tractable, we assume that
+the perturbations for each layer are independent of each
+other (i.e., ⌦=PL
+i=1⌦(bi)
+i, where ⌦(bi)
+iis the i-th layer’s
+perturbation with bibit)4. This allows us to precompute the
+sensitivity of each layer separately, and it only requires BL
+computations. For the sensitivity metric, we use the Hes-
+sian based perturbation proposed in ( Dong et al. ,2020 , Eq.
+2.11). The ILP problem tries to ﬁnd the right bit precision
+that minimizes this sensitivity, as follows:
+Objective: min{bi}L
+i=1XL
+i=1⌦(bi)
+i, (8)
+Subject to:XL
+i=1M(bi)
+iModel Size Limit ,(9)
+XL
+i=1G(bi)
+iBOPS Limit , (10)
+XL
+i=1Q(bi)
+iLatency Limit . (11)
+Here, M(bi)
+idenotes the size of i-th layer with bibit quan-
+tization, Q(bi)
+iis the associated latency, and G(bi)
+iis the
+corresponding BOPS required for computing that layer. The
+latter measures the total Bit Operations for calculating a
+layer ( van Baalen et al. ,2020 ):
+G(bi)
+i=bwibaiMAC i,
+where MAC iis the total Multiply-Accumulate operations
+for computing the i-th layer, and bwi,baiare the bit preci-
+sion used for weight and activation.5Note that it is not nec-
+essary to set all these constraints at the same time. Typically,
+which constraint to use depends on the end-user application.
+We solve the ILP using open source PULP library ( Roy &
+Mitchell ,2020 ) in Python, where we found that for all the
+conﬁgurations tested in the paper, the ILP solver can ﬁnd the
+solution in less than 1 second given the sensitivity metric.
+For comparison, the RL based method of ( Wang et al. ,2019)
+could take tens of hours to ﬁnd the right bit-precision setting.
+Meanwhile, as can be seen, our ILP solver can be easily used
+for multiple constraints. However, the complexity of Pareto
+frontier proposed by ( Dong et al. ,2020 ) is exponentially
+increasing for multiple constraints. In Section 4.2, we show
+the results with different constraints.
+We should also mention that the contemporary work
+of (Hubara et al. ,2020 ), also proposed an ILP formula-
+tion. However, our approach is hardware-aware and we
+directly deploy and measure the latency of each layer in
+hardware.
+4Similar assumption can be found in ( Dong et al. ,2019;2020).
+5bwiandbaiare always the same in HAWQ-V3 . As such,
+HAWQ-V3 does not need to cast lower-precision integer numbers,
+e.g., INT4, to higher-precision integer numbers, e.g., INT8, which
+is more efﬁcient than ( Cai et al. ,2020 ;Dong et al. ,2020 ;Wang
+et al.,2019 ).3.5. Hardware Deployment
+Model size alone is not a good metric to measure the efﬁ-
+ciency (speed and energy consumption) of NNs. In fact, it is
+quite possible that a small model would have higher latency
+and consume a larger amount of energy for inference. The
+same is also true for FLOPs. The reason is that neither
+model size nor FLOPs can account for cache misses, data
+locality, memory bandwidth, underutilization of hardware,
+etc. To address this, we need to deploy and directly measure
+the latency.
+We target Nvidia Turing Tensor Cores of T4 GPU for de-
+ployment, as it supports both INT8 and INT4 precision
+and has been enhanced for deep learning network inference.
+The only API available is the WMMA kernel call which is
+a micro-kernel for performing matrix-matrix operations in
+INT4 precision on Tensor Cores. However, there is also no
+existing compiler that would map a NN quantized to INT4
+to Tensor Cores using WMMA instructions. To address
+this challenge, another contribution of our work is extend-
+ing TVM ( Chen et al. ,2018 ) to support INT4 inference
+with/without mixed precision with INT8. This is important
+so we can verify the speed beneﬁts of mixed-precision in-
+ference. To accomplish this, we had to add new features in
+both graph-level IR and operator schedules to make INT4
+inference efﬁcient. For instance, when we perform opti-
+mizations such as memory planning, constant folding, and
+operator fusion, at the graph-level IR, 4-bit data are involved.
+However, on byte-addressable machines, manipulating 4-bit
+data individually leads to inefﬁciency in storage and com-
+munication. Instead, we pack eight 4-bit elements into an
+INT32 data type and perform the memory movement as a
+chunk. In the ﬁnal code generation stage, the data type and
+all memory access will be adjusted for INT32. By adopting
+similar scheduling strategies to Cutlass ( NVIDIA ,2020 ),
+we implement a new direct convolution schedule for Tensor
+Cores for both 8-bit and 4-bit data in TVM. We set the knobs
+for the conﬁgurations such as thread size, block size, and
+loop ordering so that the auto-tuner in TVM could search
+for the best latency settings.
+Another important point is that we have completed the
+pipeline to test directly the trained weights and to avoid
+using random weights for speed measurements. This is
+important, since small discrepancies between the hardware
+implementation may go unnoticed from the quantization al-
+gorithm in the NN training framework (PyTorch in our case)
+which does not use TVM for the forward and backward
+propagation. To avoid any such issue, we made sure that the
+results between TVM and PyTorch match for every single
+layer and stage to machine-precision accuracy, and we veri-
+ﬁed the ﬁnal Top-1 accuracy when executed in the hardware
+with integer-only arithmetic. In Appendix G, we present the
+error accumulation of feature maps for ResNet50 with INT4

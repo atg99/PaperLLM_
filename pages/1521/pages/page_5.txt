@@ -1,0 +1,108 @@
+Algorithm 2: Partition and Caching
+Input: graphG, partition number p, cache depthh, threshold1;2;:::; h
+Output:psubgraphs
+1Initializepgraph servers
+2foreach edgee= (u;v)2E do
+3j=ASSIGN (u)
+4 Send edgeeto thej-th partition
+5foreach vertexv2Vdo
+6 fork 1tohdo
+7 ComputeD(k)
+i(v)andD(k)
+o(v)
+8 ifD(k)
+i(v)
+D(k)
+o(v)kthen
+9 Cache the 1tok-hop out-neighbors of von each partition where
+vexists
+3.3 Sampling
+Recall that, GNN algorithms rely on aggregating neighborhood
+information to generate embeddings of each vertex. However, the
+degree distribution of real-world graphs is often skewed [48], which
+makes the convolution operation hard to operate. To tackle this,
+existing GNNs usually adopt various sampling strategies to sample
+a subset of neighbors with aligned sizes. Due to its importance, in
+our system, we abstract a sampling layer speciﬁed to optimize the
+sampling strategies.
+Abstraction. Formally, the sampling function takes input a vertex
+subsetVTand extracts a small subset VSVTsuch thatjVSj<<
+jVTj. By taking a thorough overview of current GNN models,
+we abstract three kinds of different samplers, namely TRAVERSE ,
+NEIGHBORHOOD and N EGATIVE .
+TRAVERSE : is used to sampling a batch of vertices or edges
+from the whole partitioned subgraphs.
+NEIGHBORHOOD : will generate the context for a vertex. The
+context of this vertex may be one or multi hop neighbors,
+which are used to encode this vertex.
+NEGATIVE : is used to generate negative samples to accelerate
+the convergence of the training process.
+Implementation. In the literature, the sampling method plays an
+important role to enhance the efﬁciency and accuracy of the GNN
+algorithms [22, 21, 5, 17]. In our system, we treat all samplers as
+plugins. Each of them can be implemented independently. The three
+types of samplers can be implemented as follows.
+ForTRAVERSE samplers, they get data from the local subgraphs.
+ForNEIGHBORHOOD samplers, they can get one-hop neighbors
+from local storage as well as multi-hop neighbors from local cache.
+If the neighbors of a vertex are not cached, a call to remote graph
+server is needed. When getting the context of a batch of vertices, we
+ﬁrst partition the vertices into sub-batches, and the context of each
+sub-batch will be stitched together after being returned from the
+corresponding graph server. NEGATIVE samplers usually generate
+samples from local graph server. For some special cases, negative
+sampling from other graph server may be needed. Negative sampling
+is ﬂexible in algorithm, and we do not need to call all graph servers
+in a batch. In summary, a typical sampling stage can be achieved as
+illustrated in Figure 5.
+We can accelerate training by adopting several efﬁcient sampling
+strategies with dynamic weights. We implement the update opera-
+tion in a sampler’s backward computation, just like gradient back
+propagation [26] of an operator. So when updating needed, what
+we should do is to register a gradient function for the sampler. TheDefine a TRAVERSE sampler as s1
+Define a NEIGHBORHOOD sampler as s2
+Define a NEGATIVE sampler as s3
+...
+def sampling(s1, s2, s3, batch_size):
+vertex = s1.sample(edge_type, batch_size)
+# hop_nums contains neighbor count at each hop
+context = s2.sample(edge_type, vertex, hop_nums)
+neg = s3.sample(edge_type, vertex, neg_num)
+return vertex, context, neg
+Figure 5: Sampling stage using three kinds of samplers
+updating mode, synchronous or asynchronous, is due to the training
+algorithm.
+Till now, both reading and updating will be operated on the graph
+storage in memory, which may lead to weak performance. Accord-
+ing to the neighborhood requirement, the graph is partitioned by
+source vertices. Based on this, we split the vertices on a graph server
+into groups. Each group will be related with a request-ﬂow bucket,
+in which the operations, including reading and updating, are all
+about the vertices in this group. The bucket is a lock-free queue.
+As shown in Figure 6, we bind each bucket to a CPU core and then
+each operation in the bucket will be processed sequentially without
+locking, which will further enhance the efﬁciency of the system.
+Figure 6: Lock-free graph operations
+3.4 Operator
+Abstraction. After sampling, the output data is aligned, and we can
+process it easily. Upon samplers, we need some GNN-like operators
+to consume them. In our system, we abstract two kinds of operators,
+namely AGGREGATE andCOMBINE [30, 7, 24, 22]. Their roles are
+as follows.
+AGGREGATE : collects the information of each vertex’s neigh-
+bors to produce a uniﬁed result. For example, the AGGRE -
+GATE function in Algorithm 1 maps a series of vectors hu2
+Rdto a single vector h0
+v2Rd, whereubelongs to sampled
+neighborhood nodes of v.h0
+vis an intermediate result to
+further generate h(k)
+v. The AGGREGATE function acts as the
+convolution operation since it collects the information from
+its surrounding neighborhoods. In different GNN methods, a
+variety of aggregating methods are applied, such as element-
+wise mean, max-pooling neural network and long short-term
+memory (LSTMs) [22, 21].
+COMBINE : takes care of how to use neighbors of a vertex to
+describe the vertex. In Algorithm 1, the COMBINE function
+5

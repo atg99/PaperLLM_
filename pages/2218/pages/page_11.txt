@@ -1,0 +1,104 @@
+11
+1. Quantum Computations as Tensors
+As pointed out in section IIA, Cirq already contains
+the language necessary to express quantum computa-
+tions, parameterizedcircuits, andmeasurements. Guided
+by principle 4, TFQ should allow direct injection of Cirq
+expressions into the computational graph of TensorFlow.
+This is enabled by the tfq.convert_to_tensor function.
+We saw the use of this function in the quantum binary
+classiﬁer, where a list of data generation circuits spec-
+iﬁed in Cirq was wrapped in this function to promote
+them to tensors. Below we show how a quantum data
+point, a quantum model, and a quantum measurement
+can be converted into tensors:
+q0 = cirq . GridQubit (0, 0)
+q_data_raw = cirq . Circuit ( cirq .H(q0))
+q_data = tfq . convert_to_tensor ([ q_data_raw ])
+theta = sympy . Symbol (’theta ’)
+q_model_raw = cirq . Circuit (
+cirq .Ry( theta ).on(q0))
+q_model = tfq . convert_to_tensor ([ q_model_raw ])
+q_measure_raw = 0.5 * cirq .Z(q0)
+q_measure = tfq. convert_to_tensor (
+[ q_measure_raw ])
+Thisconversionisbackedbyourcustomserializers. Once
+aCircuitor PauliSum is serialized, it becomes a ten-
+sor of type tf.string . This is the reason for the use
+oftf.keras.Input(shape=(), dtype=tf.dtypes.string) when
+creating inputs to Keras models, as seen in the quantum
+binary classiﬁer example.
+2. Composing Quantum Models
+After injecting quantum data and quantum mod-
+els into the computational graph, a custom Tensor-
+Flow operation is required to combine them. In
+support of guiding principle 2, TFQ implements the
+tfq.layers.AddCircuit layer for combining tensors of cir-
+cuits. In the following code, we use this functionality
+to combine the quantum data point and quantum model
+deﬁned in subsection IIE1:
+add_op = tfq . layers . AddCircuit ()
+data_and_model = add_op ( q_data , append = q_model )
+To quantify the performance of a quantum model on a
+quantum dataset, we need the ability to deﬁne loss func-
+tions. Thisrequiresconvertingquantuminformationinto
+classical information. This conversion process is accom-
+plished by either sampling the quantum model, which
+stochastically produces bitstrings according to the prob-
+ability amplitudes of the model, or by specifying a mea-
+surement and taking expectation values .3. Sampling and Expectation Values
+Sampling from quantum circuits is an important use
+case in quantum computing. The recently achieved mile-
+stone of quantum supremacy [13] is one such application,
+in which the diﬃculty of sampling from a quantum model
+was used to gain a computational edge over classical ma-
+chines.
+TFQ implements tfq.layers.Sample , a Keras layer
+which enables sampling from batches of circuits in sup-
+port of design objective 2. The user supplies a ten-
+sor of parameterized circuits, a list of symbols con-
+tained in the circuits, and a tensor of values to sub-
+stitute for the symbols in the circuit. Given these,
+the Samplelayer produces a tf.RaggedTensor of shape
+[batch_size, num_samples, n_qubits] , where the n_qubits
+dimension is ragged to account for the possibly varying
+circuit size over the input batch of quantum data. For
+example, the following code takes the combined data and
+model from section IIE2 and produces a tensor of size
+[1, 4, 1] containing four single-bit samples:
+sample_layer = tfq . layers . Sample ()
+samples = sample_layer (
+data_and_model , symbol_names =[ ’theta ’],
+symbol_values =[[0.5]] , repetitions =4)
+Though sampling is the fundamental interface between
+quantum and classical information, diﬀerentiability of
+quantum circuits is much more convenient when using
+expectation values , as gradient information can then
+be backpropagated (see section III for more details).
+In the simplest case, expectation values are simply av-
+erages over samples. In quantum computing, expectation
+values are typically taken with respect to a measurement
+operatorM. This involves sampling bitstrings from the
+quantum circuit as described above, applying Mto the
+list of bitstring samples to produce a list of numbers,
+then taking the average of the result. TFQ provides two
+related layers with this capability:
+Incontrasttosampling(whichisbydefaultinthe stan-
+dard computational basis , the ^Zeigenbasis of all qubits),
+taking expectation values requires deﬁning a measure-
+ment. As discussed in section IIA, these are ﬁrst deﬁned
+ascirq.PauliSum objects and converted to tensors. TFQ
+implements tfq.layers.Expectation , a Keras layer which
+enables the extraction of measurement expectation val-
+ues from quantum models. The user supplies a tensor of
+parameterized circuits, a list of symbols contained in the
+circuits, a tensor of values to substitute for the symbols
+in the circuit, and a tensor of operators to measure with
+respect to them. Given these inputs, the layer outputs
+a tensor of expectation values. Below, we show how to
+take an expectation value of the measurement deﬁned in
+section IIE1:
+expectation_layer = tfq . layers . Expectation ()
+expectations = expectation_layer (
+circuit = data_and_model ,
+symbol_names = [’theta ’],

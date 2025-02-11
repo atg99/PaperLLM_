@@ -1,0 +1,106 @@
+Algorithm 1 Pseudocode of MoCo in a PyTorch-like style.
+# f_q, f_k: encoder networks for query and key
+# queue: dictionary as a queue of K keys (CxK)
+# m: momentum
+# t: temperature
+f_k.params = f_q.params # initialize
+for x in loader: # load a minibatch x with N samples
+x_q = aug(x) # a randomly augmented version
+x_k = aug(x) # another randomly augmented version
+q = f_q.forward(x_q) # queries: NxC
+k = f_k.forward(x_k) # keys: NxC
+k = k.detach() # no gradient to keys
+# positive logits: Nx1
+l_pos = bmm(q.view(N,1,C), k.view(N,C,1))
+# negative logits: NxK
+l_neg = mm(q.view(N,C), queue.view(C,K))
+# logits: Nx(1+K)
+logits = cat([l_pos, l_neg], dim=1)
+# contrastive loss, Eqn.(1)
+labels = zeros(N) # positives are the 0-th
+loss = CrossEntropyLoss(logits/t, labels)
+# SGD update: query network
+loss.backward()
+update(f_q.params)
+# momentum update: key network
+f_k.params = m *f_k.params+(1-m) *f_q.params
+# update dictionary
+enqueue(queue, k) # enqueue the current minibatch
+dequeue(queue) # dequeue the earliest minibatch
+bmm: batch matrix multiplication; mm: matrix multiplication; cat: concatenation.
+the memory bank was updated when it was last seen, so the
+sampled keys are essentially about the encoders at multiple
+different steps all over the past epoch and thus are less con-
+sistent. A momentum update is adopted on the memory
+bank in [ 61]. Its momentum update is on the representa-
+tions of the same sample, notthe encoder. This momentum
+update is irrelevant to our method, because MoCo does not
+keep track of every sample. Moreover, our method is more
+memory-efﬁcient and can be trained on billion-scale data,
+which can be intractable for a memory bank.
+Sec. 4empirically compares these three mechanisms.
+3.3. Pretext Task
+Contrastive learning can drive a variety of pretext tasks.
+As the focus of this paper is not on designing a new pretext
+task, we use a simple one mainly following the instance
+discrimination task in [ 61], to which some recent works [ 63,
+2] are related.
+Following [ 61], we consider a query and a key as a pos-
+itive pair if they originate from the same image, and other-
+wise as a negative sample pair. Following [ 63,2], we take
+two random “views” of the same image under random data
+augmentation to form a positive pair. The queries and keys
+are respectively encoded by their encoders, fqandfk. The
+encoder can be any convolutional neural network [ 39].
+Algorithm 1provides the pseudo-code of MoCo for thispretext task. For the current mini-batch, we encode the
+queries and their corresponding keys, which form the posi-
+tive sample pairs. The negative samples are from the queue.
+Technical details. We adopt a ResNet [ 33] as the encoder,
+whose last fully-connected layer (after global average pool-
+ing) has a ﬁxed-dimensional output (128-D [ 61]). This out-
+put vector is normalized by its L2-norm [ 61]. This is the
+representation of the query or key. The temperature τin
+Eqn.( 1) is set as 0.07 [ 61]. The data augmentation setting
+follows [ 61]: a 224×224-pixel crop is taken from a ran-
+domly resized image, and then undergoes random color jit-
+tering, random horizontal ﬂip, and random grayscale con-
+version, all available in PyTorch’s torchvision package.
+Shufﬂing BN. Our encoders fqandfkboth have Batch
+Normalization (BN) [ 37] as in the standard ResNet [ 33]. In
+experiments, we found that using BN prevents the model
+from learning good representations, as similarly reported
+in [35] (which avoids using BN). The model appears to
+“cheat” the pretext task and easily ﬁnds a low-loss solu-
+tion. This is possibly because the intra-batch communica-
+tion among samples (caused by BN) leaks information.
+We resolve this problem by shufﬂing BN. We train with
+multiple GPUs and perform BN on the samples indepen-
+dently for each GPU (as done in common practice). For the
+key encoder fk, we shufﬂe the sample order in the current
+mini-batch before distributing it among GPUs (and shufﬂe
+back after encoding); the sample order of the mini-batch
+for the query encoder fqis not altered. This ensures the
+batch statistics used to compute a query and its positive key
+come from two different subsets. This effectively tackles
+the cheating issue and allows training to beneﬁt from BN.
+We use shufﬂed BN in both our method and its end-to-
+end ablation counterpart (Figure 2a). It is irrelevant to the
+memory bank counterpart (Figure 2b), which does not suf-
+fer from this issue because the positive keys are from differ-
+ent mini-batches in the past.
+4. Experiments
+We study unsupervised training performed in:
+ImageNet-1M (IN-1M) : This is the ImageNet [ 11] train-
+ing set that has ∼1.28 million images in 1000 classes (often
+called ImageNet-1K; we count the image number instead,
+as classes are not exploited by unsupervised learning). This
+dataset is well-balanced in its class distribution, and its im-
+ages generally contain iconic view of objects.
+Instagram-1B (IG-1B) : Following [ 44], this is a dataset
+of∼1 billion (940M) public images from Instagram . The
+images are from ∼1500 hashtags [ 44] that are related to the
+ImageNet categories. This dataset is relatively uncurated
+comparing to IN-1M, and has a long-tailed ,unbalanced
+distribution of real-world data. This dataset contains both
+iconic objects and scene-level images.
+9732

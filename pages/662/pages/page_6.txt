@@ -1,0 +1,122 @@
+MICRO ’21, October 18–22, 2021, Virtual Event, Greece Tong Geng, et al.
+nodes, the number of island and hub nodes, and etc. Note that this
+abstract container is used just for clarity.
+Island location starts with parallel hub detection. This is shown in
+Algorithm 2, which uses a threshold-based method to find hubs by
+rounds. If the degree of a node is above the current threshold 𝑇𝐻𝑡𝑚𝑝,
+the node is identified as a hub and inserted into a container(buffer)
+ℎ𝑢𝑏_𝑏𝑢𝑓𝑓𝑒𝑟 .𝑇𝐻𝑡𝑚𝑝is reduced each round (line 10 of Algorithm 1)
+until all nodes are classified as island or hub nodes. To accelerate
+parallel hub detection, in each round we remove the nodes already
+classified as hub and island nodes in the previous round. At the end
+of island location, the node list 𝑁should be empty.
+Hub detection is followed by BFS task generation (Algorithm 3).
+Once a hub node is detected, the Island Locator finds its neighbors
+by accessing its adjacency list and caches these neighbor nodes in
+a task queue, 𝑡𝑎𝑠𝑘. The Island Locator sends neighbor nodes to the
+task queue,𝑡𝑎𝑠𝑘, and then to parallel BFS engines where the nodes
+are used by TP-BFS as the starting points for forming islands. Here
+we use neighbor nodes as the starting nodes (instead of hubs) in
+order to extract higher parallelism from TP-BFS. This significantly
+improves the scalability of the Island Locator.
+Once the first task is generated and stored in the task queue,
+TP-BFS starts (see Algorithm 4). The algorithm keeps track of the
+number of nodes whose neighbors have been explored exhaustively
+(𝑞𝑢𝑒𝑟𝑦 ) and the total number of visited nodes ( 𝑐𝑜𝑢𝑛𝑡 ). Once𝑞𝑢𝑒𝑟𝑦
+catches up with 𝑐𝑜𝑢𝑛𝑡 , an island is found with all the nodes and
+their neighbors within the island completely explored and the island
+information is returned. Multiple TP-BFS engines are able to work
+in parallel on different neighbors of different hubs. Multiple 𝑣𝑙𝑜𝑐𝑎𝑙 s
+are used to keep track of the nodes visited locally by each TP-BFS
+engine while 𝑣𝑔𝑙𝑜𝑏𝑎𝑙 is used to keep track of the nodes visited by
+any of the TP-BFS engines.
+Each engine begins island searching by (a) recording the initial
+node,𝑎𝑜, as the first visited node in a locally visited list, 𝑣𝑙𝑜𝑐𝑎𝑙 ; (b)
+setting the𝑞𝑢𝑒𝑟𝑦 pointer to zero indicating no node’s neighbors
+have been fully explored; and (c) accessing the node’s neighbors.
+Note that if an engine finds 𝑎𝑜also a hub, it will drop the task and
+forward this inter-hub connection information to Island Collector.
+As the Island Locator overlaps hub detection and TP-BFS, the TP-
+BFS engine does not know which nodes are the hubs and should not
+be considered as island nodes. Therefore, when the neighbors of the
+first node arrive, the engine checks whether it is a hub node (line 11
+of Algorithm 4). In addition, the engine must also check whether it
+has itself visited this node during the execution of the current task
+(line 12 of Algorithm 4). When either happens, the engine needs
+to skip the node and work on the next neighbor. Otherwise, the
+engine would have appended the node to the local visited list and
+increment the 𝑐𝑜𝑢𝑛𝑡𝑒𝑟 (line 16 of Algorithm 4).
+To accelerate BFS and reduce off-chip accesses to adjacency
+data, redundant search must be avoided. To achieve this, the Island
+Locator keeps a record of the IDs of nodes visited by all TP-BFS
+engines during a certain round in a global visit list, 𝑣𝑔𝑙𝑜𝑏𝑎𝑙 . When a
+BFS engine reaches a node labeled as visited in the global, but not
+in the local visited list, it knows that this region has been searched
+previously by other engines. The BFS engine then drops this task
+and waits for the next (line 20 of Algorithm 4 and Figure 5(A)).
+As shown in the Algorithm 4 (line 14), the TP-BFS engine checks
+that a node is not on the global visit list before adding it to the localAlgorithm 4 Simplified TP-BFS : fetch nodes from the task
+queue and use them as starting points in island detection
+1:Inputs:𝑡𝑎𝑠𝑘 : container of nodes to be chosen as potential starting
+points for BFS; 𝑇𝐻: threshold for hub nodes’ degree; 𝑐𝑚𝑎𝑥: the max
+number of node in an island; 𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 : list of islands’ nodes and hubs
+info;𝑃2: parallel factor
+2:Outputs: None (modify 𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠 in place)
+3:𝑣𝑔𝑙𝑜𝑏𝑎𝑙 ={}
+4:while|𝑡𝑎𝑠𝑘|>0do
+5: for𝑝=0to𝑃2in parallel do {# distributed across 𝑃2engines }
+6: Pop{ℎ𝑢𝑏 𝑜,𝑎𝑜}from𝑡𝑎𝑠𝑘 {# Pop the hub and one of its neighbors }
+7:𝑣𝑙𝑜𝑐𝑎𝑙 ={𝑎𝑜},ℎ𝑙𝑜𝑐𝑎𝑙 ={ℎ𝑢𝑏 𝑜},𝑞𝑢𝑒𝑟𝑦 =0, and𝑐𝑜𝑢𝑛𝑡 =1, if𝑎𝑜is
+not a hub
+8: while𝑞𝑢𝑒𝑟𝑦 ≠𝑐𝑜𝑢𝑛𝑡 do{# if there exist unexplored nodes }
+9:𝑛𝑜𝑑𝑒 𝑜=𝑣𝑙𝑜𝑐𝑎𝑙[𝑞𝑢𝑒𝑟𝑦]
+10: for𝑛∈𝑛𝑜𝑑𝑒 𝑜.𝑛𝑒𝑖𝑔ℎ𝑏𝑜𝑟𝑠 do
+11: if𝑛.𝑑𝑒𝑔𝑟𝑒𝑒 <𝑇𝐻then {# hub node or not }
+12: if𝑛∈𝑣𝑙𝑜𝑐𝑎𝑙 then {#𝑛locally explored by engine p }
+13: Skip neighbor 𝑛
+14: else if𝑛∉𝑣𝑔𝑙𝑜𝑏𝑎𝑙 then {# not explored by other engines }
+15: 𝑐𝑜𝑢𝑛𝑡+=1
+16: Append𝑛to𝑣𝑙𝑜𝑐𝑎𝑙 and𝑣𝑔𝑙𝑜𝑏𝑎𝑙
+# if exceeding the max number of nodes in an island
+17: if|𝑣𝑙𝑜𝑐𝑎𝑙|>𝑐𝑚𝑎𝑥 break while(line 8)
+18: else {# already explored by other engines }
+19: remove𝑣𝑙𝑜𝑐𝑎𝑙 from𝑣𝑔𝑙𝑜𝑏𝑎𝑙
+20: break while(line 8)
+21: else {# else it’s a hub node }
+22: Add𝑛toℎ𝑙𝑜𝑐𝑎𝑙
+23:𝑞𝑢𝑒𝑟𝑦+=1
+24: Append (𝑣𝑙𝑜𝑐𝑎𝑙 ,ℎ𝑙𝑜𝑐𝑎𝑙 ) to𝑙𝑖𝑠𝑙𝑎𝑛𝑑𝑠
+...
+......Hub Detection
+Nodes with 
+high degrees: hubsPopped ...
+... ...Task Generation
+Generated tasks:
+(hub, neighbor)
+pairs
+...
+......TP-BFS
+Search
+directions
+TP-BFS 
+starting pointsDiscovered
+islands
+from graph
+Figure 4: Toy example of Island Locator algorithm.
+visited list and incrementing the visited node counter. If the counter
+is over the threshold (expected maximum island size), the engine
+drops the task and waits for a new one ((line 17) and Figure 5 (B)).
+When all neighbors of the initial node have been scanned, the
+engine checks whether the query pointer value equals the counter
+value. This indicates that all nodes have been searched, that TP-
+BFS is done without reaching the island size threshold, and that an
+island is found. If this happens, the engine sends the connection
+information of this island to the Island Consumer and requests a
+new task from the Task Generator (see Figure 5 (C)). Otherwise,
+it accesses the adjacency list of the node pointed to by the query
+pointer and explores all its neighbors. This process continues until
+one of the three task-break conditions is triggered.
+3.2.2 Architecture. Figure 6 shows the architecture support of Is-
+land Locator. The blue part in Algorithm 1 is realized as the Hub
+Detector. The degree information of the nodes are distributively
+stored in the Node Degree Buffers which are implemented with

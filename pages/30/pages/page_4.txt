@@ -1,0 +1,108 @@
+World Space Prediction Space
+K-1KImage plane
+ZXY
+Znear
+Zfar
+Figure 4. Predicting voxel occupancies aligned to the image plane
+requires an irregularly-shaped voxel grid. We achieve this effect
+by making voxel predictions in a space that is transformed by
+the camera’s (known) intrinsic matrix K. Applying K−1trans-
+forms our predictions back to world space. This results in frustum-
+shaped voxels in world space.
+Maintaining pixelwise correspondence between the im-
+age and our predictions is complex in 3D since objects be-
+come smaller as they recede from the camera. As shown in
+Figure 4, we account for this by using the camera’s (known)
+intrinsic matrix to predict frustum-shaped voxels.
+Cubify: Voxel to Mesh The voxel branch produces a 3D
+grid of occupancy probabilities giving the coarse shape of
+an object. In order to predict more ﬁne-grained 3D shapes,
+we wish to convert these voxel predictions into a triangle
+mesh which can be passed to the mesh reﬁnement branch.
+We bridge this gap with an operation called cubify . It
+inputs voxel occupancy probabilities and a threshold for bi-
+narizing voxel occupancy. Each occupied voxel is replaced
+with a cuboid triangle mesh with 8 vertices, 18 edges, and
+12 faces. Shared vertices and edges between adjacent occu-
+pied voxels are merged, and shared interior faces are elim-
+inated. This results in a watertight mesh whose topology
+depends on the voxel predictions.
+Cubify must be efﬁcient and batched. This is not
+trivial and we provide technical implementation details of
+how we achieve this in Appendix. Alternatively marching
+cubes [ 39] could extract an isosurface from the voxel grid,
+but is signiﬁcantly more complex.
+Voxel Loss The voxel branch is trained to minimize the
+binary cross-entropy between predicted voxel occupancy
+probabilities and true voxel occupancies.
+3.1.2 Mesh Reﬁnement Branch
+The cubiﬁed mesh from the voxel branch only provides a
+coarse 3D shape, and it cannot accurately model ﬁne struc-
+tures like chair legs. The mesh reﬁnement branch processes
+this initial cubiﬁed mesh, reﬁning its vertex positions with
+a sequence of reﬁnement stages. Similar to [ 68], each re-
+ﬁnement stage consists of three operations: vertex align-
+ment , which extracts image features for vertices; graph con-
+volution , which propagates information along mesh edges;
+andvertex reﬁnement , which updates vertex positions. Each
+layer of the network maintains a 3D position viand a fea-
+ture vector fifor each mesh vertex.Vertex Alignment yields an image-aligned feature vector
+for each mesh vertex1. We use the camera’s intrinsic matrix
+to project each vertex onto the image plane. Given a feature
+map, we compute a bilinearly interpolated image feature at
+each projected vertex position [ 22].
+In the ﬁrst stage of the mesh reﬁnement branch,
+VertAlign outputs an initial feature vector for each ver-
+tex. In subsequent stages, the VertAlign output is con-
+catenated with the vertex feature from the previous stage.
+Graph Convolution [28] propagates information along
+mesh edges. Given input vertex features {fi}it computes
+updated features f′
+i= ReLU/parenleftbig
+W0fi+/summationtext
+j∈N(i)W1fj/parenrightbig
+whereN(i)gives the i-th vertex’s neighbors in the mesh,
+andW0andW1are learned weight matrices. Each stage of
+the mesh reﬁnement branch uses several graph convolution
+layers to aggregate information over local mesh regions.
+Vertex Reﬁnement computes updated vertex positions
+v′
+i=vi+ tanh(Wvert[fi;vi])whereWvert is a learned
+weight matrix. This updates the mesh geometry , keeping its
+topology ﬁxed. Each stage of the mesh reﬁnement branch
+terminates with vertex reﬁnement, producing an intermedi-
+ate mesh output which is further reﬁned by the next stage.
+Mesh Losses Deﬁning losses that operate natively on trian-
+gle meshes is challenging, so we instead use loss functions
+deﬁned over a ﬁnite set of points. We represent a mesh with
+a pointcloud by densely sampling its surface. Consequently,
+a pointcloud loss approximates a loss over shapes.
+Similar to [ 56], we use a differentiable mesh sampling
+operation to sample points (and their normal vectors) uni-
+formly from the surface of a mesh. To this end, we imple-
+ment an efﬁcient batched sampler; see Appendix for details.
+We use this operation to sample a pointcloud Pgtfrom the
+ground-truth mesh, and a pointcloud Pifrom each interme-
+diate mesh prediction from our model.
+Given two pointclouds P,Qwith normal vectors, let
+ΛP,Q={(p,argmin q/bardblp−q/bardbl) :p∈P}be the set of
+pairs(p,q)such that qis the nearest neighbor of pinQ, and
+letupbe the unit normal to point p. The chamfer distance
+between pointclouds PandQis given by
+Lcham(P,Q) =|P|−1/summationdisplay
+(p,q)∈ΛP,Q/bardblp−q/bardbl2+|Q|−1/summationdisplay
+(q,p)∈ΛQ,P/bardblq−p/bardbl2(1)
+and the (absolute) normal distance is given by
+Lnorm(P,Q) =−|P|−1/summationdisplay
+(p,q)∈ΛP,Q|up·uq|−|Q|−1/summationdisplay
+(q,p)∈ΛQ,P|uq·up|.(2)
+The chamfer and normal distances penalize mismatched
+positions and normals between two pointclouds, but min-
+imizing these distances alone results in degenerate meshes
+(see Figure 5). High-quality mesh predictions require addi-
+tional shape regularizers : To this end we use an edge loss
+Ledge(V,E) =1
+|E|/summationtext
+(v,v′)∈E/bardblv−v′/bardbl2whereE⊆V×V
+1Vertex alignment is called perceptual feature pooling in [68]
+9788

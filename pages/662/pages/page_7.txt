@@ -1,0 +1,87 @@
+I-GCN: A Graph Convolutional Network Accelerator with Runtime Locality Enhancement through Islandization MICRO ’21, October 18–22, 2021, Virtual Event, Greece
+Figure 5: Task break conditions of TP-BFS engine.
+loop-back FIFOs. The number of FIFOs determines the parallelism
+of the hub detection (P1 in Algorithm 1). The Island Node Filters
+(IFs) check whether the nodes popped out of the FIFOs are among
+the island nodes in the previous round (line 6 in Algorithm 2) by
+checking Island Node Table (PR-INT). If yes, these nodes are dis-
+carded; if no, the comparators check whether the nodes are hubs
+(line 8 in Algorithm 2). The nodes recognized as hubs are sent to a
+hub buffer which is also implemented with multi-bank FIFOs; while
+the remaining nodes are sent back to the Node Degree Buffers for
+the next round detection.
+The TP-BFS Task Generator realizes Algorithm 3. Once a hub
+node is popped out of the hub buffer, Task Generator will start to
+access its adjacency list from global memory. The node IDs of the
+neighbors in the list received by Task Generator and the ID of their
+hub form task tuples which are cached in TP-BFS Task Queues.
+These tasks are further assigned to idle TP-BFS engines.
+The simplified architecture of TP-BFS is shown in Figure 6(b).
+We implement the orange block of Algorithm 1 as a three-stage
+Finite State Machine (FSM). At Stage 0, TP-BFS is ideal and sends
+requests of new tasks to Task Generator. When the new task arrives,
+TP-BFS engine moves to Stage 2 from Stage 0 with Query Pointer
+pointing to row 0 of the Local Visited Table (LVT) and the Island
+Node Counter as 1. In general, at Stage 2, the engine first checks
+whether the query pointer value and the Island Node Counter are
+the same. If yes, the engine finds an island, forwards the data stored
+at the output terminal to the Island Consumer, and records island
+nodes in CR-INT. Otherwise, the engine accesses the adjacency list
+of the node pointed by the Query Pointer from global memory, adds
+one to the Query Pointer, and then moves to Stage 1. At Stage 1, the
+TP-BFS engine records the newly-arrived adjacency information
+in the island bitmap buffer at output terminal and tries to find
+unvisited nodes by scanning the nodes included in this information
+each per cycle. If the node being scanned is not a hub and also not
+visited, the Island Node Counter increases by one. If the counter
+value overpasses the maximum number of nodes for an island, the
+engine is reset to Stage 0. Otherwise, the engine keeps scanning
+the list and at the end moves to state 2.
+3.3 Island Consumer
+Island Consumer follows Island Locator and conducts combination
+and aggregation of islands and hubs. Before introducing the algo-
+rithm and architecture adopted in Island Locator, we first discuss
+where the redundant calculation of aggregation comes from.
+As islands contain nodes with strong internal connections, it is
+highly likely that multiple nodes have more than one shared neigh-
+bors in which case the aggregation result of these shared neighbors
+can be reused multiple times with one-time calculation. Figure 7
+uses the graph structure and adjacency matrix of a typical island as
+a motivational example. As mentioned in Section 3.1, the adjacency
+Figure 6: Simplified architecture of Island Locator.
+matrix of an island includes all connections between island nodes
+and the connections with hubs. During island processing, all these
+connections are evaluated. The example graph has seven island
+nodes from ‘a’ to ‘g’ and one hub ‘H’.
+As shown in Figure 7(A1), nodes d,e,f, and g are the shared neigh-
+bors of nodes b and c; as an undirected graph, nodes b and c are
+also the shared neighbors of nodes d, e, f, and g. For the aggre-
+gation of nodes b and c, the feature vectors of nodes d, e, f, and
+g need to be accumulated twice; to process nodes d, e, g, and f,
+the feature vectors of nodes b and c need to be accumulated four
+times. If the feature vector length is L, these accumulations take
+16×𝐿operations. However, if we can pre-calculate the accumula-
+tion results and reuse them, then only 10×𝐿operations are needed.
+Figure 7(A2) shows how the pre-calculated results are reused during
+aggregation. We add two virtual nodes whose feature vectors are
+the accumulation results d,e,f,g and c,b in the graph. We connect
+them to the real nodes according to the accumulation requirements.
+During the aggregation phase, the pre-aggregated feature vectors
+are forwarded directly to the target nodes, so that the accumulation
+from shared neighbors is only done once. Note that in the original
+graph without island-based locality enhancement, these nodes are
+highly scattered, as is the processing of their aggregation opera-
+tions. It is therefore prohibitive to find and prune these repeated
+operations from shared neighbors at runtime. Through I-GCN, the
+nodes with strong interconnects are largely clustered, which makes
+redundancy removal feasible.
+3.3.1 Algorithm. We first introduce the calculation methodology of
+the Island Consumer. Once the information of an island is forwarded
+to the Island Consumer, it assigns that information to a PE which is
+waiting for new calculation tasks. The information includes island
+node IDs, hub node ID, the local adjacency bitmap, the round IDs,
+and etc. The PE performs first combination and then aggregation
+reusing the same MAC units.
+The PE starts the combination of all hub and island nodes by first
+accessing their input feature vectors from global memory and then
+conducting PULL-based combination. Different from conventional

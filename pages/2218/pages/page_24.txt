@@ -1,0 +1,122 @@
+24
+1
+-1
+1
+1
+Prepare 
+Cluster 
+State
+Qconv  
++
+ 
+QPool
+Qconv  
++
+ 
+QPool
+MSE
+Loss
+-1
+1
+Figure 15. Architecture of the purely quantum CNN for de-
+tecting excited cluster states.
+ogy with classical convolutional layers, the parameters of
+the unitaries are tied, so that the same operation is ap-
+plied to every nearest-neighbor pair of qubits. Pooling is
+achieved using a diﬀerent 2 qubit unitary G(~)designed
+to disentangle, allowing information to be projected from
+2 qubits down to 1. The code below deﬁnes the quantum
+convolution and quantum pooling operations:
+def quantum_conv_circuit (bits , syms ):
+circuit = cirq . Circuit ()
+for a, b in zip ( bits [0::2] , bits [1::2]) :
+circuit += two_q_unitary ([a, b], syms )
+for a, b in zip ( bits [1::2] , bits [2::2] + [
+bits [0]]) :
+circuit += two_q_unitary ([a, b], syms )
+return circuit
+def quantum_pool_circuit (srcs , snks , syms ):
+circuit = cirq . Circuit ()
+for src , snk in zip (srcs , snks ):
+circuit += two_q_pool (src , snk , syms )
+return circuit
+In the code, two_q_unitary constructs a general param-
+eterized two qubit unitary [113], while two_q_pool rep-
+resents a CNOT with general one qubit unitaries on the
+control and target qubits, allowing for variational selec-
+tion of control and target basis.
+With the quantum portion of our model deﬁned, we
+move on to the third and fourth stages of the QML
+pipeline, measurement and classical post-processing. We
+consider three classiﬁer variants, each containing a dif-
+ferent degree of hybridization with classical networks:
+1. Purely quantum CNN
+2. Hybrid CNN in which the outputs of a truncated
+QCNN are fed into a standard densely connected
+neural net
+3. Hybrid CNN in which the outputs of multiple trun-
+cated QCNNs are fed into a standard densely con-
+nected neural net
+The ﬁrst model we construct uses only quantum op-
+erations to decorrelate the inputs. After preparing the
+cluster state dataset on N= 8qubits, we repeatedly ap-
+ply the quantum convolution and pooling layers until the
+system size is reduced to 1 qubit. We average the outputof the quantum model by measuring the expectation of
+Pauli-Z on this ﬁnal qubit. Measurement and parameter
+control are enacted via our tfq.layers.PQC object. The
+code for this model is shown below:
+readout_operators = cirq .Z(
+cluster_state_bits [ -1])
+quantum_model = tfq. layers . PQC (
+create_model_circuit ( cluster_state_bits ),
+readout_operators )( cluster_state )
+qcnn_model = tf. keras . Model (
+inputs =[ excitation_input ],
+outputs =[ quantum_model ])
+In the code, create_model_circuit is a function which ap-
+plies the successive layers of quantum convolution and
+quantum pooling. A simpliﬁed version of the resulting
+model on 4 qubits is shown in Fig. 15.
+With the model constructed, we turn to training and
+validation. These steps can be accomplished using stan-
+dard Keras tools. During training, the model output on
+each quantum datapoint is compared against the label;
+the cost function used is the mean squared error between
+the model output and the label, where the mean is taken
+over each batch from the dataset. The training and vali-
+dation code is shown below:
+qcnn_model . compile ( optimizer =tf. keras .Adam ,
+loss =tf. losses .mse )
+( train_excitations , train_labels ,
+test_excitations , test_labels
+) = generate_data ( cluster_state_bits )
+history = qcnn_model . fit (
+x= train_excitations ,
+y= train_labels ,
+batch_size =16 ,
+epochs =25 ,
+validation_data =(
+test_excitations , test_labels ))
+In the code, the generate_data function builds the exci-
+tation circuits that are applied to the initial cluster state
+input, along with the associated labels. The loss plots
+for both the training and validation datasets can be gen-
+erated by running the associated example notebook.
+We now consider a hybrid classiﬁer. Instead of us-
+ing quantum layers to pool all the way down to 1 qubit,
+we can truncate the QCNN and measure a vector of op-
+erators on the remaining qubits. The resulting vector
+of expectation values is then fed into a classical neural
+network. This hybrid model is shown schematically in
+Fig. 16.
+This can be achieved in TFQ with a few simple mod-
+iﬁcations to the previous model, implemented with the
+code below:
+# Build multi - readout quantum layer
+readouts = [ cirq .Z( bit) for bit in
+cluster_state_bits [4:]]
+quantum_model_dual = tfq . layers . PQC(
+multi_readout_model_circuit (
+cluster_state_bits ),
+readouts )( cluster_state )
+# Build classical neural network layers

@@ -1,0 +1,82 @@
+Letters Nature MediciNeMethods
+Development and validation datasets. We used data from the NLST study, 
+consisting of 42,290 CT cases from 14,851 patients, 638 of whom developed biopsy-
+confirmed cancer within 1 year of a LDCT screening (see Extended Data Fig. 1 for 
+more details on NLST dataset selection)41. Patients were randomly assigned to a 
+training set (70%), a tuning set (15%) or a test set (15%). Because not all negative cases from NLST have been made publicly available, the training, tuning and test sets had cancer percentages of 3.9, 4.5 and 3.7, respectively (slightly higher than the 1–2% range reported for NLST in general and in real-world practice). Supplementary Tables 1, 2 and 3 describe demographics, scanner information and nodule and cancer characteristics for relevant subsets of this dataset. All participants enrolling in NLST signed an informed consent developed and approved by the screening centers’ IRBs, the National Cancer Institute (NCI) IRB and the Westat IRB. Additional details regarding cases in the dataset are available through the National Institutes of Health Cancer Data Access System. Briefly, LDCTs were collected from multiple institutions, with slice spacing varying from 1.25 to 5 mm and scanner vendors varying by site. We filtered out the 5-mm scans 
+to better represent the slice spacing of a typical modern screening protocol
+42, 
+and the largest remaining slice spacing was 2.5 mm. A diagnosis of lung cancer 
+established by biopsy at any time during the same year as a screening case counted as a ground truth true-positive case. This included cases identified as incidental cancers diagnosed during the same screening year as an initially negative screening exam. An exam was considered negative if the patient proved cancer-free on 
+1-year follow-up; patients in the trial had multi-year follow-up. Patients had up to 
+3 years of screening, all via LDCT and, in nearly all cases, only one visit occurred 
+per year with exceptions made for patients with inadequate imaging or interval 
+development of symptoms concerning for cancer. In cases where prior imaging was used for testing and development purposes, the screening exam from the preceding year was selected. As screening read data from NLST were gathered once per year for each patient, it was important also to evaluate the model once per year for each patient for our tuning and testing sets. We chose the latest case per screening year, since this was the most likely case to have generated the screening read because patients typically were asked to return only if imaging was inadequate. Within each case we used the best available reconstruction kernel (See Supplementary Information, Kernel selection) with the highest number of slices.
+An independent dataset from an academic medical center was used to further 
+validate the model’s performance. This dataset consisted of 1,139 cases from 
+907 patients collected as part of a screening program (see Extended Data Fig. 9 for 
+exclusion criteria and further details); 209 of the patients and 232 of the cases had priors available. These data were not used in the training or tuning of the model. The data were a fully de-identified lung cancer screening CT dataset. The ground truth for cancer on this dataset was defined based on lung cancer International Classification of Disease codes with biopsy or surgical confirmation of cancer via manual review of the pathology note. For cancer-negatives, patients had a cancer-free follow-up examination at least 1 year after the initial screening exam. 
+Slice spacing for CTs in this dataset varied from 1.25 to 3.0 mm, with the majority 
+(84%) being 3.0 mm. Notably, our training set in NLST had a maximum spacing of 
+2.5 mm, suggesting that our model generalized to different scanning parameters.
+Model development and training. Overall, the model is trained to take the entire CT volume and automatically produce a score predicting whether the patient received a cancer diagnosis in the same study year. First, for clarity it is important to define the following terms.
+Volume always refers to the full CT volume (that is, the entire set of axial 
+images comprising the volume)—whether in original resolution or resampled. When we describe that the ‘volume’ is labeled as malignant or non-malignant, we intend to communicate that the label is at a case level (that is, ‘there is cancer in the CT scan somewhere’).
+Bounding box is a rectangular 3D sub-volume containing a malignancy. Our 
+radiologist labelers were instructed to draw boxes that tightly encapsulate the malignancy. We call these resulting sub-volumes bounding boxes for this reason. Our detection model aims to predict these bounding boxes.
+ROI is a fixed-size, 3D sub-volume containing a malignancy and some 
+surrounding context. Once we have bounding boxes from our detection model, we take a fixed 90-mm
+3 region around each bounding box. We call this larger 3D sub-
+volume an ROI.
+Since the use of only a single label for an entire volume can be a challenging 
+learning task, part of the model used a two-stage approach leveraging bounding 
+box labels. First, two candidate ROIs were detected using a detection component 
+trained on radiologist-annotated bounding boxes (see Methods, Localization 
+analysis for annotation details and Extended Data Fig. 6 for details on how candidate regions were cropped from detected bounding boxes). We tried using up to seven candidates and arrived at two based on tune set performance.
+Next, we combined the scores p1 and p2 from both candidates using the 
+‘noisy-or’ equation1 – (1 – p1)(1 – p2) to produce a final score which was then trained against the case-level cancer diagnosis labels (see Extended Data Fig. 10). To summarize, the use of ‘noisy-or’ lets us train against the case-level ground truth in NLST even though internally the model is making predictions about two ROIs.When classifying each candidate region, a purely two-stage approach would 
+have access only to features within the candidate region and not from the full volume. It was not technically feasible to train a model on the full volume at the original resolution. To provide this global context for every candidate region, we trained a model on the full volume at a reduced resolution to predict cancer diagnosis and then combined features extracted from this model to those extracted from each candidate region. The input volume for each case was the entire 3D CT volume for the case, including the lung, mediastinum, heart, chest wall and so on, just as a radiologist would be given in practice. No manual image segmentation was performed. A total of 29,541 cases were used for training, including all volumes 
+with slice thickness less than or equal to 2.5 mm. The model consists of lung 
+segmentation, cancer ROI detection, a full-volume model and a final cancer risk prediction model based on the outputs of the full-volume model and the cancer ROI detection model. For each of these components, we chose a more general computer vision task (that is, instance segmentation, object detection and video classification) that was similar to the task performed by the component. Then, for each task we chose an approach that was state of the art at the time of our modeling experiments. For a schematic overview of the model see Fig. 1, and for a more 
+detailed overview see Extended Data Fig. 10.
+The approach consists of four components, all trained using the TensorFlow 
+platform (Google Inc.)
+43:
+ (1) Lung segmentation. We trained a lung segmentation Mask-RCNN44 ap-
+proach, trained on the LUNA45 dataset using the TensorFlow Object Detec-
+tion API46, which produced the lung segmentation mask. This mask was used 
+to compute the center of its bounding box for step (c) and to determine an alignment with the prior volume. Since only the bounding box center is the key result of interest, the precise segmentation boundaries are not a factor in our modeling approach. It is likely that other lung segmentation approaches could substitute this component. Finding the lung center allows us to focus further processing on the lungs.
+ (2) Cancer ROI detection model. This was trained on 1.4 × 0.7 mm
+2 (spac-
+ing, pixel size) voxel size volumes. The cancer ROI detection architecture was a RetinaNet
+47 modified to be in 3D and to remove the feature pyramid 
+network48. Extended Data Fig. 6a demonstrates how a large ROI was cropped 
+around each bounding box detected. The detection model was initialized by first training on LIDC
+39 and then trained on radiologist-annotated lesion 
+bounding boxes collected on the NLST dataset. The cancer ROI detection component outputs ROIs from all input volumes, even if no nodules are present. In this case, the most nodule-like regions are proposed as ROIs.
+ (3) Full-volume model. An end-to-end convolutional model, 3D inflated Incep-tion V1 (ref. 
+49,50), was trained on the 1.5-mm3 voxel size volumes to predict 
+cancer within 1 year, fine-tuning from a checkpoint trained on ImageNet51. 
+Each of these volumes was a large region cropped around the center of the bounding box as determined by lung segmentation. This cancer prediction model was trained with focal loss
+47 to try to mitigate the sparsity of positive 
+examples. We trained the model to predict cancer probability and then  used the last layer before the final probability, which contains 1,024 units. 
+We take these 1,024 numbers as the output for this model, and use them as 
+features later on.
+ (4) Cancer risk prediction model. A final cancer classification model was used to consider the output of the previous two models. In all cases, 3D Inception is used to extract features. Throughout the model components, our approach to classifying and extracting features from 3D volumes is heavily based on this 3D Inception model
+51. First, features were extracted from the detected ROIs 
+(Extended Data Fig. 6a). Features from the full-volume model were appended to the final layers of each detected ROI in the second-stage model, so that all predictions relied on both nodule-level local information and global context from the entire CT volume. Extended Data Fig. 10 illustrates the unified end-to-end approach, after the top two candidate ROIs were passed to the second-stage malignancy classification model. It was trained as a single convolutional neural network with shared parameters across all detected ROIs. Each ROI was passed through this network to predict its individual malignancy score. The final prediction was generated by combining the two probability scores as shown in Extended Data Fig. 10 (ref. 
+32). This model was also trained with 
+focal loss47 to try to mitigate the sparsity of positive examples.
+The final cancer prediction model was developed to allow as input either 
+a single CT scan (without prior) or both the current and prior year scan (with 
+prior). The prior and current volumes were aligned based on the lung bounding 
+box centers of two volumes and then by aligning nearby center candidate ROIs from the prior scan when available (Extended Data Fig. 6b). In each case a 3D shift of prior volume is performed to align the two centers. Higher-level spatial 
+feature maps from the current and prior scans were combined and passed through 
+additional convolutional layers with batch normalization. Since features of the 
+current and prior scan considered at these higher levels represent the entire 90-mm
+3 (the 64 × 128-mm2 cropped sub-volume with voxel size 1.4 × 0.7 mm2) sub-
+volume at a low spatial resolution, precise alignment of the nodules is not required.
+In the case of a malignant prediction, nodule localization was performed by 
+selecting the ROI with the highest malignancy score. For a benign prediction, the 
+NATuRE MEDiCiNE | www.nature.com/naturemedicine
+The Nature trademark is a registered trademark of Springer Nature Limited.

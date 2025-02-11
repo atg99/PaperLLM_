@@ -1,0 +1,42 @@
+(a) PyTorch3D rendering pipeline
+ (b) Problems with differentiability in rendering
+Figure 2: (a) The modular rendering pipeline in PyTorch3D and (b) The z- &xy-discontinuities in
+traditional rasterization and the soft formulations [31] which enable differentiability.
+K Nearest Neighbors forD-dimensional points are used in Chamfer loss, normal estimation, and
+other point cloud operations. We implement exact KNN with custom CUDA kernels that natively
+handle heterogeneous batches. Our implementation is tuned for D4andK32, and uses
+template metaprogramming to individually optimize each (D;K )pair. We compare against Faiss [ 23],
+a fast GPU library for KNN that targets a different portion of the design space: it does not handle
+batching, is optimized for high-dimensional descriptors ( D128), and scales to billions of points.
+Figures 1c and 1d show that we outperform Faiss by up to 5for batched 3D problems.
+3.2 Differentiable mesh renderer
+Arenderer inputs scene information (camera, geometry, materials, lights, textures) and outputs an
+image. A differentiable renderer can also propagate gradients backward from rendered images to
+scene information [34], allowing rendering to be embedded into deep learning pipelines [25, 31].
+PyTorch3D includes a differentiable renderer that operates on heterogeneous batches of triangle
+meshes. Our renderer follows three core design principles: differentiability , meaning that it computes
+gradients with respect to all inputs; efﬁciency , meaning that it runs quickly and scales to large meshes
+and images; and modularity , meaning that users can easily replace components of the renderer to
+customize its functionality to their use case and experiment with alternate formulations.
+As shown in Figure 2a, our renderer has two main components: the rasterizer selects the faces affect-
+ing each pixel, and the shader computes pixel colors. Through careful design of these components,
+we improve efﬁciency and modularity compared to prior differentiable renderers [25, 31, 7].
+Rasterizer. The rasterizer ﬁrst uses a camera to transform meshes from world to view coordinates.
+Cameras are Python objects and compute gradients via autograd; this aids modularity, as users can
+easily implement new camera models other than our provided orthographic and perspective cameras.
+Next, the core rasterization algorithm ﬁnds triangles that intersect each pixel. In traditional rasteriza-
+tion, each pixel is inﬂuenced only by its nearest face along the z-axis. As shown in Figure 2b, this
+can cause step changes in pixel color as faces move along the z-axis (due to occlusion) and in the
+xy-plane (due to face boundaries). Following [ 31] we soften these nondifferentiabilities by blending
+the inﬂuence of multiple faces for each pixel, and decaying a face’s inﬂuence toward its boundary.
+Our rasterizer departs from [ 31] in three ways to improve efﬁciency and modularity. First, in [ 31],
+pixels are inﬂuenced by every face they intersect in the xy-plane; in contrast we constrain pixels to
+be inﬂuenced by only the nearest Kfaces along the z-axis, computed using per-pixel priority queues.
+Similar to traditional z-buffering, this lets us quickly discard many faces for each pixel, improving
+efﬁciency. We show in Section 4 that this modiﬁcation does not harm downstream task performance.
+Second, [ 31] naïvely compares each pixel with each face. We improve efﬁciency using a two-pass
+approach similar to [ 28], ﬁrst working on image tiles to eliminate faces before moving to pixels.
+Third, [31] fuses rasterization and shading into a monolithic CUDA kernel. We decouple these, and
+as shown in Figure 2a our rasterizer returns Fragment data about theKnearest faces to each pixel:
+face ID, barycentric coordinates of the pixel in the face, and (signed) pixel-to-face distances along
+4

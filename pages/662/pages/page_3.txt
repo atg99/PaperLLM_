@@ -1,0 +1,131 @@
+I-GCN: A Graph Convolutional Network Accelerator with Runtime Locality Enhancement through Islandization MICRO ’21, October 18–22, 2021, Virtual Event, Greece
+1
+12
+24
+46
+63
+35
+5x =Outer Loop
+Inner Loop
+1
+66
+22 {X  }2
+44
+35
+1
+6 2 4351
+12
+24
+46
+63
+35
+5
+A (XW) XCombination AggregationInner Loopb1: Pull-Row-Wisec1: Push-Column-Wise
+c2: Push-Outer-Product
+b2: Pull-Inner-Product(b) Pull-based Methods (c) Push-based Methods (a) GCN Modelx =
+{(AX) } 1
+{(AX) } 5
+{(AX) } 6{X  }4
+{X  }6
+O A (XW) XO1 {X  }13 {X  }3
+... ... {(AXW)  }m
+m{(AX)  } 
+1
+6 2 435
+1
+6 2 4351
+12
+24
+46
+63
+35
+5x =Outer LoopInner Loop Outer Loop
+Loop1
+12
+24
+46
+63
+35
+5x =1
+6 2 435 Loop
+Figure 2: PULL-based (Row-wise & Inner-Product) and PUSH-based (Column-wise & Outer-Product) methods.
+2.1 Graph Convolutional Networks
+GCNs are composed of stacked GraphCONV layers. The compu-
+tation flow of each GraphCONV layer includes two phases: Ag-
+gregation and Combination , as illustrated in Figure 2-(a). In the
+aggregation phase, each node gathers and aggregates features of
+its neighbor nodes to update the local feature-vector. In the com-
+bination phase, the updated feature-vectors are further merged
+to extract high-level abstraction through a local Multi-Layer Per-
+ceptron (MLP) network. From the perspective of linear algebra,
+the layer-wise forward propagation of GCN can be expressed as
+Equation 1:
+𝑋(𝑙+1)=𝜎(˜𝐴𝑋(𝑙)𝑊(𝑙)) (1)
+where ˜𝐴is the graph adjacency matrix. 𝑋(𝑙)is the matrix of
+input features in layer- 𝑙;𝑊𝑙is the weight matrix of layer- 𝑙.𝜎(.)
+denotes non-linear activation functions [26].
+There are many modalities beneath the umbrella of GCNs, e.g.
+GraphSage [ 7,18] and Graph Isomorphism Network (GIN) [ 47].
+As shown in [ 21], the forward propagation of most GCNs can be
+abstracted and expressed as Equation 1.
+2.2 Design Space Exploration
+We first discuss the design choices related to execution order of the
+two phases in GraphCONV. We then present the design choices
+within each phase.
+2.2.1 Execution Order of a GraphCONV Layer. There are two al-
+ternative computation orders for a GraphCONV layer: aggregation
+first ((𝐴𝑋)×𝑊) and combination first (𝐴×(𝑋𝑊)). Existing work
+[14,30] has shown that the combination first approach can reuse the
+same Sparse-dense Matrix Multiplication (SpMM) kernel for both
+multiplications 𝑋𝑊 and𝐴(𝑋𝑊)and incorporates less arithmetic
+computation. I-GCN follows this combination first approach.
+2.2.2 Aggregation Phase. We first discuss the design choices of the
+aggregation phase, which is normally the performance bottleneck
+of GCN processing. There are two typical methods of aggregation:
+PULL and PUSH. For clarity, we compare them from a linear algebra
+perspective as illustrated in Figure 2. We discuss the correspondence
+between PULL/PUSH-based graph computation methods and four
+SpMM approaches as summarized in [ 39]: inner-product, outer-
+product, row-wise, and col-wise.PULL-based methods aggregate nodes sequentially. For each
+particular node, the feature vectors of all its neighbors are gathered
+and aggregated in two ways: (1) PULL-Inner-Product: features from
+different channels are calculated sequentially, analogous to the
+inner-product approach of SpMM. (2) PULL-Row-Wise: features
+from all channels are calculated in parallel, similar to the row-wise-
+product approach of SpMM. As shown in Figure 2-(b), PULL-based
+methods always process non-zeros of matrix A and produce the
+aggregation result matrix 𝑋𝑜by rows ( outer loop ). To calculate each
+row of𝑋𝑜(inner loop ), PULL-Row-Wise (Figure 2-(b1)) fetches the
+entire feature vectors (i.e. entire rows of 𝑋𝑊) of required nodes
+and performs vector accumulation sequentially; in contrast, PULL-
+Inner-Product fetches features by channel (i.e. column of 𝑋𝑊) and
+computes the output features in 𝑋𝑜sequentially (Figure 2-(b2)).
+PULL-based methods have their advantages and disadvantages.
+On the plus side, they reuse matrix A and only require relatively
+small on-chip buffers to conserve the partial aggregation results
+(since they are produced row by row). However, they both suffer
+from poor data reuse of matrix 𝑋𝑊. Due to the scattered and irreg-
+ular distribution of non-zeros in matrix A, the rows to be accessed
+in XW can be random. Given that the height of XW equals the
+number of nodes in the graph, which can be very large, XW (which
+is dense) can rarely be stored on-chip, leading to frequent data
+fetches and inferior performance. Ideally, if the non-zeros from the
+same column of A can be clustered, they can reuse the same row of
+XW, improving data locality.
+PULL-Row-Wise is more popular than PULL-Inner-Product in
+prior art mainly due to: (1) accessing the entire rows is more efficient
+than randomly fetching elements from different columns in terms of
+off-chip access; (2) as 𝑋𝑊 is dense, the processing of a row in a fixed
+size can be parallelized without introducing workload imbalance.
+PUSH-based aggregation, in contrast, calculates the aggregated
+features of all nodes simultaneously by broadcasting features of
+each node to all its neighbors one after another. Once a node re-
+ceives the features from its neighbors, it updates its local feature
+vector. There are two ways of feature broadcasting: PUSH-Column-
+Wise and PUSH-Outer-Product. With PUSH-Column-Wise, the in-
+put features are broadcast by channel; the output features are calcu-
+lated by channel. As shown in Figure 2-(c1), at iteration 𝑘ofouter
+loop, each node only pushes its features at channel k (i.e. column
+k of XW) to the neighbors. Once all nodes have broadcast their
+features at channel k to the neighbors ( inner loop ), every node
+has the complete aggregated features at channel k (i.e. column k
