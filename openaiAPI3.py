@@ -3,10 +3,13 @@ import aiohttp
 import asyncio
 import aiofiles
 import re
+from dotenv import load_dotenv
 from tqdm.asyncio import tqdm
 
+load_dotenv()
+
 # OpenAI API 키 설정
-API_KEY = "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"
+API_KEY = os.environ.get('APT_KEY2')
 API_URL = "https://api.openai.com/v1/chat/completions"
 
 # OpenAI 요청 설정

@@ -1,10 +1,13 @@
 import os
 import re
 from openai import OpenAI
+from dotenv import load_dotenv
 from tqdm import tqdm
 
+load_dotenv()
+
 # OpenAI API 클라이언트 설정
-client = OpenAI(api_key="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")  # 여기에 실제 API 키 입력
+client = OpenAI(api_key=os.environ.get('API_KEY'))  # 여기에 실제 API 키 입력
 
 # 시스템 메시지 정의
 sys_message = '''
